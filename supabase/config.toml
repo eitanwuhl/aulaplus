@@ -1,0 +1,7 @@
+project_id = "srlrbuphsogwgymqywhe"
+
+[functions.generate-bulletin-text]
+verify_jwt = false
+
+[functions.generate-plan-completo]
+verify_jwt = false
