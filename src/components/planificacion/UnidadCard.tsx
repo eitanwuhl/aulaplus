@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Trash2, ChevronDown, ChevronUp, Clock, Target, BookOpen } from 'lucide-react';
 import { UnidadDidactica } from '@/types/planificacion';
 import { Materia, contenidosPorMateria, getSubtemaPorId } from '@/data/catalogo';
+import { normalizeSubjectName } from '@/lib/subjectNormalizer';
 import { 
   COMPETENCIAS_HISTORIA, 
   getCompetenciasEspecificas 
@@ -33,7 +34,8 @@ export const UnidadCard: React.FC<UnidadCardProps> = ({
   const [expandida, setExpandida] = useState(false);
 
   const competencias = React.useMemo(() => {
-    switch (materia) {
+    const normalizedMateria = normalizeSubjectName(materia);
+    switch (normalizedMateria) {
       case 'Historia':
         return COMPETENCIAS_HISTORIA;
       case 'Literatura':
@@ -46,7 +48,8 @@ export const UnidadCard: React.FC<UnidadCardProps> = ({
   }, [materia]);
 
   const contenidosDisponibles = React.useMemo(() => {
-    const capitulos = contenidosPorMateria(materia);
+    const normalizedMateria = normalizeSubjectName(materia);
+    const capitulos = contenidosPorMateria(normalizedMateria);
     return capitulos.flatMap(cap => 
       cap.subtemas.map(sub => ({
         id: sub.id,

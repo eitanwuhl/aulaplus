@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ChevronDown, ChevronUp, Plus, BookOpen, Target } from 'lucide-react';
 import { Materia, contenidosPorMateria } from '@/data/catalogo';
+import { normalizeSubjectName } from '@/lib/subjectNormalizer';
 import { 
   COMPETENCIAS_HISTORIA, 
   getCompetenciasEspecificas 
@@ -34,27 +35,23 @@ export const BibliotecaElementos: React.FC<BibliotecaElementosProps> = ({
     );
   };
 
-  // Normalizar label para llamadas a catálogo ANEP
-  const materiaNormalizada: Materia = 
-    materia === 'Educación para la Ciudadanía' 
-      ? 'Formación para la ciudadanía' 
-      : materia as Materia;
+  // Normalizar materia para llamadas a catálogo y competencias
+  const materiaNormalizada = normalizeSubjectName(materia);
 
   const capitulos = contenidosPorMateria(materiaNormalizada);
   
   const competencias = React.useMemo(() => {
-    switch (materia) {
+    switch (materiaNormalizada) {
       case 'Historia':
         return COMPETENCIAS_HISTORIA;
       case 'Literatura':
         return COMPETENCIAS_LITERATURA;
       case 'Formación para la ciudadanía':
-      case 'Educación para la Ciudadanía':
         return COMPETENCIAS_CIUDADANIA;
       default:
         return [];
     }
-  }, [materia]);
+  }, [materiaNormalizada]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

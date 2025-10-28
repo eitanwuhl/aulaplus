@@ -6,6 +6,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { CheckCircle, AlertTriangle, Clock, Target, BookOpen } from 'lucide-react';
 import { UnidadDidactica } from '@/types/planificacion';
 import { Materia } from '@/data/catalogo';
+import { normalizeSubjectName } from '@/lib/subjectNormalizer';
 import { 
   COMPETENCIAS_HISTORIA, 
   getCompetenciasEspecificas 
@@ -28,7 +29,8 @@ export const ResumenPlanificacion: React.FC<ResumenPlanificacionProps> = ({
 }) => {
 
   const competencias = React.useMemo(() => {
-    switch (materia) {
+    const normalizedMateria = normalizeSubjectName(materia);
+    switch (normalizedMateria) {
       case 'Historia':
         return COMPETENCIAS_HISTORIA;
       case 'Literatura':

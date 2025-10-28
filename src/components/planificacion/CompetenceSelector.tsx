@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Plus, X, ChevronDown, ChevronRight } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { normalizeSubjectName } from '@/lib/subjectNormalizer';
 import { COMPETENCIAS_HISTORIA, getCompetenciasEspecificas } from '@/data/competencias';
 import { COMPETENCIAS_LITERATURA, getCompetenciasEspecificasLiteratura } from '@/data/competenciasLiteratura';
 import { COMPETENCIAS_CIUDADANIA, getCompetenciasEspecificasCiudadania } from '@/data/competenciasCiudadania';
@@ -33,21 +34,19 @@ export const CompetenceSelector: React.FC<CompetenceSelectorProps> = ({
 }) => {
   const [openChapters, setOpenChapters] = React.useState<string[]>([]);
   
+  const normalizedMateria = normalizeSubjectName(materia);
+  
   const competencias =
-    materia === 'Historia'
+    normalizedMateria === 'Historia'
       ? getCompetenciasEspecificas()
-      : materia === 'Literatura'
+      : normalizedMateria === 'Literatura'
       ? getCompetenciasEspecificasLiteratura()
-      : (materia === 'Educación para la Ciudadanía' || materia === 'Formación para la ciudadanía')
+      : normalizedMateria === 'Formación para la ciudadanía'
       ? getCompetenciasEspecificasCiudadania()
       : [];
 
   // Obtener contenidos del catálogo ANEP según la materia
-  const materiaCatalogo = materia === 'Educación para la Ciudadanía' 
-    ? 'Formación para la ciudadanía' as Materia
-    : materia as Materia;
-  
-  const contenidosCatalogo = contenidosPorMateria(materiaCatalogo);
+  const contenidosCatalogo = contenidosPorMateria(normalizedMateria);
   
   // Convertir contenidos seleccionados de string a array de IDs
   const contenidosSeleccionados = contenidosPrograma.split('\n')
