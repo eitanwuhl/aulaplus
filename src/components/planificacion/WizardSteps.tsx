@@ -103,6 +103,20 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
     onNext();
   }, [validation, focusFirstInvalidField, onNext]);
 
+  // Handle final step (Crear Planificación) with validation
+  const handleFinish = useCallback(() => {
+    if (!validation.valid) {
+      // Focus primer campo inválido (puede estar en pasos anteriores)
+      focusFirstInvalidField(validation);
+      
+      // No crear planificación
+      return;
+    }
+
+    // Validación exitosa: crear planificación
+    onFinish();
+  }, [validation, focusFirstInvalidField, onFinish]);
+
   const renderPaso0 = () => (
     <Card>
       <CardHeader>
@@ -865,9 +879,6 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
       {wizardData.paso === 2 && renderPaso2()}
       {wizardData.paso === 3 && renderPaso3()}
 
-      {/* TODO: Will be removed - inline errors now shown per field */}
-      {/* Global validation banner temporarily commented while migration in progress */}
-
       {/* Navigation buttons */}
       <div className="flex justify-between">
         <Button
@@ -887,8 +898,8 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           </Button>
         ) : (
           <Button
-            onClick={onFinish}
-            disabled={!validation.valid || isLoading}
+            onClick={handleFinish}
+            disabled={isLoading}
           >
             {isLoading ? 'Creando...' : 'Crear Planificación'}
           </Button>
