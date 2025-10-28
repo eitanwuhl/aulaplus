@@ -9,6 +9,7 @@ import { Plus, X, ChevronDown, ChevronRight } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { COMPETENCIAS_HISTORIA, getCompetenciasEspecificas } from '@/data/competencias';
 import { COMPETENCIAS_LITERATURA, getCompetenciasEspecificasLiteratura } from '@/data/competenciasLiteratura';
+import { COMPETENCIAS_CIUDADANIA, getCompetenciasEspecificasCiudadania } from '@/data/competenciasCiudadania';
 import { CATALOGO_JERARQUICO, contenidosPorMateria, type Materia } from '@/data/catalogo';
 
 interface CompetenceSelectorProps {
@@ -32,11 +33,14 @@ export const CompetenceSelector: React.FC<CompetenceSelectorProps> = ({
 }) => {
   const [openChapters, setOpenChapters] = React.useState<string[]>([]);
   
-  const competencias = materia === 'Historia' 
-    ? getCompetenciasEspecificas()
-    : materia === 'Literatura' 
-    ? getCompetenciasEspecificasLiteratura()
-    : [];
+  const competencias =
+    materia === 'Historia'
+      ? getCompetenciasEspecificas()
+      : materia === 'Literatura'
+      ? getCompetenciasEspecificasLiteratura()
+      : (materia === 'Educación para la Ciudadanía' || materia === 'Formación para la ciudadanía')
+      ? getCompetenciasEspecificasCiudadania()
+      : [];
 
   // Obtener contenidos del catálogo ANEP según la materia
   const materiaCatalogo = materia === 'Educación para la Ciudadanía' 
