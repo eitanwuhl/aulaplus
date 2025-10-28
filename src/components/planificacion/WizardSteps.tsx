@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -51,6 +51,57 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
     const error = validation.errors.find(e => e.fieldId === fieldId);
     return error?.message;
   };
+
+  // Focus and scroll to first invalid field
+  const focusFirstInvalidField = useCallback((validation: ValidationResult) => {
+    if (!validation.firstInvalidField) return;
+
+    const fieldId = validation.firstInvalidField;
+    
+    // Intentar encontrar el elemento por ID directo
+    let element = document.getElementById(fieldId) as HTMLElement | null;
+    
+    // Si no existe, intentar encontrar por aria-describedby (para campos dentro de portales)
+    if (!element) {
+      element = document.querySelector(`[aria-describedby="${fieldId}-error"]`) as HTMLElement | null;
+    }
+
+    // Para arrays dinámicos, buscar cualquier elemento que comience con el fieldId
+    if (!element && fieldId.includes('[')) {
+      const baseId = fieldId.split('[')[0];
+      element = document.querySelector(`[id^="${baseId}"]`) as HTMLElement | null;
+    }
+
+    if (element) {
+      // Scroll hacia el elemento con padding superior
+      element.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+        inline: 'nearest'
+      });
+
+      // Delay para permitir que el scroll termine antes de focus
+      setTimeout(() => {
+        if (element) {
+          element.focus({ preventScroll: true });
+        }
+      }, 300);
+    }
+  }, []);
+
+  // Handle Next button click with validation and focus
+  const handleNext = useCallback(() => {
+    if (!validation.valid) {
+      // Focus primer campo inválido
+      focusFirstInvalidField(validation);
+      
+      // No avanzar al siguiente paso
+      return;
+    }
+
+    // Validación exitosa: avanzar
+    onNext();
+  }, [validation, focusFirstInvalidField, onNext]);
 
   const renderPaso0 = () => (
     <Card>
@@ -446,10 +497,14 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div>
-          <Label htmlFor="horas">Horas Semanales *</Label>
+        {/* Campo: Horas Semanales */}
+        <FormField
+          id="horas_semanales"
+          label="Horas Semanales"
+          required
+          error={getError('horas_semanales')}
+        >
           <Input
-            id="horas"
             type="number"
             min="1"
             max="10"
@@ -462,11 +517,21 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
             }
             placeholder="Ej: 3"
           />
-        </div>
+        </FormField>
 
         <div>
           <div className="flex items-center justify-between mb-3">
-            <Label>Configuración de Horarios *</Label>
+            <div className="space-y-1">
+              <Label className={cn(getError('configuracion') && 'text-destructive')}>
+                Configuración de Horarios
+                <span className="text-destructive ml-1">*</span>
+              </Label>
+              {getError('configuracion') && (
+                <p className="text-sm text-destructive font-medium" role="alert">
+                  {getError('configuracion')}
+                </p>
+              )}
+            </div>
             <Button
               type="button"
               variant="outline"
@@ -479,62 +544,122 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           </div>
 
           <div className="space-y-3">
-            {(wizardData.horario?.configuracion || []).map((config, index) => (
-              <div key={index} className="flex items-center gap-3 p-3 border rounded-lg">
-                <Select
-                  value={config.dia}
-                  onValueChange={(value) => actualizarHorario(index, 'dia', value)}
-                >
-                  <SelectTrigger className="w-32">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="lunes">Lunes</SelectItem>
-                    <SelectItem value="martes">Martes</SelectItem>
-                    <SelectItem value="miércoles">Miércoles</SelectItem>
-                    <SelectItem value="jueves">Jueves</SelectItem>
-                    <SelectItem value="viernes">Viernes</SelectItem>
-                  </SelectContent>
-                </Select>
+            {(wizardData.horario?.configuracion || []).map((config, index) => {
+              const prefix = `configuracion[${index}]`;
+              return (
+                <div key={index} className="space-y-2 p-3 border rounded-lg">
+                  <div className="flex items-center gap-3">
+                    {/* Día */}
+                    <div className="flex-1">
+                      <Select
+                        value={config.dia}
+                        onValueChange={(value) => actualizarHorario(index, 'dia', value)}
+                      >
+                        <SelectTrigger 
+                          id={`${prefix}.dia`}
+                          className={cn(
+                            "w-32",
+                            getError(`${prefix}.dia`) && 'border-destructive focus:ring-destructive'
+                          )}
+                          aria-invalid={getError(`${prefix}.dia`) ? 'true' : 'false'}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="lunes">Lunes</SelectItem>
+                          <SelectItem value="martes">Martes</SelectItem>
+                          <SelectItem value="miércoles">Miércoles</SelectItem>
+                          <SelectItem value="jueves">Jueves</SelectItem>
+                          <SelectItem value="viernes">Viernes</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {getError(`${prefix}.dia`) && (
+                        <p className="text-xs text-destructive mt-1" role="alert">
+                          {getError(`${prefix}.dia`)}
+                        </p>
+                      )}
+                    </div>
 
-                <Input
-                  type="time"
-                  value={config.horaInicio}
-                  onChange={(e) => actualizarHorario(index, 'horaInicio', e.target.value)}
-                  className="w-24"
-                />
+                    {/* Hora Inicio */}
+                    <div>
+                      <Input
+                        id={`${prefix}.horaInicio`}
+                        type="time"
+                        value={config.horaInicio}
+                        onChange={(e) => actualizarHorario(index, 'horaInicio', e.target.value)}
+                        className={cn(
+                          "w-24",
+                          getError(`${prefix}.horaInicio`) && 'border-destructive'
+                        )}
+                        aria-invalid={getError(`${prefix}.horaInicio`) ? 'true' : 'false'}
+                      />
+                      {getError(`${prefix}.horaInicio`) && (
+                        <p className="text-xs text-destructive mt-1" role="alert">
+                          {getError(`${prefix}.horaInicio`)}
+                        </p>
+                      )}
+                    </div>
 
-                <span className="text-muted-foreground">a</span>
+                    <span className="text-muted-foreground">a</span>
 
-                <Input
-                  type="time"
-                  value={config.horaFin}
-                  onChange={(e) => actualizarHorario(index, 'horaFin', e.target.value)}
-                  className="w-24"
-                />
+                    {/* Hora Fin */}
+                    <div>
+                      <Input
+                        id={`${prefix}.horaFin`}
+                        type="time"
+                        value={config.horaFin}
+                        onChange={(e) => actualizarHorario(index, 'horaFin', e.target.value)}
+                        className={cn(
+                          "w-24",
+                          getError(`${prefix}.horaFin`) && 'border-destructive'
+                        )}
+                        aria-invalid={getError(`${prefix}.horaFin`) ? 'true' : 'false'}
+                      />
+                      {getError(`${prefix}.horaFin`) && (
+                        <p className="text-xs text-destructive mt-1" role="alert">
+                          {getError(`${prefix}.horaFin`)}
+                        </p>
+                      )}
+                    </div>
 
-                <Input
-                  type="number"
-                  min="15"
-                  max="240"
-                  step="15"
-                  value={config.duracionMinutos}
-                  onChange={(e) => actualizarHorario(index, 'duracionMinutos', parseInt(e.target.value))}
-                  className="w-20"
-                  placeholder="min"
-                />
+                    {/* Duración */}
+                    <div>
+                      <Input
+                        id={`${prefix}.duracionMinutos`}
+                        type="number"
+                        min="15"
+                        max="240"
+                        step="15"
+                        value={config.duracionMinutos}
+                        onChange={(e) => actualizarHorario(index, 'duracionMinutos', parseInt(e.target.value))}
+                        className={cn(
+                          "w-20",
+                          getError(`${prefix}.duracionMinutos`) && 'border-destructive'
+                        )}
+                        placeholder="min"
+                        aria-invalid={getError(`${prefix}.duracionMinutos`) ? 'true' : 'false'}
+                      />
+                      {getError(`${prefix}.duracionMinutos`) && (
+                        <p className="text-xs text-destructive mt-1" role="alert">
+                          {getError(`${prefix}.duracionMinutos`)}
+                        </p>
+                      )}
+                    </div>
 
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => eliminarHorario(index)}
-                  className="text-destructive hover:text-destructive"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
+                    {/* Botón eliminar */}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => eliminarHorario(index)}
+                      className="text-destructive hover:text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </CardContent>
@@ -554,42 +679,56 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
 
       {/* Unidades Didácticas */}
       {wizardData.contexto?.materia && (
-        <UnidadDidacticaBuilder
-          materia={wizardData.contexto.materia as Materia}
-          unidades={wizardData.enfoque?.unidades_didacticas || []}
-          onChange={(unidades) => 
-            onUpdateEnfoque({ 
-              ...wizardData.enfoque, 
-              unidades_didacticas: unidades 
-            })
-          }
-          totalClasesDisponibles={
-            wizardData.horario && wizardData.contexto?.fecha_inicio && wizardData.contexto?.fecha_fin
-              ? Math.floor(
-                  (new Date(wizardData.contexto.fecha_fin).getTime() - 
-                   new Date(wizardData.contexto.fecha_inicio).getTime()) / 
-                  (1000 * 60 * 60 * 24 * 7)
-                ) * wizardData.horario.horas_semanales
-              : 0
-          }
-        />
+        <div className="space-y-2">
+          <UnidadDidacticaBuilder
+            materia={wizardData.contexto.materia as Materia}
+            unidades={wizardData.enfoque?.unidades_didacticas || []}
+            onChange={(unidades) => 
+              onUpdateEnfoque({ 
+                ...wizardData.enfoque, 
+                unidades_didacticas: unidades 
+              })
+            }
+            totalClasesDisponibles={
+              wizardData.horario && wizardData.contexto?.fecha_inicio && wizardData.contexto?.fecha_fin
+                ? Math.floor(
+                    (new Date(wizardData.contexto.fecha_fin).getTime() - 
+                     new Date(wizardData.contexto.fecha_inicio).getTime()) / 
+                    (1000 * 60 * 60 * 24 * 7)
+                  ) * wizardData.horario.horas_semanales
+                : 0
+            }
+          />
+          {getError('unidades_didacticas') && (
+            <p className="text-sm text-destructive font-medium" role="alert">
+              {getError('unidades_didacticas')}
+            </p>
+          )}
+        </div>
       )}
 
       {/* Distribución de Modalidades */}
-      <ModalityDistribution
-        distribucion={wizardData.enfoque?.distribucion_modalidades || {
-          individual: 25,
-          pareja: 25,
-          grupos: 25,
-          toda_clase: 25
-        }}
-        onChange={(distribucion) => 
-          onUpdateEnfoque({ 
-            ...wizardData.enfoque, 
-            distribucion_modalidades: distribucion 
-          })
-        }
-      />
+      <div className="space-y-2">
+        <ModalityDistribution
+          distribucion={wizardData.enfoque?.distribucion_modalidades || {
+            individual: 25,
+            pareja: 25,
+            grupos: 25,
+            toda_clase: 25
+          }}
+          onChange={(distribucion) => 
+            onUpdateEnfoque({ 
+              ...wizardData.enfoque, 
+              distribucion_modalidades: distribucion 
+            })
+          }
+        />
+        {getError('distribucion_modalidades') && (
+          <p className="text-sm text-destructive font-medium" role="alert">
+            {getError('distribucion_modalidades')}
+          </p>
+        )}
+      </div>
 
       {/* Requerimientos del Docente */}
       <Card>
@@ -741,8 +880,8 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
 
         {wizardData.paso < 3 ? (
           <Button
-            onClick={onNext}
-            disabled={!validation.valid || isLoading}
+            onClick={handleNext}
+            disabled={isLoading}
           >
             Siguiente
           </Button>

@@ -24,7 +24,16 @@ const motivationalQuotes = [
   "Enseñar es aprender dos veces. - Joseph Joubert",
   "El buen maestro hace que el mal estudiante se convierta en bueno y el buen estudiante en superior. - Marva Collins",
   "La mejor enseñanza es la que utiliza la menor cantidad de palabras necesarias para la tarea. - Maria Montessori",
-  "Un profesor trabaja para la eternidad: nadie puede predecir dónde acabará su influencia. - Henry Brooks Adams"
+  "Un profesor trabaja para la eternidad: nadie puede predecir dónde acabará su influencia. - Henry Brooks Adams",
+  "La educación no es preparación para la vida; la educación es la vida misma. - John Dewey",
+  "El arte de enseñar es el arte de ayudar a descubrir. - Mark Van Doren",
+  "La enseñanza que deja huella no es la que se hace de cabeza a cabeza, sino de corazón a corazón. - Howard G. Hendricks",
+  "Un maestro inspira esperanza, enciende la imaginación y cultiva el amor por el aprendizaje. - Brad Henry",
+  "La educación es el pasaporte hacia el futuro, el mañana pertenece a aquellos que se preparan para él hoy. - Malcolm X",
+  "La guerra contra la ignorancia comienza en el aula. - Victor Hugo",
+  "Educaar la mente sin educar el corazón no es educar en absoluto. - Aristóteles",
+  "El maestro que intenta enseñar sin inspirar en el alumno el deseo de aprender está tratando de forjar un hierro frío. - Horace Mann",
+  "La educación es el movimiento de la oscuridad a la luz. - Allan Bloom"
 ];
 
 const notifications = [
