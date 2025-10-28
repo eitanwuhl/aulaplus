@@ -7,7 +7,7 @@ import { useToast } from '@/hooks/use-toast';
 import { usePlanificacionWizard } from '@/hooks/usePlanificacionWizard';
 import { useFullSessionGeneration } from '@/hooks/useFullSessionGeneration';
 import { WizardSteps } from '@/components/planificacion/WizardSteps';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/integrations/supabase/client';
 import {
   extractCompetenciesFromUnits,
   extractContenidosFromUnits,
@@ -530,9 +530,8 @@ export default function PlanificacionWizard() {
   // Mostrar pantalla de carga cuando se están generando los planes
   if (isGeneratingPlans || generationError) {
     return (
-      <div className="container max-w-4xl mx-auto py-8 px-4">
-        <div className="max-w-2xl mx-auto">
-          <Card className="text-center p-12">
+      <div className="max-w-6xl mx-auto py-8 px-4">
+        <Card className="text-center p-12">
             <div className="space-y-6">
               <div className="flex justify-center">
                 <div className="rounded-full bg-primary/10 p-6">
@@ -596,13 +595,12 @@ export default function PlanificacionWizard() {
               </div>
             </div>
           </Card>
-        </div>
       </div>
     );
   }
 
   return (
-    <div className="container max-w-4xl mx-auto py-8 px-4">
+    <div className="max-w-6xl mx-auto py-8 px-4">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <Button
@@ -623,23 +621,21 @@ export default function PlanificacionWizard() {
       </div>
 
       {/* Wizard Content */}
-      <div className="max-w-2xl mx-auto">
-        <WizardSteps
-          wizardData={wizardData}
-          onUpdateContexto={updateContexto}
-          onUpdateHorario={updateHorario}
-          onUpdateEnfoque={updateEnfoque}
-          onUpdateTipoPlanificacion={updateTipoPlanificacion}
-          onNext={handleNext}
-          onPrev={handlePrev}
-          onFinish={handleFinish}
-          isLoading={isLoading || isGenerating}
-          validation={validation}
-        />
-      </div>
+      <WizardSteps
+        wizardData={wizardData}
+        onUpdateContexto={updateContexto}
+        onUpdateHorario={updateHorario}
+        onUpdateEnfoque={updateEnfoque}
+        onUpdateTipoPlanificacion={updateTipoPlanificacion}
+        onNext={handleNext}
+        onPrev={handlePrev}
+        onFinish={handleFinish}
+        isLoading={isLoading || isGenerating}
+        validation={validation}
+      />
 
       {/* Info Card */}
-      <Card className="mt-8 max-w-2xl mx-auto">
+      <Card className="mt-8">
         <CardHeader>
           <CardTitle className="text-base">🤖 Planificación Automática con IA</CardTitle>
         </CardHeader>
