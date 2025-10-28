@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { FormField } from '@/components/ui/form-field';
 import { PlanningTextArea } from './PlanningTextArea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Calendar } from '@/components/ui/calendar';
@@ -13,6 +14,7 @@ import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
 import { WizardData, ConfiguracionHorario, DistribucionModalidades } from '@/types/planificacion';
+import { ValidationResult } from '@/types/validation';
 import { mockGroups } from '@/data/mockData';
 import { ModalityDistribution } from './ModalityDistribution';
 import { UnidadDidacticaBuilder } from './UnidadDidacticaBuilder';
@@ -28,7 +30,7 @@ interface WizardStepsProps {
   onPrev: () => void;
   onFinish: () => void;
   isLoading: boolean;
-  validation: { valid: boolean; errors: string[] };
+  validation: ValidationResult;
 }
 
 export const WizardSteps: React.FC<WizardStepsProps> = ({
@@ -44,6 +46,12 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
   validation
 }) => {
 
+  // Helper function to get error message for a specific field
+  const getError = (fieldId: string): string | undefined => {
+    const error = validation.errors.find(e => e.fieldId === fieldId);
+    return error?.message;
+  };
+
   const renderPaso0 = () => (
     <Card>
       <CardHeader>
@@ -54,8 +62,13 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-4">
-          <div>
-            <Label htmlFor="grupo">Grupo a Evaluar *</Label>
+          {/* Campo: Grupo */}
+          <FormField
+            id="grupo_id"
+            label="Grupo a Evaluar"
+            required
+            error={getError('grupo_id')}
+          >
             <Select
               value={wizardData.contexto?.grupo_id || ''}
               onValueChange={(value) => 
@@ -73,10 +86,15 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </FormField>
 
-          <div>
-            <Label htmlFor="materia">Materia *</Label>
+          {/* Campo: Materia */}
+          <FormField
+            id="materia"
+            label="Materia"
+            required
+            error={getError('materia')}
+          >
             <Select
               value={wizardData.contexto?.materia || ''}
               onValueChange={(value) => 
@@ -92,16 +110,31 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                 <SelectItem value="Educación para la Ciudadanía">Educación para la Ciudadanía</SelectItem>
               </SelectContent>
             </Select>
-          </div>
+          </FormField>
         </div>
 
         <div className="border-t pt-4 mt-4">
-          <Label className="text-base font-semibold mb-4 block">Tipo de Planificación *</Label>
-          <p className="text-sm text-muted-foreground mb-4">
-            Selecciona cómo quieres planificar tu curso
-          </p>
+          <div className="space-y-2">
+            <Label className={cn(
+              "text-base font-semibold block",
+              getError('tipo_planificacion') && 'text-destructive'
+            )}>
+              Tipo de Planificación
+              <span className="text-destructive ml-1">*</span>
+            </Label>
+            
+            {getError('tipo_planificacion') && (
+              <p className="text-sm text-destructive font-medium" role="alert">
+                {getError('tipo_planificacion')}
+              </p>
+            )}
+
+            <p className="text-sm text-muted-foreground">
+              Selecciona cómo quieres planificar tu curso
+            </p>
+          </div>
           
-          <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="grid grid-cols-2 gap-4 mt-4 mb-6">
             <div 
               className={cn(
                 "border-2 rounded-lg p-4 cursor-pointer transition-all",
@@ -123,10 +156,12 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
               <div className="flex items-center space-x-2 mb-2">
                 <input 
                   type="radio" 
+                  id="tipo_planificacion"
                   name="tipo-planificacion" 
                   checked={wizardData.tipo_planificacion === 'periodo_especifico'}
                   onChange={() => {}}
                   className="text-primary"
+                  aria-invalid={getError('tipo_planificacion') ? 'true' : 'false'}
                 />
                 <Label className="font-semibold">Período Específico</Label>
               </div>
@@ -176,11 +211,17 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                 Define el período con fechas específicas
               </p>
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label>Fecha de Inicio</Label>
+                {/* Campo: Fecha de Inicio */}
+                <FormField
+                  id="fecha_inicio"
+                  label="Fecha de Inicio"
+                  required
+                  error={getError('fecha_inicio')}
+                >
                   <Popover>
                     <PopoverTrigger asChild>
                       <Button
+                        id="fecha_inicio"
                         variant="outline"
                         className={cn(
                           "w-full justify-start text-left font-normal",
@@ -226,13 +267,19 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                       />
                     </PopoverContent>
                   </Popover>
-                </div>
+                </FormField>
 
-                <div>
-                  <Label>Fecha de Fin</Label>
+                {/* Campo: Fecha de Fin */}
+                <FormField
+                  id="fecha_fin"
+                  label="Fecha de Fin"
+                  required
+                  error={getError('fecha_fin')}
+                >
                   <Popover>
                     <PopoverTrigger asChild>
                       <Button
+                        id="fecha_fin"
                         variant="outline"
                         className={cn(
                           "w-full justify-start text-left font-normal",
@@ -263,11 +310,11 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                           // Deshabilitar fechas antes de hoy
                           if (date < today) return true;
                           
-                          // Deshabilitar fechas antes de la fecha de inicio
+                          // Deshabilitar fechas antes o iguales a la fecha de inicio
                           if (wizardData.contexto?.fecha_inicio) {
                             const startDate = new Date(wizardData.contexto.fecha_inicio);
                             startDate.setHours(0, 0, 0, 0);
-                            return date < startDate;
+                            return date <= startDate;
                           }
                           
                           return false;
@@ -277,18 +324,8 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                       />
                     </PopoverContent>
                   </Popover>
-                </div>
+                </FormField>
               </div>
-              
-              {/* Mensaje de validación inline */}
-              {wizardData.tipo_planificacion === 'periodo_especifico' && 
-               wizardData.contexto?.fecha_inicio && 
-               wizardData.contexto?.fecha_fin && 
-               wizardData.contexto.fecha_fin < wizardData.contexto.fecha_inicio && (
-                <p className="text-sm text-destructive mt-2">
-                  La fecha de fin debe ser igual o posterior a la fecha de inicio
-                </p>
-              )}
             </div>
           )}
 
@@ -298,10 +335,14 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                 Especifica la cantidad de sesiones y duración
               </p>
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="cantidad-sesiones">Cantidad de Sesiones</Label>
+                {/* Campo: Cantidad de Sesiones */}
+                <FormField
+                  id="cantidad_sesiones"
+                  label="Cantidad de Sesiones"
+                  required
+                  error={getError('cantidad_sesiones')}
+                >
                   <Input
-                    id="cantidad-sesiones"
                     type="number"
                     min="1"
                     max="50"
@@ -314,12 +355,16 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                     }
                     placeholder="Ej: 8"
                   />
-                </div>
+                </FormField>
 
-                <div>
-                  <Label htmlFor="duracion-sesion">Duración por Sesión (min)</Label>
+                {/* Campo: Duración por Sesión */}
+                <FormField
+                  id="duracion_por_sesion"
+                  label="Duración por Sesión (min)"
+                  required
+                  error={getError('duracion_por_sesion')}
+                >
                   <Input
-                    id="duracion-sesion"
                     type="number"
                     min="15"
                     max="240"
@@ -333,7 +378,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                     }
                     placeholder="Ej: 80"
                   />
-                </div>
+                </FormField>
               </div>
             </div>
           )}
@@ -681,17 +726,8 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
       {wizardData.paso === 2 && renderPaso2()}
       {wizardData.paso === 3 && renderPaso3()}
 
-      {/* Validation errors */}
-      {!validation.valid && validation.errors.length > 0 && (
-        <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4">
-          <h4 className="font-medium text-destructive mb-2">Errores de validación:</h4>
-          <ul className="text-sm text-destructive space-y-1">
-            {validation.errors.map((error, index) => (
-              <li key={index}>• {error}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* TODO: Will be removed - inline errors now shown per field */}
+      {/* Global validation banner temporarily commented while migration in progress */}
 
       {/* Navigation buttons */}
       <div className="flex justify-between">
