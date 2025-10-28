@@ -198,12 +198,29 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                       <Calendar
                         mode="single"
                         selected={wizardData.contexto?.fecha_inicio ? new Date(wizardData.contexto.fecha_inicio) : undefined}
-                        onSelect={(date) => 
-                          onUpdateContexto({ 
-                            ...wizardData.contexto, 
-                            fecha_inicio: date?.toISOString().split('T')[0] || '' 
-                          })
-                        }
+                        onSelect={(date) => {
+                          const newStartDate = date?.toISOString().split('T')[0] || '';
+                          const currentEndDate = wizardData.contexto?.fecha_fin;
+                          
+                          // Si la nueva fecha de inicio es posterior a la fecha de fin actual, ajustar fecha de fin
+                          if (newStartDate && currentEndDate && newStartDate > currentEndDate) {
+                            onUpdateContexto({ 
+                              ...wizardData.contexto, 
+                              fecha_inicio: newStartDate,
+                              fecha_fin: newStartDate
+                            });
+                          } else {
+                            onUpdateContexto({ 
+                              ...wizardData.contexto, 
+                              fecha_inicio: newStartDate
+                            });
+                          }
+                        }}
+                        disabled={(date) => {
+                          const today = new Date();
+                          today.setHours(0, 0, 0, 0);
+                          return date < today;
+                        }}
                         initialFocus
                         className="p-3 pointer-events-auto"
                       />
@@ -239,6 +256,22 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                             fecha_fin: date?.toISOString().split('T')[0] || '' 
                           })
                         }
+                        disabled={(date) => {
+                          const today = new Date();
+                          today.setHours(0, 0, 0, 0);
+                          
+                          // Deshabilitar fechas antes de hoy
+                          if (date < today) return true;
+                          
+                          // Deshabilitar fechas antes de la fecha de inicio
+                          if (wizardData.contexto?.fecha_inicio) {
+                            const startDate = new Date(wizardData.contexto.fecha_inicio);
+                            startDate.setHours(0, 0, 0, 0);
+                            return date < startDate;
+                          }
+                          
+                          return false;
+                        }}
                         initialFocus
                         className="p-3 pointer-events-auto"
                       />
@@ -246,6 +279,16 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                   </Popover>
                 </div>
               </div>
+              
+              {/* Mensaje de validación inline */}
+              {wizardData.tipo_planificacion === 'periodo_especifico' && 
+               wizardData.contexto?.fecha_inicio && 
+               wizardData.contexto?.fecha_fin && 
+               wizardData.contexto.fecha_fin < wizardData.contexto.fecha_inicio && (
+                <p className="text-sm text-destructive mt-2">
+                  La fecha de fin debe ser igual o posterior a la fecha de inicio
+                </p>
+              )}
             </div>
           )}
 
