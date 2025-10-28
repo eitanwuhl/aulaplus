@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { SesionClase, Planificacion, DistribucionModalidades } from '@/types/planificacion';
+import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 
 interface SessionGenerationContext {
   planificacion: Planificacion;
@@ -61,9 +62,9 @@ export const useFullSessionGeneration = () => {
           planificacion_id: planificacion.id,
           fecha: fecha.toISOString().split('T')[0],
           duracion_minutos: duracionReal,
-          competencias_anep: competenciasAll.slice(0, 3),
-          contenidos_anep: [unidad?.contenido_texto || 'Contenido general'],
-          criterios_logro_anep: generateCriteriosLogro(competenciasAll),
+          competencias_anep: normalizeArrayField(competenciasAll.slice(0, 3)),
+          contenidos_anep: normalizeArrayField([unidad?.contenido_texto || 'Contenido general']),
+          criterios_logro_anep: normalizeArrayField(generateCriteriosLogro(competenciasAll)),
           plan_desarrollo: planDesarrollo,
           diferenciacion: planificacion.estrategias_diferenciacion || '',
           evaluacion: {
@@ -71,7 +72,7 @@ export const useFullSessionGeneration = () => {
             configuracion: {},
             instrumento_generado: false
           },
-          recursos,
+          recursos: normalizeArrayField(recursos),
           observaciones: '',
           estado: 'planificada' as const,
           es_feriado: false,

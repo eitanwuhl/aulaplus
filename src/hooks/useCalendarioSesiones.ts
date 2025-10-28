@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { SesionClase, Planificacion } from '@/types/planificacion';
 import { useToast } from '@/hooks/use-toast';
+import { normalizeSessionArrayFields } from '@/lib/normalizeSupabaseArrays';
 
 export const useCalendarioSesiones = (planificacionId?: string) => {
   const [sesiones, setSesiones] = useState<SesionClase[]>([]);
@@ -110,9 +111,12 @@ export const useCalendarioSesiones = (planificacionId?: string) => {
   ) => {
     setIsLoading(true);
     try {
+      // Normalizar arrays antes de enviar a Supabase
+      const normalizedUpdates = normalizeSessionArrayFields(updates as any);
+      
       const { data, error } = await supabase
         .from('sesiones_clase')
-        .update(updates as any)
+        .update(normalizedUpdates as any)
         .eq('id', sesionId)
         .select()
         .single();

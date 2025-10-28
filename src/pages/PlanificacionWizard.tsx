@@ -13,6 +13,7 @@ import {
   extractContenidosFromUnits,
   buildCompetenciasContenidosMap,
 } from '@/lib/competencyExtractor';
+import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 
 // Función para generar automáticamente los planes de todas las sesiones
 const generarPlanesAutomaticamente = async (planificacionId: string, materia: string, nivel: string) => {
@@ -142,10 +143,10 @@ const generarPlanesAutomaticamente = async (planificacionId: string, materia: st
             .update({
               plan_desarrollo: { html_completo: data.plan_html },
               argumento_competencias: data.argumento_competencias,
-              recursos: Array.isArray(data.recursos) ? data.recursos : [],
-              contenidos_anep: contenidos,
-              competencias_anep: competenciasSesion, // Competencias específicas de esta sesión
-              criterios_logro_anep: criterios
+              recursos: normalizeArrayField(data.recursos),
+              contenidos_anep: normalizeArrayField(contenidos),
+              competencias_anep: normalizeArrayField(competenciasSesion),
+              criterios_logro_anep: normalizeArrayField(criterios)
             })
             .eq('id', sesion.id);
 
