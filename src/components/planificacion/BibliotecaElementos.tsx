@@ -34,7 +34,13 @@ export const BibliotecaElementos: React.FC<BibliotecaElementosProps> = ({
     );
   };
 
-  const capitulos = contenidosPorMateria(materia);
+  // Normalizar label para llamadas a catálogo ANEP
+  const materiaNormalizada: Materia = 
+    materia === 'Educación para la Ciudadanía' 
+      ? 'Formación para la ciudadanía' 
+      : materia as Materia;
+
+  const capitulos = contenidosPorMateria(materiaNormalizada);
   
   const competencias = React.useMemo(() => {
     switch (materia) {
@@ -60,7 +66,7 @@ export const BibliotecaElementos: React.FC<BibliotecaElementosProps> = ({
             Contenidos del Programa ANEP
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3 max-h-80 overflow-y-auto">
+        <CardContent className="space-y-3 max-h-96 overflow-y-auto">
           {capitulos.map((capitulo) => (
             <Collapsible
               key={capitulo.id}
@@ -129,7 +135,7 @@ export const BibliotecaElementos: React.FC<BibliotecaElementosProps> = ({
             Competencias Específicas
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3 max-h-80 overflow-y-auto">
+        <CardContent className="space-y-3 max-h-96 overflow-y-auto">
           {competencias.map((competencia) => (
             <TooltipProvider key={competencia.id}>
               <Tooltip>
