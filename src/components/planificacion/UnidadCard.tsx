@@ -8,6 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Trash2, ChevronDown, ChevronUp, Clock, Target, BookOpen } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { UnidadDidactica } from '@/types/planificacion';
 import { Materia, contenidosPorMateria, getSubtemaPorId } from '@/data/catalogo';
 import { normalizeSubjectName } from '@/lib/subjectNormalizer';
@@ -23,15 +24,26 @@ interface UnidadCardProps {
   materia: Materia;
   onActualizar: (unidad: UnidadDidactica) => void;
   onEliminar: () => void;
+  errorCompetencias?: string; // Error message for competencies validation
+  forceOpenCompetencias?: boolean; // Force open competencies panel
 }
 
 export const UnidadCard: React.FC<UnidadCardProps> = ({
   unidad,
   materia,
   onActualizar,
-  onEliminar
+  onEliminar,
+  errorCompetencias,
+  forceOpenCompetencias = false
 }) => {
   const [expandida, setExpandida] = useState(false);
+  
+  // Auto-open when there's an error
+  React.useEffect(() => {
+    if (forceOpenCompetencias && errorCompetencias) {
+      setExpandida(true);
+    }
+  }, [forceOpenCompetencias, errorCompetencias]);
 
   const competencias = React.useMemo(() => {
     const normalizedMateria = normalizeSubjectName(materia);
@@ -91,19 +103,52 @@ export const UnidadCard: React.FC<UnidadCardProps> = ({
   };
 
   return (
-    <Card className="border-l-4 border-l-primary">
+    <Card className={cn(
+      "border-l-4",
+      errorCompetencias ? "border-l-destructive" : "border-l-primary"
+    )}>
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Badge variant="outline">Unidad {unidad.orden}</Badge>
+            
+            {/* Competencies Trigger Button */}
             <Button
-              variant="ghost"
+              id={`competencias-trigger-${unidad.id}`}
+              variant={errorCompetencias ? "destructive" : "outline"}
               size="sm"
               onClick={() => setExpandida(!expandida)}
+              className={cn(
+                "gap-2",
+                errorCompetencias && "border-destructive"
+              )}
+              aria-expanded={expandida}
+              aria-controls={`competencias-panel-${unidad.id}`}
+              aria-invalid={errorCompetencias ? 'true' : 'false'}
             >
+              <Target className="h-4 w-4" />
+              <span className="text-sm font-medium">
+                {unidad.competencias_ids.length > 0 
+                  ? `${unidad.competencias_ids.length} competencia${unidad.competencias_ids.length > 1 ? 's' : ''} seleccionada${unidad.competencias_ids.length > 1 ? 's' : ''}`
+                  : 'Seleccionar competencias'
+                }
+              </span>
               {expandida ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-              <span className="text-sm">{expandida ? 'selecciona las competencias' : 'ver competencias'}</span>
             </Button>
+            
+            {/* Selection Count Badge */}
+            {unidad.competencias_ids.length > 0 && !errorCompetencias && (
+              <Badge variant="secondary" className="text-xs">
+                {unidad.competencias_ids.length}/{competencias.length}
+              </Badge>
+            )}
+            
+            {/* Error Badge */}
+            {errorCompetencias && (
+              <Badge variant="destructive" className="text-xs">
+                Requerido
+              </Badge>
+            )}
           </div>
           <Button
             variant="ghost"
@@ -184,8 +229,18 @@ export const UnidadCard: React.FC<UnidadCardProps> = ({
       </CardHeader>
 
       {expandida && (
-        <CardContent>
+        <CardContent id={`competencias-panel-${unidad.id}`} role="region" aria-labelledby={`competencias-trigger-${unidad.id}`}>
           <div className="space-y-4">
+            {/* Inline Error Message */}
+            {errorCompetencias && (
+              <div className="bg-destructive/10 border border-destructive rounded-md p-3" role="alert">
+                <p className="text-sm text-destructive font-medium flex items-center gap-2">
+                  <Target className="h-4 w-4" />
+                  {errorCompetencias}
+                </p>
+              </div>
+            )}
+            
             <div>
               <Label className="flex items-center gap-2 text-sm font-medium mb-3">
                 <Target className="h-4 w-4" />

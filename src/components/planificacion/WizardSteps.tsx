@@ -805,15 +805,11 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                   ) * wizardData.horario.horas_semanales
                 : 0
             }
+            errorCompetencias={getError('competencias_especificas')}
           />
           {getError('unidades_didacticas') && (
             <p className="text-sm text-destructive font-medium" role="alert">
               {getError('unidades_didacticas')}
-            </p>
-          )}
-          {getError('competencias_especificas') && (
-            <p className="text-sm text-destructive font-medium mt-2" role="alert">
-              {getError('competencias_especificas')}
             </p>
           )}
         </div>

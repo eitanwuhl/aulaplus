@@ -13,13 +13,15 @@ interface UnidadDidacticaBuilderProps {
   unidades: UnidadDidactica[];
   onChange: (unidades: UnidadDidactica[]) => void;
   totalClasesDisponibles?: number;
+  errorCompetencias?: string; // Error message for competencies validation
 }
 
 export const UnidadDidacticaBuilder: React.FC<UnidadDidacticaBuilderProps> = ({
   materia,
   unidades,
   onChange,
-  totalClasesDisponibles = 0
+  totalClasesDisponibles = 0,
+  errorCompetencias
 }) => {
   
   const crearNuevaUnidad = () => {
@@ -104,15 +106,23 @@ export const UnidadDidacticaBuilder: React.FC<UnidadDidacticaBuilderProps> = ({
             </div>
           ) : (
             <div className="space-y-4">
-              {unidades.map((unidad, index) => (
-                <UnidadCard
-                  key={unidad.id}
-                  unidad={unidad}
-                  materia={materia}
-                  onActualizar={(unidadActualizada) => actualizarUnidad(index, unidadActualizada)}
-                  onEliminar={() => eliminarUnidad(index)}
-                />
-              ))}
+              {unidades.map((unidad, index) => {
+                // Show error only for units without competencies when global error exists
+                const tieneCompetencias = unidad.competencias_ids && unidad.competencias_ids.length > 0;
+                const mostrarError = errorCompetencias && !tieneCompetencias;
+                
+                return (
+                  <UnidadCard
+                    key={unidad.id}
+                    unidad={unidad}
+                    materia={materia}
+                    onActualizar={(unidadActualizada) => actualizarUnidad(index, unidadActualizada)}
+                    onEliminar={() => eliminarUnidad(index)}
+                    errorCompetencias={mostrarError ? errorCompetencias : undefined}
+                    forceOpenCompetencias={mostrarError}
+                  />
+                );
+              })}
             </div>
           )}
         </CardContent>
