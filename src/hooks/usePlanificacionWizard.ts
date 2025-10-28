@@ -227,6 +227,17 @@ export const usePlanificacionWizard = () => {
           if (!firstInvalidField) firstInvalidField = 'unidades_didacticas';
         }
 
+        // Validar que al menos una unidad tenga competencias seleccionadas
+        const tieneCompetencias = unidades.some(u => u.competencias_ids && u.competencias_ids.length > 0);
+        if (unidades.length > 0 && !tieneCompetencias) {
+          errors.push({
+            fieldId: 'competencias_especificas',
+            message: 'Debes seleccionar al menos una competencia específica en tus unidades',
+            type: 'required'
+          });
+          if (!firstInvalidField) firstInvalidField = 'competencias_especificas';
+        }
+
         // Validar distribucion_modalidades (suma = 100%)
         const distribucion = wizardData.enfoque?.distribucion_modalidades;
         if (distribucion) {

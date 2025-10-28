@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback } from 'react';
+import React, { useMemo, useCallback, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -46,8 +46,24 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
   validation
 }) => {
 
-  // Helper function to get error message for a specific field
+  // Pristine state tracking: campos no muestran errores hasta que el usuario intente avanzar o interactúe
+  const [submitAttempted, setSubmitAttempted] = useState<Record<number, boolean>>({});
+  const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set());
+
+  // Helper para marcar un campo como "touched" (interactuado)
+  const markFieldAsTouched = useCallback((fieldId: string) => {
+    setTouchedFields(prev => new Set(prev).add(fieldId));
+  }, []);
+
+  // Helper function to get error message for a specific field (respeta pristine state)
   const getError = (fieldId: string): string | undefined => {
+    const currentPaso = wizardData.paso;
+    
+    // Si no se ha intentado enviar este paso Y el campo no ha sido touched, NO mostrar error
+    if (!submitAttempted[currentPaso] && !touchedFields.has(fieldId)) {
+      return undefined;
+    }
+
     const error = validation.errors.find(e => e.fieldId === fieldId);
     return error?.message;
   };
@@ -91,6 +107,11 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
 
   // Handle Next button click with validation and focus
   const handleNext = useCallback(() => {
+    const currentPaso = wizardData.paso;
+    
+    // Marcar que se intentó enviar este paso
+    setSubmitAttempted(prev => ({ ...prev, [currentPaso]: true }));
+
     if (!validation.valid) {
       // Focus primer campo inválido
       focusFirstInvalidField(validation);
@@ -101,10 +122,29 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
 
     // Validación exitosa: avanzar
     onNext();
-  }, [validation, focusFirstInvalidField, onNext]);
+  }, [wizardData.paso, validation, focusFirstInvalidField, onNext]);
+
+  // Handle Prev button click - resetear submitAttempted del paso actual
+  const handlePrev = useCallback(() => {
+    const currentPaso = wizardData.paso;
+    
+    // Resetear submitAttempted del paso actual (permitir volver a editar sin errores)
+    setSubmitAttempted(prev => {
+      const newState = { ...prev };
+      delete newState[currentPaso];
+      return newState;
+    });
+    
+    onPrev();
+  }, [wizardData.paso, onPrev]);
 
   // Handle final step (Crear Planificación) with validation
   const handleFinish = useCallback(() => {
+    const currentPaso = wizardData.paso;
+    
+    // Marcar que se intentó enviar
+    setSubmitAttempted(prev => ({ ...prev, [currentPaso]: true }));
+
     if (!validation.valid) {
       // Focus primer campo inválido (puede estar en pasos anteriores)
       focusFirstInvalidField(validation);
@@ -115,7 +155,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
 
     // Validación exitosa: crear planificación
     onFinish();
-  }, [validation, focusFirstInvalidField, onFinish]);
+  }, [wizardData.paso, validation, focusFirstInvalidField, onFinish]);
 
   const renderPaso0 = () => (
     <Card>
@@ -136,11 +176,12 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           >
             <Select
               value={wizardData.contexto?.grupo_id || ''}
-              onValueChange={(value) => 
-                onUpdateContexto({ ...wizardData.contexto, grupo_id: value })
-              }
+              onValueChange={(value) => {
+                onUpdateContexto({ ...wizardData.contexto, grupo_id: value });
+                markFieldAsTouched('grupo_id');
+              }}
             >
-              <SelectTrigger>
+              <SelectTrigger onBlur={() => markFieldAsTouched('grupo_id')}>
                 <SelectValue placeholder="Seleccionar grupo" />
               </SelectTrigger>
               <SelectContent>
@@ -162,11 +203,12 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           >
             <Select
               value={wizardData.contexto?.materia || ''}
-              onValueChange={(value) => 
-                onUpdateContexto({ ...wizardData.contexto, materia: value })
-              }
+              onValueChange={(value) => {
+                onUpdateContexto({ ...wizardData.contexto, materia: value });
+                markFieldAsTouched('materia');
+              }}
             >
-              <SelectTrigger>
+              <SelectTrigger onBlur={() => markFieldAsTouched('materia')}>
                 <SelectValue placeholder="Seleccionar materia" />
               </SelectTrigger>
               <SelectContent>
@@ -214,6 +256,18 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                   cantidad_sesiones: undefined,
                   duracion_por_sesion: undefined
                 });
+                
+                // Resetear touched de campos irrelevantes
+                setTouchedFields(prev => {
+                  const newSet = new Set(prev);
+                  newSet.delete('cantidad_sesiones');
+                  newSet.delete('duracion_por_sesion');
+                  return newSet;
+                });
+                
+                // Marcar tipo como touched
+                markFieldAsTouched('tipo_planificacion');
+                
                 // Actualizar tipo
                 onUpdateTipoPlanificacion('periodo_especifico');
               }}
@@ -249,6 +303,18 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                   fecha_inicio: undefined,
                   fecha_fin: undefined
                 });
+                
+                // Resetear touched de campos irrelevantes
+                setTouchedFields(prev => {
+                  const newSet = new Set(prev);
+                  newSet.delete('fecha_inicio');
+                  newSet.delete('fecha_fin');
+                  return newSet;
+                });
+                
+                // Marcar tipo como touched
+                markFieldAsTouched('tipo_planificacion');
+                
                 // Actualizar tipo
                 onUpdateTipoPlanificacion('sin_periodo');
               }}
@@ -292,6 +358,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                           "w-full justify-start text-left font-normal",
                           !wizardData.contexto?.fecha_inicio && "text-muted-foreground"
                         )}
+                        onBlur={() => markFieldAsTouched('fecha_inicio')}
                       >
                         <CalendarIcon className="mr-2 h-4 w-4" />
                         {wizardData.contexto?.fecha_inicio ? 
@@ -307,6 +374,8 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                         onSelect={(date) => {
                           const newStartDate = date?.toISOString().split('T')[0] || '';
                           const currentEndDate = wizardData.contexto?.fecha_fin;
+                          
+                          markFieldAsTouched('fecha_inicio');
                           
                           // Si la nueva fecha de inicio es posterior a la fecha de fin actual, ajustar fecha de fin
                           if (newStartDate && currentEndDate && newStartDate > currentEndDate) {
@@ -350,6 +419,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                           "w-full justify-start text-left font-normal",
                           !wizardData.contexto?.fecha_fin && "text-muted-foreground"
                         )}
+                        onBlur={() => markFieldAsTouched('fecha_fin')}
                       >
                         <CalendarIcon className="mr-2 h-4 w-4" />
                         {wizardData.contexto?.fecha_fin ? 
@@ -362,12 +432,13 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                       <Calendar
                         mode="single"
                         selected={wizardData.contexto?.fecha_fin ? new Date(wizardData.contexto.fecha_fin) : undefined}
-                        onSelect={(date) => 
+                        onSelect={(date) => {
+                          markFieldAsTouched('fecha_fin');
                           onUpdateContexto({ 
                             ...wizardData.contexto, 
                             fecha_fin: date?.toISOString().split('T')[0] || '' 
-                          })
-                        }
+                          });
+                        }}
                         disabled={(date) => {
                           const today = new Date();
                           today.setHours(0, 0, 0, 0);
@@ -412,12 +483,14 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                     min="1"
                     max="50"
                     value={wizardData.contexto?.cantidad_sesiones || ''}
-                    onChange={(e) => 
+                    onChange={(e) => {
                       onUpdateContexto({ 
                         ...wizardData.contexto, 
                         cantidad_sesiones: parseInt(e.target.value) || undefined
-                      })
-                    }
+                      });
+                      markFieldAsTouched('cantidad_sesiones');
+                    }}
+                    onBlur={() => markFieldAsTouched('cantidad_sesiones')}
                     placeholder="Ej: 8"
                   />
                 </FormField>
@@ -435,12 +508,14 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                     max="240"
                     step="15"
                     value={wizardData.contexto?.duracion_por_sesion || ''}
-                    onChange={(e) => 
+                    onChange={(e) => {
                       onUpdateContexto({ 
                         ...wizardData.contexto, 
                         duracion_por_sesion: parseInt(e.target.value) || undefined
-                      })
-                    }
+                      });
+                      markFieldAsTouched('duracion_por_sesion');
+                    }}
+                    onBlur={() => markFieldAsTouched('duracion_por_sesion')}
                     placeholder="Ej: 80"
                   />
                 </FormField>
@@ -523,12 +598,14 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
             min="1"
             max="10"
             value={wizardData.horario?.horas_semanales || ''}
-            onChange={(e) => 
+            onChange={(e) => {
               onUpdateHorario({
                 configuracion: wizardData.horario?.configuracion || [],
                 horas_semanales: parseInt(e.target.value) || 2
-              })
-            }
+              });
+              markFieldAsTouched('horas_semanales');
+            }}
+            onBlur={() => markFieldAsTouched('horas_semanales')}
             placeholder="Ej: 3"
           />
         </FormField>
@@ -567,7 +644,10 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                     <div className="flex-1">
                       <Select
                         value={config.dia}
-                        onValueChange={(value) => actualizarHorario(index, 'dia', value)}
+                        onValueChange={(value) => {
+                          actualizarHorario(index, 'dia', value);
+                          markFieldAsTouched(`${prefix}.dia`);
+                        }}
                       >
                         <SelectTrigger 
                           id={`${prefix}.dia`}
@@ -576,6 +656,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                             getError(`${prefix}.dia`) && 'border-destructive focus:ring-destructive'
                           )}
                           aria-invalid={getError(`${prefix}.dia`) ? 'true' : 'false'}
+                          onBlur={() => markFieldAsTouched(`${prefix}.dia`)}
                         >
                           <SelectValue />
                         </SelectTrigger>
@@ -600,7 +681,11 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                         id={`${prefix}.horaInicio`}
                         type="time"
                         value={config.horaInicio}
-                        onChange={(e) => actualizarHorario(index, 'horaInicio', e.target.value)}
+                        onChange={(e) => {
+                          actualizarHorario(index, 'horaInicio', e.target.value);
+                          markFieldAsTouched(`${prefix}.horaInicio`);
+                        }}
+                        onBlur={() => markFieldAsTouched(`${prefix}.horaInicio`)}
                         className={cn(
                           "w-24",
                           getError(`${prefix}.horaInicio`) && 'border-destructive'
@@ -622,7 +707,11 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                         id={`${prefix}.horaFin`}
                         type="time"
                         value={config.horaFin}
-                        onChange={(e) => actualizarHorario(index, 'horaFin', e.target.value)}
+                        onChange={(e) => {
+                          actualizarHorario(index, 'horaFin', e.target.value);
+                          markFieldAsTouched(`${prefix}.horaFin`);
+                        }}
+                        onBlur={() => markFieldAsTouched(`${prefix}.horaFin`)}
                         className={cn(
                           "w-24",
                           getError(`${prefix}.horaFin`) && 'border-destructive'
@@ -645,7 +734,11 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                         max="240"
                         step="15"
                         value={config.duracionMinutos}
-                        onChange={(e) => actualizarHorario(index, 'duracionMinutos', parseInt(e.target.value))}
+                        onChange={(e) => {
+                          actualizarHorario(index, 'duracionMinutos', parseInt(e.target.value));
+                          markFieldAsTouched(`${prefix}.duracionMinutos`);
+                        }}
+                        onBlur={() => markFieldAsTouched(`${prefix}.duracionMinutos`)}
                         className={cn(
                           "w-20",
                           getError(`${prefix}.duracionMinutos`) && 'border-destructive'
@@ -716,6 +809,11 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           {getError('unidades_didacticas') && (
             <p className="text-sm text-destructive font-medium" role="alert">
               {getError('unidades_didacticas')}
+            </p>
+          )}
+          {getError('competencias_especificas') && (
+            <p className="text-sm text-destructive font-medium mt-2" role="alert">
+              {getError('competencias_especificas')}
             </p>
           )}
         </div>
@@ -883,7 +981,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
       <div className="flex justify-between">
         <Button
           variant="outline"
-          onClick={onPrev}
+          onClick={handlePrev}
           disabled={wizardData.paso === 0 || isLoading}
         >
           Anterior
