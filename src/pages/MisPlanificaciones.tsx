@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ArrowLeft, Search, BarChart3, Calendar, FileText, Download, Folder, Plus, AlertTriangle, TrendingUp, Share2, Clock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/integrations/supabase/client';
 import { Planificacion, SesionClase } from '@/types/planificacion';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { DateRangePicker } from '@/components/ui/date-range-picker';

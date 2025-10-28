@@ -99,6 +99,7 @@ export const UnidadCard: React.FC<UnidadCardProps> = ({
               onClick={() => setExpandida(!expandida)}
             >
               {expandida ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              <span className="text-sm">{expandida ? 'selecciona las competencias' : 'ver competencias'}</span>
             </Button>
           </div>
           <Button

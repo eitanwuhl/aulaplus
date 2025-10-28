@@ -8,7 +8,7 @@ export default function PlanificacionClase() {
   const navigate = useNavigate();
 
   return (
-    <div className="container mx-auto py-8 px-4">
+    <div className="containerspace-y-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>

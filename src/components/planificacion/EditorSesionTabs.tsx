@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Clock, RefreshCw, FileText, Save, AlertTriangle, Wand2, FileDown, Bot, Sparkles } from 'lucide-react';
 import { SesionClase, PlanDesarrollo } from '@/types/planificacion';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { generateSessionPlan, generateBlockPlan } from '@/lib/sessionPlanGenerator';
 import { getCompetenciaById } from '@/data/competencias';

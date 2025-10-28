@@ -439,7 +439,7 @@ const EvaluacionesGrupo = () => {
         
         // Use AI to analyze and enhance the prototype
         try {
-          const { supabase } = await import('@/lib/supabase');
+          const { supabase } = await import('@/integrations/supabase/client');
           
           const { data, error } = await supabase.functions.invoke('modify-evaluation', {
             body: {
@@ -510,7 +510,7 @@ const EvaluacionesGrupo = () => {
     const versionStudentData = getVersionData();
     
     try {
-      const { supabase } = await import('@/lib/supabase');
+      const { supabase } = await import('@/integrations/supabase/client');
       const groupContext = {
         subject: esInterdisciplinaria ? materiasSeleccionadas.join(', ') : materia,
         subjects: esInterdisciplinaria ? materiasSeleccionadas : [materia],
@@ -636,7 +636,7 @@ const EvaluacionesGrupo = () => {
     if (!evaluation) return;
 
     await makeAPICall(async () => {
-      const { supabase } = await import('@/lib/supabase');
+      const { supabase } = await import('@/integrations/supabase/client');
       
       const { data, error } = await supabase.functions.invoke('modify-evaluation', {
         body: {
@@ -703,7 +703,7 @@ const EvaluacionesGrupo = () => {
     }
 
     await makeAPICall(async () => {
-      const { supabase } = await import('@/lib/supabase');
+      const { supabase } = await import('@/integrations/supabase/client');
       
       const feedbackText = [
         ...evaluation.feedback.liked.map(item => `Me gusta: ${item}`),
@@ -798,7 +798,7 @@ const EvaluacionesGrupo = () => {
 
   const generateAIResponse = async (userMessage: string, subject: string) => {
     try {
-      const { supabase } = await import('@/lib/supabase');
+      const { supabase } = await import('@/integrations/supabase/client');
       
       const { data, error } = await supabase.functions.invoke('modify-evaluation', {
         body: {

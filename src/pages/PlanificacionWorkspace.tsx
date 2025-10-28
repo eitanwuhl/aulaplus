@@ -8,7 +8,7 @@ import { CalendarioDnD } from '@/components/planificacion/CalendarioDnD';
 import { EditorSesionNuevo } from '@/components/planificacion/EditorSesionNuevo';
 import { useCalendarioSesiones } from '@/hooks/useCalendarioSesiones';
 import { Planificacion, SesionClase, DistribucionModalidades, ConfiguracionHorario } from '@/types/planificacion';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/integrations/supabase/client';
 
 export default function PlanificacionWorkspace() {
   const { id } = useParams<{ id: string }>();

@@ -56,7 +56,7 @@ const EnhancedEvaluationGenerator = ({ subject, selectedContent, groupName }: En
         
         // Use AI to analyze and enhance the uploaded prototype
         try {
-          const { supabase } = await import('@/lib/supabase');
+          const { supabase } = await import('@/integrations/supabase/client');
           
           const { data, error } = await supabase.functions.invoke('modify-evaluation', {
             body: {
@@ -96,7 +96,7 @@ const EnhancedEvaluationGenerator = ({ subject, selectedContent, groupName }: En
     
     try {
       // Generate AI content first
-      const { supabase } = await import('@/lib/supabase');
+      const { supabase } = await import('@/integrations/supabase/client');
       
       const context = `
         Materia: ${subject}
@@ -385,7 +385,7 @@ ${requirements ? `\n**TUS REQUERIMIENTOS INCLUIDOS:**\n${requirements}` : ''}`;
 
   const applyFeedbackToEvaluation = async (originalContent: string, feedback: any, title: string) => {
     try {
-      const { supabase } = await import('@/lib/supabase');
+      const { supabase } = await import('@/integrations/supabase/client');
       
       const suggestionsText = feedback.suggestions.join('. ');
       const modificationRequest = `Modifica esta evaluación según el siguiente feedback:
@@ -468,7 +468,7 @@ Por favor, aplica estos cambios manteniendo la estructura general de la evaluaci
 
   const generateAIResponse = async (userMessage: string, subject: string) => {
     try {
-      const { supabase } = await import('@/lib/supabase');
+      const { supabase } = await import('@/integrations/supabase/client');
       
       const { data, error } = await supabase.functions.invoke('modify-evaluation', {
         body: {

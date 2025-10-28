@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Clock, FileText, FileDown, Bot, Sparkles, Lightbulb, Loader2, Wand2 } from 'lucide-react';
 import { SesionClase } from '@/types/planificacion';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { PDFGenerator } from '@/components/PDFGenerator';
 
