@@ -43,6 +43,7 @@ export const BibliotecaElementos: React.FC<BibliotecaElementosProps> = ({
       case 'Literatura':
         return COMPETENCIAS_LITERATURA;
       case 'Formación para la ciudadanía':
+      case 'Educación para la Ciudadanía':
         return COMPETENCIAS_CIUDADANIA;
       default:
         return [];
