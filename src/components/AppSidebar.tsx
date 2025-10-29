@@ -27,7 +27,7 @@ import {
 
   const navigationItems = [
     { 
-      title: "Dashboard", 
+      title: "Inicio", 
       url: "/teacher-dashboard", 
       icon: Home,
       description: "Dashboard principal"
