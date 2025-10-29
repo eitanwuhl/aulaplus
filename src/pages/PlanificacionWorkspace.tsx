@@ -243,8 +243,9 @@ export default function PlanificacionWorkspace() {
         <div className="container mx-auto py-6">
           <div className="grid grid-cols-12 gap-6">
             
-            {/* Backlog (3 columnas) */}
-            <div className="col-span-3">
+            {/* Row 1: Sesiones Pendientes + Calendario */}
+            {/* Sesiones Pendientes (3 columnas en lg+, 12 en md-) */}
+            <div className="col-span-12 lg:col-span-3 lg:order-1">
               <BacklogSesiones
                 sesiones={sesiones}
                 onSesionSelect={handleSesionSelect}
@@ -252,8 +253,8 @@ export default function PlanificacionWorkspace() {
               />
             </div>
 
-            {/* Calendario (4 columnas) */}
-            <div className="col-span-4">
+            {/* Calendario (9 columnas en lg+, 12 en md-) */}
+            <div className="col-span-12 lg:col-span-9 lg:order-2">
               <CalendarioDnD
                 mesActual={mesActual}
                 sesiones={sesiones}
@@ -268,8 +269,8 @@ export default function PlanificacionWorkspace() {
               />
             </div>
 
-            {/* Editor de Sesión (5 columnas) */}
-            <div className="col-span-5">
+            {/* Row 2: Editor de Sesión (full width) */}
+            <div className="col-span-12 order-3">
               <EditorSesionNuevo
                 sesion={sesionSeleccionada}
                 onActualizar={handleActualizarSesion}

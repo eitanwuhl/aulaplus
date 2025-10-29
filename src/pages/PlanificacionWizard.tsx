@@ -542,14 +542,14 @@ export default function PlanificacionWizard() {
               
               <div className="space-y-2">
                 <h2 className="text-2xl font-bold">
-                  {generationError ? 'Error en la generación' : 'Generando planes automáticamente'}
+                  {generationError ? 'Error en la generación' : 'Generando planes automáticamente. Tu clase estaraá lista pronto!'}
                 </h2>
                 <p className="text-muted-foreground">
                   {generationError 
                     ? (generationError.includes('429') || generationError.includes('Too Many Requests')
                         ? 'Demasiadas solicitudes a la IA. El sistema está esperando antes de reintentar...'
-                        : 'Hubo un problema al generar los planes. Revisa la consola para más detalles.')
-                    : 'La IA está creando el contenido de todas las sesiones. Esto puede tomar varios minutos debido a los límites de velocidad de la API...'
+                        : 'Hubo un problema al generar los planes. Por favor, reintentar.')
+                    : 'La IA está creando el contenido de todas las sesiones. Esto puede tomar varios minutos porque queremos asegurar la mejor calidad posible.'
                   }
                 </p>
                 {!generationError && (

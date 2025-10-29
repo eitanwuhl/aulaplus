@@ -129,35 +129,6 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-
-        <SidebarGroup className="mt-6">
-          <SidebarGroupLabel className="text-xs font-medium text-sidebar-foreground/70 px-2 mb-2">
-            {open ? "Herramientas" : "Tools"}
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {toolsItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild className="h-10 rounded-md">
-                    <NavLink 
-                      to={item.url} 
-                      end 
-                      className={getNavClassName}
-                      title={!open ? item.description : undefined}
-                    >
-                      <item.icon className="h-4 w-4 shrink-0" />
-                      {open && (
-                        <div className="flex flex-col items-start">
-                          <span className="text-sm">{item.title}</span>
-                        </div>
-                      )}
-                    </NavLink>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
       </SidebarContent>
     </Sidebar>
   )

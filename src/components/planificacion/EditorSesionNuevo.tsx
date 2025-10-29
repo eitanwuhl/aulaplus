@@ -339,10 +339,6 @@ export function EditorSesionNuevo({
                 </span>
               )}
             </div>
-            {/* Debug info */}
-            <div className="mt-2 text-xs text-gray-500">
-              Debug: competencias_anep = {JSON.stringify(sesion.competencias_anep)}
-            </div>
           </div>
         </CardContent>
       </Card>
