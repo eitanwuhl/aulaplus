@@ -14,7 +14,9 @@ serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    // Note: Using SERVICE_ROLE_KEY instead of SUPABASE_SERVICE_ROLE_KEY
+    // because Supabase reserves the SUPABASE_* prefix for system secrets
+    const supabaseServiceKey = Deno.env.get('SERVICE_ROLE_KEY')!;
     
     // Create admin client
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
