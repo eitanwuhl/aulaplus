@@ -4,10 +4,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { ArrowLeft, Search, BarChart3, Calendar, FileText, Download, Folder, Plus, AlertTriangle, TrendingUp, Share2, Clock } from 'lucide-react';
+import { ArrowLeft, Search, BarChart3, Calendar, FileText, Download, Folder, Plus, AlertTriangle, TrendingUp, Share2, Clock, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Planificacion, SesionClase } from '@/types/planificacion';
@@ -65,18 +65,38 @@ const MisPlanificaciones: React.FC = () => {
     psicopedagogico: false
   });
 
+  // State for multi-selection and delete
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
   // Cargar planificaciones y sesiones
   useEffect(() => {
     const cargarDatos = async () => {
       setIsLoading(true);
       try {
-        // Cargar planificaciones
+        // Cargar planificaciones (solo guardadas explícitamente y no eliminadas)
         const { data: planData, error: planError } = await supabase
           .from('planificaciones')
           .select('*')
-          .order('created_at', { ascending: false });
+          .eq('is_saved', true)
+          .is('deleted_at', null)
+          .order('saved_at', { ascending: false });
 
-        if (planError) throw planError;
+        if (planError) {
+          // GUARDRAIL: Si la columna is_saved no existe (PGRST204), mostrar error claro
+          if (planError.code === 'PGRST204' || planError.message.includes('is_saved')) {
+            console.error('❌ MIGRACIÓN FALTANTE: La columna is_saved no existe en planificaciones');
+            toast({
+              title: "Error de Base de Datos",
+              description: "Falta aplicar migración de planificaciones. Contacta al administrador o ejecuta: supabase db push",
+              variant: "destructive"
+            });
+            setIsLoading(false);
+            return;
+          }
+          throw planError;
+        }
 
         // Cargar sesiones
         const { data: sesionData, error: sesionError } = await supabase
@@ -186,6 +206,80 @@ const MisPlanificaciones: React.FC = () => {
   const materiasUnicas = [...new Set(planificaciones.map(p => p.materia))];
   const gruposUnicos = [...new Set(planificaciones.map(p => p.grupo_id))];
   const carpetasUnicas = [...new Set(planificaciones.map(p => p.carpeta).filter(Boolean))];
+
+  // Handlers for multi-selection
+  const handleToggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+      } else {
+        newSet.add(id);
+      }
+      return newSet;
+    });
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selectedIds.size === planificacionesFiltradas.length && planificacionesFiltradas.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(planificacionesFiltradas.map(p => p.id)));
+    }
+  };
+
+  // Handler for soft delete
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+
+    setIsDeleting(true);
+    try {
+      const idsArray = Array.from(selectedIds);
+      
+      // Soft delete: update deleted_at timestamp
+      const { error } = await supabase
+        .from('planificaciones')
+        .update({ deleted_at: new Date().toISOString() })
+        .in('id', idsArray);
+
+      if (error) {
+        // GUARDRAIL: Si la columna deleted_at no existe (PGRST204), mostrar error claro
+        if (error.code === 'PGRST204' || error.message.includes('deleted_at')) {
+          console.error('❌ MIGRACIÓN FALTANTE: La columna deleted_at no existe en planificaciones');
+          toast({
+            title: "Error de Base de Datos",
+            description: "Falta aplicar migración. Contacta al administrador o ejecuta: supabase db push",
+            variant: "destructive"
+          });
+          setIsDeleting(false);
+          setDeleteConfirmOpen(false);
+          return;
+        }
+        throw error;
+      }
+
+      // Remove from local state with animation (filter out deleted ones)
+      setPlanificaciones(prev => prev.filter(plan => !selectedIds.has(plan.id)));
+      
+      setSelectedIds(new Set());
+      setDeleteConfirmOpen(false);
+
+      toast({
+        title: "Planificaciones eliminadas",
+        description: `Se eliminaron ${idsArray.length} planificación${idsArray.length > 1 ? 'es' : ''}`,
+      });
+
+    } catch (error) {
+      console.error('Error deleting planificaciones:', error);
+      toast({
+        title: "Error",
+        description: "No se pudieron eliminar las planificaciones",
+        variant: "destructive"
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Asignar carpeta
   const handleAsignarCarpeta = async () => {
@@ -683,33 +777,84 @@ const MisPlanificaciones: React.FC = () => {
       {/* Lista de Planificaciones */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Calendar className="w-5 h-5" />
-            Planificaciones Guardadas
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <Calendar className="w-5 h-5" />
+              Planificaciones Guardadas
+            </CardTitle>
+            
+            {/* Toolbar: Select all + Delete button */}
+            {planificacionesFiltradas.length > 0 && (
+              <div className="flex items-center gap-3">
+                {/* Select all checkbox */}
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="select-all"
+                    checked={selectedIds.size === planificacionesFiltradas.length && planificacionesFiltradas.length > 0}
+                    onCheckedChange={handleToggleSelectAll}
+                  />
+                  <Label htmlFor="select-all" className="text-sm cursor-pointer">
+                    Seleccionar todas
+                  </Label>
+                </div>
+
+                {/* Delete button (only enabled when items are selected) */}
+                <Button
+                  variant={selectedIds.size > 0 ? "destructive" : "outline"}
+                  size="sm"
+                  disabled={selectedIds.size === 0}
+                  onClick={() => setDeleteConfirmOpen(true)}
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  {selectedIds.size > 0 ? `Eliminar (${selectedIds.size})` : 'Eliminar'}
+                </Button>
+              </div>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {planificacionesFiltradas.length > 0 ? (
             <div className="space-y-4">
               {planificacionesFiltradas.map((plan) => (
-                <Card key={plan.id} className="hover:shadow-md transition-shadow cursor-pointer"
-                      onClick={() => navigate(`/planificacion/${plan.id}`)}>
+                <Card 
+                  key={plan.id} 
+                  className="hover:shadow-md transition-all duration-300"
+                  style={{
+                    opacity: selectedIds.has(plan.id) ? 0.7 : 1
+                  }}
+                >
                   <CardContent className="p-4">
-                    <div className="flex items-center justify-between">
-                      <div className="space-y-1">
-                        <h3 className="font-semibold text-foreground">
-                          {plan.materia} - {plan.grupo_id}
-                        </h3>
-                        <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                          <span>
-                            {new Date(plan.fecha_inicio).toLocaleDateString('es-ES')} - {' '}
-                            {new Date(plan.fecha_fin).toLocaleDateString('es-ES')}
-                          </span>
-                          <span>{plan.horas_semanales} horas semanales</span>
+                    <div className="flex items-center gap-4">
+                      {/* Checkbox for selection */}
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          checked={selectedIds.has(plan.id)}
+                          onCheckedChange={() => handleToggleSelect(plan.id)}
+                        />
+                      </div>
+
+                      {/* Plan info (clickable to navigate) */}
+                      <div 
+                        className="flex-1 cursor-pointer"
+                        onClick={() => navigate(`/planificacion/${plan.id}`)}
+                      >
+                        <div className="space-y-1">
+                          <h3 className="font-semibold text-foreground">
+                            {/* Show custom nombre if exists, else fallback to materia - grupo_id */}
+                            {plan.nombre || `${plan.materia} - ${plan.grupo_id}`}
+                          </h3>
+                          <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                            <span>
+                              {new Date(plan.fecha_inicio).toLocaleDateString('es-ES')} - {' '}
+                              {new Date(plan.fecha_fin).toLocaleDateString('es-ES')}
+                            </span>
+                            <span>{plan.horas_semanales} horas semanales</span>
+                          </div>
                         </div>
                       </div>
                       
-                      <div className="flex items-center gap-2">
+                      {/* Badges and actions (with stopPropagation) */}
+                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                         <Badge variant="outline">
                           {sesiones.filter(s => s.planificacion_id === plan.id).length} sesiones
                         </Badge>
@@ -762,13 +907,13 @@ const MisPlanificaciones: React.FC = () => {
                            variant="ghost" 
                            size="sm" 
                            className="h-6 px-2"
-                        onClick={() => setCompartirModal({ 
-                          open: true, 
-                          planificacion: plan, 
-                          loading: false, 
-                          direccion: false, 
-                          psicopedagogico: false 
-                        })}
+                           onClick={() => setCompartirModal({ 
+                             open: true, 
+                             planificacion: plan, 
+                             loading: false, 
+                             direccion: false, 
+                             psicopedagogico: false 
+                           })}
                          >
                            <Share2 className="h-3 w-3 mr-1" />
                            Compartir
@@ -863,6 +1008,42 @@ const MisPlanificaciones: React.FC = () => {
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>¿Eliminar planificaciones?</DialogTitle>
+            <DialogDescription>
+              Estás a punto de eliminar {selectedIds.size} planificación{selectedIds.size > 1 ? 'es' : ''}. 
+              Esta acción se puede revertir desde la base de datos si es necesario.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="py-4">
+            <p className="text-sm text-muted-foreground">
+              Las planificaciones seleccionadas ya no aparecerán en tu lista.
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setDeleteConfirmOpen(false)}
+              disabled={isDeleting}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              variant="destructive"
+              onClick={handleDeleteSelected}
+              disabled={isDeleting}
+            >
+              {isDeleting ? 'Eliminando...' : 'Eliminar'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
