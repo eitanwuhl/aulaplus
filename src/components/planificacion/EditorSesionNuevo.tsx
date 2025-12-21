@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,8 @@ import { SesionClase } from '@/types/planificacion';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { PDFGenerator } from '@/components/PDFGenerator';
+import { parsePlan, buildPlanHtml, ParsedPlan } from '@/lib/planParser';
+import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 
 interface EditorSesionNuevoProps {
   sesion: SesionClase | null;
@@ -19,6 +21,83 @@ interface EditorSesionNuevoProps {
   materia?: string;
   nivel?: string;
 }
+
+// Helper: Check if HTML has actual content
+const hasHtml = (html?: string): boolean => {
+  if (!html) return false;
+  const stripped = html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+  return stripped.length > 0;
+};
+
+// Helper: Remove any stray section headings and resource blocks
+const sanitizeHeadings = (html: string): string => {
+  if (!html) return '';
+  
+  // Remove h1-h6 tags that contain section names (already shown by component)
+  let cleaned = html.replace(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi, (match, inner) => {
+    const text = inner.replace(/<[^>]*>/g, '').trim().toLowerCase();
+    const normalized = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s*\(\d+\s*min\)\s*/gi, '');
+    
+    // Remove if it's a section heading (inicio/desarrollo/cierre/diferenciacion)
+    if (/^(inicio|apertura|desarrollo|cierre|diferenciaci[oó]n|adaptaciones?)$/.test(normalized)) {
+      return '';
+    }
+    
+    // Keep other headings but demote to strong paragraph
+    return text ? `<p><strong>${inner}</strong></p>` : '';
+  });
+  
+  // PHASE 4: Remove any residual resource blocks that might appear in content
+  // IMPORTANT: These patterns target explicit resource BLOCKS only (e.g., "<p><strong>Recursos:</strong> ...</p>").
+  // They do NOT remove inline narrative mentions like "utilizaremos recursos digitales" in plain text.
+  // Remove paragraphs that start with "Recursos:" or "Materiales:"
+  cleaned = cleaned.replace(/<p[^>]*>\s*<strong>\s*(?:recursos?|material(?:es)?)\s*(?:necesarios?)?\s*:?\s*<\/strong>[\s\S]*?<\/p>/gi, '');
+  
+  // Remove resource lists (ul/ol following resource headers)
+  cleaned = cleaned.replace(/<p[^>]*>\s*(?:recursos?|material(?:es)?)\s*:?\s*<\/p>\s*<[uo]l[^>]*>[\s\S]*?<\/[uo]l>/gi, '');
+  
+  return cleaned.trim();
+};
+
+// Helper: Strip leading duplicate section heading if present
+const stripLeadingDuplicateSectionHeading = (html: string, section: 'inicio' | 'desarrollo' | 'cierre'): string => {
+  if (!html) return '';
+  
+  const sectionLabel = section.toLowerCase();
+  let out = html;
+  
+  // Try to match and remove leading <h1-6>...</h>
+  const headingMatch = out.match(/^\s*<(h[1-6])[^>]*>([\s\S]*?)<\/\1>\s*/i);
+  if (headingMatch) {
+    const innerText = headingMatch[2].replace(/<[^>]*>/g, '').trim();
+    const normalized = innerText.toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s*\(\d+\s*min\)\s*/gi, '');
+    
+    if (normalized === sectionLabel) {
+      out = out.slice(headingMatch[0].length);
+    }
+  }
+  
+  // Try to match and remove leading <p><strong>...</strong></p>
+  if (out === html) {
+    const strongMatch = out.match(/^\s*<p[^>]*>\s*<strong>([\s\S]*?)<\/strong>\s*<\/p>\s*/i);
+    if (strongMatch) {
+      const innerText = strongMatch[1].replace(/<[^>]*>/g, '').trim();
+      const normalized = innerText.toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s*\(\d+\s*min\)\s*/gi, '');
+      
+      if (normalized === sectionLabel) {
+        out = out.slice(strongMatch[0].length);
+      }
+    }
+  }
+  
+  return out.trim();
+};
 
 export function EditorSesionNuevo({ 
   sesion, 
@@ -34,9 +113,42 @@ export function EditorSesionNuevo({
   const [argumentoCompetencias, setArgumentoCompetencias] = useState('');
   const [planHtml, setPlanHtml] = useState('');
   const [recursos, setRecursos] = useState<string[]>([]);
+  const [recursosAdicionales, setRecursosAdicionales] = useState<string[]>([]); // PHASE 4: Manual resources
   const [evaluacionDocente, setEvaluacionDocente] = useState('');
   const [isModificando, setIsModificando] = useState(false);
   const [instruccionesModificacion, setInstruccionesModificacion] = useState('');
+
+  // PHASE 3: Parse plan for structured rendering
+  // NOTE: This parsing is for DISPLAY purposes only in the UI and PDF.
+  // Generation and modification flows already use parsePlan/buildPlanHtml when SAVING to DB (Phase 2).
+  // This memoized value splits the HTML into sections (Inicio/Desarrollo/Cierre) and extracts resources.
+  const planParsed = useMemo<ParsedPlan>(() => {
+    if (!planHtml || planHtml.trim().length === 0) {
+      return {
+        inicio: '',
+        desarrollo: '',
+        cierre: '',
+        recursos: recursos || [],
+        diferenciacion: undefined,
+        durations: undefined
+      };
+    }
+
+    try {
+      return parsePlan(planHtml, recursos);
+    } catch (error) {
+      console.error('Error parsing plan for rendering:', error);
+      // Fallback to empty structure if parsing fails
+      return {
+        inicio: '',
+        desarrollo: '',
+        cierre: '',
+        recursos: recursos || [],
+        diferenciacion: undefined,
+        durations: undefined
+      };
+    }
+  }, [planHtml, recursos]);
 
   // Cargar datos de la sesión
   useEffect(() => {
@@ -61,6 +173,32 @@ export function EditorSesionNuevo({
       console.log('No hay sesión seleccionada');
     }
   }, [sesion]);
+
+  // PHASE 4: Separate auto-detected resources from manual resources
+  // This effect maintains the distinction between:
+  // - Auto-detected: Resources extracted from plan HTML by the parser (shown in Card 1, read-only).
+  // - Manual: Additional resources added by the teacher (shown in Card 2, editable).
+  // When plans are regenerated, manual resources are preserved (merged with new auto-detected).
+  useEffect(() => {
+    if (!sesion) {
+      setRecursosAdicionales([]);
+      return;
+    }
+
+    // Auto-detected resources from parsed plan
+    const autoResources = (planParsed.recursos ?? []).map(r => r.trim().toLowerCase());
+    
+    // All resources currently in DB (canonical source: auto + manual merged)
+    const allFromDb = (recursos ?? []).map(r => r.trim());
+    
+    // Manual resources = items in DB that are NOT auto-detected
+    const manual = allFromDb.filter(r => {
+      const normalized = r.trim().toLowerCase();
+      return normalized.length > 0 && !autoResources.includes(normalized);
+    });
+    
+    setRecursosAdicionales(manual);
+  }, [sesion?.id, planParsed.recursos, recursos]);
 
   // Handler para solicitar modificaciones a la IA
   const handleSolicitarModificacion = async () => {
@@ -100,16 +238,27 @@ export function EditorSesionNuevo({
         throw new Error('Respuesta sin estructura HTML válida');
       }
 
+      // PHASE 2: Parse and sanitize AI-modified HTML before saving
+      const fallbackRecursos = Array.isArray(data.recursos)
+        ? data.recursos
+        : normalizeArrayField(data.recursos);
+      const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
+      const sanitizedHtml = buildPlanHtml(parsedPlan);
+      
+      // PHASE 4: Preserve manual resources when regenerating plan
+      const autoResources = normalizeArrayField(parsedPlan.recursos);
+      const mergedResources = mergeAutoAndManualResources(autoResources, recursosAdicionales);
+
       // Actualizar estados locales
-      setPlanHtml(data.plan_html);
+      setPlanHtml(sanitizedHtml);
       setArgumentoCompetencias(data.argumento_competencias || '');
-      setRecursos(Array.isArray(data.recursos) ? data.recursos : []);
+      setRecursos(mergedResources);
 
       // Persistir en DB
       await onActualizar({
-        plan_desarrollo: { html_completo: data.plan_html },
+        plan_desarrollo: { html_completo: sanitizedHtml },
         argumento_competencias: data.argumento_competencias,
-        recursos: Array.isArray(data.recursos) ? data.recursos : []
+        recursos: mergedResources
       });
 
       toast({
@@ -130,7 +279,7 @@ export function EditorSesionNuevo({
     }
   };
 
-  // Handler para generación inicial
+  // Handler para generación inicial (fallback, normalmente auto-generation en workspace lo maneja)
   const handleGenerarPlanInicial = async () => {
     if (!sesion) return;
 
@@ -146,7 +295,7 @@ export function EditorSesionNuevo({
         contenidos: sesion.contenidos_anep || [],
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
-        instruccionesDocente: instruccionesIA || undefined
+        instruccionesDocente: undefined
       };
 
       console.log('Generando plan inicial con payload:', payload);
@@ -167,24 +316,33 @@ export function EditorSesionNuevo({
         throw new Error('Respuesta sin estructura HTML válida');
       }
 
+      // PHASE 2: Parse and sanitize AI-generated HTML before saving
+      const fallbackRecursos = Array.isArray(data.recursos)
+        ? data.recursos
+        : normalizeArrayField(data.recursos);
+      const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
+      const sanitizedHtml = buildPlanHtml(parsedPlan);
+      
+      // PHASE 4: Preserve manual resources when regenerating plan
+      const autoResources = normalizeArrayField(parsedPlan.recursos);
+      const mergedResources = mergeAutoAndManualResources(autoResources, recursosAdicionales);
+
       // Actualizar estados locales
-      setPlanHtml(data.plan_html);
+      setPlanHtml(sanitizedHtml);
       setArgumentoCompetencias(data.argumento_competencias || '');
-      setRecursos(Array.isArray(data.recursos) ? data.recursos : []);
+      setRecursos(mergedResources);
 
       // Persistir en DB
       await onActualizar({
-        plan_desarrollo: { html_completo: data.plan_html },
+        plan_desarrollo: { html_completo: sanitizedHtml },
         argumento_competencias: data.argumento_competencias,
-        recursos: Array.isArray(data.recursos) ? data.recursos : []
+        recursos: mergedResources
       });
 
       toast({
         title: "Plan generado",
         description: "Contenido creado exitosamente"
       });
-
-      setInstruccionesIA('');
     } catch (error: any) {
       console.error('Error generando plan:', error);
       
@@ -242,8 +400,37 @@ export function EditorSesionNuevo({
     }
   };
 
+  // PHASE 4: Merge auto-detected and manual resources
+  // Combines auto-detected (from parser) and manual (teacher-added) resources into a single
+  // canonical list for saving to DB. Normalizes (trim, remove empty), de-duplicates (case-insensitive),
+  // and sorts alphabetically. This is the source of truth for session.recursos in the database.
+  const mergeAutoAndManualResources = (auto: string[], manual: string[]): string[] => {
+    const allResources = [...auto, ...manual];
+    
+    // Normalize: trim, remove empty
+    const normalized = allResources
+      .map(r => r.trim())
+      .filter(r => r.length > 0);
+    
+    // De-duplicate case-insensitively (keeps first occurrence)
+    const uniqueMap = new Map<string, string>();
+    normalized.forEach(resource => {
+      const key = resource.toLowerCase();
+      if (!uniqueMap.has(key)) {
+        uniqueMap.set(key, resource);
+      }
+    });
+    
+    return Array.from(uniqueMap.values()).sort();
+  };
+
   const handleGuardarRecursos = async () => {
-    await onActualizar({ recursos });
+    // PHASE 4: Merge auto-detected resources with manual additions
+    const autoResources = planParsed.recursos ?? [];
+    const merged = mergeAutoAndManualResources(autoResources, recursosAdicionales);
+    
+    await onActualizar({ recursos: merged });
+    setRecursos(merged); // Update local state to reflect saved data
     toast({ title: "Recursos guardados" });
   };
 
@@ -375,18 +562,115 @@ export function EditorSesionNuevo({
           </TabsList>
 
           <TabsContent value="clase" className="space-y-4">
-            <div 
-              className="w-full prose max-w-none p-6 bg-card rounded-lg border 
-                prose-headings:font-bold prose-headings:font-black
-                prose-h1:text-2xl prose-h1:font-black prose-h1:mt-8 prose-h1:mb-4
-                prose-h2:text-xl prose-h2:font-bold prose-h2:mt-6 prose-h2:mb-4 prose-h2:text-primary
-                prose-h3:text-lg prose-h3:font-semibold prose-h3:mt-4 prose-h3:mb-3
-                prose-p:mb-4 prose-p:leading-relaxed
-                prose-ul:mb-4 prose-ul:ml-4
-                prose-li:mb-2
-                prose-strong:font-bold prose-strong:text-primary"
-              dangerouslySetInnerHTML={{ __html: planHtml }}
-            />
+            {/* PHASE 3: Structured section rendering */}
+            <Card>
+              <CardContent className="p-6">
+                {/* Check if we have any section content from parser */}
+                {(hasHtml(planParsed.inicio) || hasHtml(planParsed.desarrollo) || hasHtml(planParsed.cierre)) ? (
+                  <div className="space-y-8">
+                    {/* Inicio Section */}
+                    {hasHtml(planParsed.inicio) && (() => {
+                      const inicioHtml = stripLeadingDuplicateSectionHeading(
+                        sanitizeHeadings(planParsed.inicio),
+                        'inicio'
+                      );
+                      
+                      return (
+                        <div>
+                          <h2 className="scroll-m-20 text-xl font-semibold tracking-tight mt-6 mb-3 text-primary">
+                            Inicio{planParsed.durations?.inicio ? ` ${planParsed.durations.inicio}` : ''}
+                          </h2>
+                          <div
+                            className="prose prose-sm max-w-none space-y-4 leading-relaxed"
+                            dangerouslySetInnerHTML={{ __html: inicioHtml }}
+                          />
+                        </div>
+                      );
+                    })()}
+
+                    {/* Separator between Inicio and Desarrollo */}
+                    {hasHtml(planParsed.inicio) && hasHtml(planParsed.desarrollo) && (
+                      <div role="separator" className="border-t border-border my-6" />
+                    )}
+
+                    {/* Desarrollo Section */}
+                    {hasHtml(planParsed.desarrollo) && (() => {
+                      const desarrolloHtml = stripLeadingDuplicateSectionHeading(
+                        sanitizeHeadings(planParsed.desarrollo),
+                        'desarrollo'
+                      );
+                      
+                      return (
+                        <div>
+                          <h2 className="scroll-m-20 text-xl font-semibold tracking-tight mt-6 mb-3 text-primary">
+                            Desarrollo{planParsed.durations?.desarrollo ? ` ${planParsed.durations.desarrollo}` : ''}
+                          </h2>
+                          <div
+                            className="prose prose-sm max-w-none space-y-4 leading-relaxed"
+                            dangerouslySetInnerHTML={{ __html: desarrolloHtml }}
+                          />
+                        </div>
+                      );
+                    })()}
+
+                    {/* Separator between Desarrollo and Cierre */}
+                    {hasHtml(planParsed.desarrollo) && hasHtml(planParsed.cierre) && (
+                      <div role="separator" className="border-t border-border my-6" />
+                    )}
+
+                    {/* Cierre Section */}
+                    {hasHtml(planParsed.cierre) && (() => {
+                      const cierreHtml = stripLeadingDuplicateSectionHeading(
+                        sanitizeHeadings(planParsed.cierre),
+                        'cierre'
+                      );
+                      
+                      return (
+                        <div>
+                          <h2 className="scroll-m-20 text-xl font-semibold tracking-tight mt-6 mb-3 text-primary">
+                            Cierre{planParsed.durations?.cierre ? ` ${planParsed.durations.cierre}` : ''}
+                          </h2>
+                          <div
+                            className="prose prose-sm max-w-none space-y-4 leading-relaxed"
+                            dangerouslySetInnerHTML={{ __html: cierreHtml }}
+                          />
+                        </div>
+                      );
+                    })()}
+
+                    {/* Separator before Diferenciación */}
+                    {(hasHtml(planParsed.inicio) || hasHtml(planParsed.desarrollo) || hasHtml(planParsed.cierre)) &&
+                      hasHtml(planParsed.diferenciacion) && (
+                        <div role="separator" className="border-t border-border my-6" />
+                      )}
+
+                    {/* Diferenciación/Adaptaciones Section */}
+                    {hasHtml(planParsed.diferenciacion) && (
+                      <div>
+                        <h2 className="scroll-m-20 text-xl font-semibold tracking-tight mt-6 mb-3 text-primary">
+                          Diferenciación/Adaptaciones
+                        </h2>
+                        <div
+                          className="prose prose-sm max-w-none space-y-4 leading-relaxed"
+                          dangerouslySetInnerHTML={{ __html: sanitizeHeadings(planParsed.diferenciacion) }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ) : planHtml ? (
+                  // Fallback: if parser returned empty sections but planHtml exists, render raw HTML
+                  <div 
+                    className="prose prose-sm max-w-none space-y-4 leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: planHtml }}
+                  />
+                ) : (
+                  // No plan at all
+                  <p className="text-muted-foreground italic text-center py-8">
+                    No hay contenido de clase disponible
+                  </p>
+                )}
+              </CardContent>
+            </Card>
 
             {/* Sección para solicitar modificaciones */}
             <Card className="border-l-4 border-purple-500 bg-purple-50 dark:bg-purple-950/20">
@@ -463,8 +747,42 @@ export function EditorSesionNuevo({
                 </div>
               )}
 
-              {/* 3. Plan (Inicio/Desarrollo/Cierre) */}
-              <div dangerouslySetInnerHTML={{ __html: planHtml }} />
+              {/* 3. Plan (Inicio/Desarrollo/Cierre) - PHASE 3: Structured sections */}
+              <div className="space-y-4">
+                {hasHtml(planParsed.inicio) && (
+                  <div>
+                    <h2 className="text-xl font-semibold mb-2">
+                      Inicio{planParsed.durations?.inicio ? ` ${planParsed.durations.inicio}` : ''}
+                    </h2>
+                    <div dangerouslySetInnerHTML={{ __html: stripLeadingDuplicateSectionHeading(sanitizeHeadings(planParsed.inicio), 'inicio') }} />
+                  </div>
+                )}
+                
+                {hasHtml(planParsed.desarrollo) && (
+                  <div>
+                    <h2 className="text-xl font-semibold mb-2">
+                      Desarrollo{planParsed.durations?.desarrollo ? ` ${planParsed.durations.desarrollo}` : ''}
+                    </h2>
+                    <div dangerouslySetInnerHTML={{ __html: stripLeadingDuplicateSectionHeading(sanitizeHeadings(planParsed.desarrollo), 'desarrollo') }} />
+                  </div>
+                )}
+                
+                {hasHtml(planParsed.cierre) && (
+                  <div>
+                    <h2 className="text-xl font-semibold mb-2">
+                      Cierre{planParsed.durations?.cierre ? ` ${planParsed.durations.cierre}` : ''}
+                    </h2>
+                    <div dangerouslySetInnerHTML={{ __html: stripLeadingDuplicateSectionHeading(sanitizeHeadings(planParsed.cierre), 'cierre') }} />
+                  </div>
+                )}
+                
+                {hasHtml(planParsed.diferenciacion) && (
+                  <div>
+                    <h2 className="text-xl font-semibold mb-2">Diferenciación/Adaptaciones</h2>
+                    <div dangerouslySetInnerHTML={{ __html: sanitizeHeadings(planParsed.diferenciacion) }} />
+                  </div>
+                )}
+              </div>
 
               {/* 4. Recursos */}
               {recursos.length > 0 && (
@@ -486,16 +804,54 @@ export function EditorSesionNuevo({
             </div>
           </TabsContent>
 
-          {/* Tab: Recursos */}
+          {/* Tab: Recursos - PHASE 4: Split auto-detected vs manual */}
           <TabsContent value="recursos" className="space-y-4">
-            <Label>Recursos necesarios</Label>
-            <Textarea
-              value={recursos.join('\n')}
-              onChange={(e) => setRecursos(e.target.value.split('\n').filter(Boolean))}
-              className="min-h-[200px]"
-              placeholder="Un recurso por línea..."
-            />
-            <Button onClick={handleGuardarRecursos}>Guardar Recursos</Button>
+            {/* Card 1: Auto-detected resources from plan (read-only)
+                These are extracted automatically from the plan HTML by the parser.
+                They update when the plan is regenerated, but are never directly editable. */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Recursos detectados en el plan</CardTitle>
+                <CardDescription>
+                  Estos recursos se detectan automáticamente a partir del plan de clase generado por la IA
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {planParsed.recursos && planParsed.recursos.length > 0 ? (
+                  <ul className="list-disc pl-6 space-y-1">
+                    {planParsed.recursos.map((recurso, index) => (
+                      <li key={index} className="text-sm">{recurso}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-muted-foreground italic">
+                    No se detectaron recursos en el plan. Puedes agregar recursos manualmente abajo.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Card 2: Additional manual resources (editable)
+                These are extra resources added by the teacher that are NOT auto-detected.
+                They are preserved across plan regenerations (merged with new auto-detected resources).
+                When saved, they are combined with Card 1 resources into the canonical DB list. */}
+            <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+              <CardHeader>
+                <CardTitle className="text-lg">Recursos adicionales (opcionales)</CardTitle>
+                <CardDescription>
+                  Agrega recursos extra que no fueron detectados automáticamente. Estos NO aparecerán en la pestaña Clase.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Textarea
+                  value={recursosAdicionales.join('\n')}
+                  onChange={(e) => setRecursosAdicionales(e.target.value.split('\n').filter(Boolean))}
+                  className="min-h-[150px]"
+                  placeholder="Un recurso por línea (ej: Pizarra, Marcadores, Proyector)..."
+                />
+                <Button onClick={handleGuardarRecursos}>Guardar Recursos Adicionales</Button>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* Tab: Evaluación */}

@@ -35,6 +35,11 @@ export interface Planificacion {
   cadencia_deseada?: string;
   bloques_preferidos?: any;
   ventana_sugerida?: string;
+  // Explicit save and soft delete fields
+  nombre?: string | null; // Custom display name (overrides materia - grupo_id)
+  is_saved?: boolean; // If explicitly saved by teacher (shows in "Mis Planificaciones")
+  saved_at?: string | null; // When saved (ISO timestamp)
+  deleted_at?: string | null; // Soft delete (ISO timestamp)
   created_at: string;
   updated_at: string;
 }

@@ -371,13 +371,18 @@ export default function PlanificacionWizard() {
           cadencia_deseada: wizardData.contexto.cadencia_deseada,
           bloques_preferidos: wizardData.contexto.bloques_preferidos,
           ventana_sugerida: wizardData.contexto.ventana_sugerida,
-          nivel: '9' // Required field with default
+          nivel: '9', // Required field with default
+          is_saved: false // Planification not explicitly saved yet (won't appear in "Mis Planificaciones" until saved)
         })
         .select()
         .maybeSingle();
 
       if (planError) {
         console.error('Plan error:', planError);
+        // GUARDRAIL: Si la columna is_saved no existe (PGRST204), mensaje más claro
+        if (planError.code === 'PGRST204' || planError.message.includes('is_saved')) {
+          throw new Error(`❌ MIGRACIÓN FALTANTE: La columna 'is_saved' no existe en tabla planificaciones. Ejecuta: supabase db push`);
+        }
         throw new Error(`Error DB (${planError.code}): ${planError.message}`);
       }
       if (!planificacion) throw new Error('No se pudo crear la planificación');
