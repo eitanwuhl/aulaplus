@@ -395,13 +395,31 @@ const EvaluacionesGrupo = () => {
         deleted_at: null
       };
 
+      console.log('[SAVE EVALUATION] Attempting to save:', {
+        nombre: evaluacionData.nombre,
+        materia: evaluacionData.materia,
+        grupo_id: evaluacionData.grupo_id,
+        competencias_count: evaluacionData.competencias_anep.length,
+        user_id: evaluacionData.user_id
+      });
+
       const { data, error } = await supabase
         .from('evaluaciones')
         .insert(evaluacionData)
         .select()
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error('[SAVE EVALUATION] Supabase error:', {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code
+        });
+        throw error;
+      }
+
+      console.log('[SAVE EVALUATION] Success:', data);
 
       toast({
         title: "Evaluación guardada",
@@ -416,11 +434,27 @@ const EvaluacionesGrupo = () => {
         navigate('/mis-evaluaciones');
       }, 1500);
 
-    } catch (error) {
-      console.error('Error guardando evaluación:', error);
+    } catch (error: any) {
+      console.error('[SAVE EVALUATION] Error guardando evaluación:', error);
+      
+      // Provide detailed error message
+      let errorMessage = "No se pudo guardar la evaluación.";
+      
+      if (error?.message) {
+        if (error.message.includes('permission denied') || error.message.includes('policy')) {
+          errorMessage = "Error de permisos. Verifica que la migración RLS se haya aplicado correctamente.";
+        } else if (error.message.includes('null value') || error.message.includes('violates not-null')) {
+          errorMessage = "Faltan datos requeridos. Asegúrate de completar todos los campos.";
+        } else if (error.message.includes('relation') || error.message.includes('does not exist')) {
+          errorMessage = "La tabla 'evaluaciones' no existe. Aplica las migraciones de base de datos.";
+        } else {
+          errorMessage = `Error: ${error.message}`;
+        }
+      }
+      
       toast({
         title: "Error al guardar",
-        description: "No se pudo guardar la evaluación. Intenta nuevamente.",
+        description: errorMessage,
         variant: "destructive"
       });
     } finally {

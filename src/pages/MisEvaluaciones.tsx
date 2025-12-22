@@ -203,22 +203,48 @@ const MisEvaluaciones: React.FC = () => {
         return false;
       }
 
-      // Date range filter
+      // Date range filter - defensive checks
       if (fechaRange?.from || fechaRange?.to) {
         if (!evaluacion.fecha) return false;
-        const fechaEval = evaluacion.fecha instanceof Date 
-          ? evaluacion.fecha 
-          : new Date(evaluacion.fecha + 'T00:00:00');
+        
+        // Safely parse fecha
+        let fechaEval: Date;
+        try {
+          fechaEval = evaluacion.fecha instanceof Date 
+            ? evaluacion.fecha 
+            : new Date(evaluacion.fecha + 'T00:00:00');
+          
+          // Validate Date is valid
+          if (isNaN(fechaEval.getTime())) {
+            console.warn('[EVALUACIONES] Invalid fecha for evaluation:', evaluacion.id, evaluacion.fecha);
+            return false;
+          }
+        } catch (e) {
+          console.warn('[EVALUACIONES] Error parsing fecha:', evaluacion.fecha, e);
+          return false;
+        }
         
         if (fechaRange.from) {
-          const startDate = new Date(fechaRange.from);
-          startDate.setHours(0, 0, 0, 0);
-          if (fechaEval < startDate) return false;
+          try {
+            const startDate = new Date(fechaRange.from);
+            if (isNaN(startDate.getTime())) return false;
+            startDate.setHours(0, 0, 0, 0);
+            if (fechaEval < startDate) return false;
+          } catch (e) {
+            console.warn('[EVALUACIONES] Error with fechaRange.from:', e);
+            return false;
+          }
         }
         if (fechaRange.to) {
-          const endDate = new Date(fechaRange.to);
-          endDate.setHours(23, 59, 59, 999);
-          if (fechaEval > endDate) return false;
+          try {
+            const endDate = new Date(fechaRange.to);
+            if (isNaN(endDate.getTime())) return false;
+            endDate.setHours(23, 59, 59, 999);
+            if (fechaEval > endDate) return false;
+          } catch (e) {
+            console.warn('[EVALUACIONES] Error with fechaRange.to:', e);
+            return false;
+          }
         }
       }
 
@@ -384,20 +410,34 @@ const MisEvaluaciones: React.FC = () => {
 
   // Filtered evaluaciones for display list
   const evaluacionesParaMostrar = evaluaciones.filter(evaluacion => {
-    const matchSearch = evaluacion.nombre.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                       evaluacion.materia.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchSearch = evaluacion.nombre?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                       evaluacion.materia?.toLowerCase().includes(searchTerm.toLowerCase());
     const matchMateria = !filtroMateria || filtroMateria === 'all' || evaluacion.materia === filtroMateria;
     const matchGrupo = !filtroGrupo || filtroGrupo === 'all' || evaluacion.grupo_id === filtroGrupo;
     
     let matchFecha = true;
     if (fechaRange?.from || fechaRange?.to) {
       if (evaluacion.fecha) {
-        const fechaEval = new Date(evaluacion.fecha);
-        if (fechaRange.from && fechaEval < fechaRange.from) matchFecha = false;
-        if (fechaRange.to) {
-          const endDate = new Date(fechaRange.to);
-          endDate.setHours(23, 59, 59, 999);
-          if (fechaEval > endDate) matchFecha = false;
+        try {
+          const fechaEval = new Date(evaluacion.fecha);
+          if (isNaN(fechaEval.getTime())) {
+            matchFecha = false;
+          } else {
+            if (fechaRange.from) {
+              const startDate = new Date(fechaRange.from);
+              if (!isNaN(startDate.getTime()) && fechaEval < startDate) matchFecha = false;
+            }
+            if (fechaRange.to) {
+              const endDate = new Date(fechaRange.to);
+              if (!isNaN(endDate.getTime())) {
+                endDate.setHours(23, 59, 59, 999);
+                if (fechaEval > endDate) matchFecha = false;
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[EVALUACIONES] Error filtering by fecha:', e);
+          matchFecha = false;
         }
       } else {
         matchFecha = false;
@@ -530,7 +570,18 @@ const MisEvaluaciones: React.FC = () => {
                 {filtroMateria && filtroMateria !== 'all' && ` (${filtroMateria}${filtroGrupo && filtroGrupo !== 'all' ? ` - ${filtroGrupo}` : ''})`}
                 {fechaRange?.from && fechaRange?.to && (
                   <span className="block mt-1">
-                    {fechaRange.from.toLocaleDateString('es-ES')} - {fechaRange.to.toLocaleDateString('es-ES')}
+                    {(() => {
+                      try {
+                        const from = new Date(fechaRange.from);
+                        const to = new Date(fechaRange.to);
+                        if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
+                          return `${from.toLocaleDateString('es-ES')} - ${to.toLocaleDateString('es-ES')}`;
+                        }
+                      } catch (e) {
+                        console.warn('[EVALUACIONES] Error formatting date range:', e);
+                      }
+                      return '';
+                    })()}
                   </span>
                 )}
               </p>
@@ -756,13 +807,31 @@ const MisEvaluaciones: React.FC = () => {
                       <Badge variant="outline">{evaluacion.grupo_id}</Badge>
                     </div>
                     <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                      {evaluacion.fecha && (
-                        <span>📅 {new Date(evaluacion.fecha).toLocaleDateString('es-ES')}</span>
-                      )}
-                      {evaluacion.competencias_anep.length > 0 && (
+                      {evaluacion.fecha && (() => {
+                        try {
+                          const fecha = new Date(evaluacion.fecha);
+                          if (!isNaN(fecha.getTime())) {
+                            return <span>📅 {fecha.toLocaleDateString('es-ES')}</span>;
+                          }
+                        } catch (e) {
+                          console.warn('[EVALUACIONES] Error formatting fecha:', evaluacion.fecha);
+                        }
+                        return null;
+                      })()}
+                      {evaluacion.competencias_anep?.length > 0 && (
                         <span>📊 {evaluacion.competencias_anep.length} competencias</span>
                       )}
-                      <span>💾 {new Date(evaluacion.saved_at).toLocaleDateString('es-ES')}</span>
+                      {evaluacion.saved_at && (() => {
+                        try {
+                          const savedAt = new Date(evaluacion.saved_at);
+                          if (!isNaN(savedAt.getTime())) {
+                            return <span>💾 {savedAt.toLocaleDateString('es-ES')}</span>;
+                          }
+                        } catch (e) {
+                          console.warn('[EVALUACIONES] Error formatting saved_at:', evaluacion.saved_at);
+                        }
+                        return null;
+                      })()}
                     </div>
                   </div>
                   <Button
