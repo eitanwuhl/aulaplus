@@ -7,11 +7,16 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { motion } from "framer-motion";
-import { Upload, FileText, MessageCircle, ThumbsUp, ThumbsDown, RefreshCw, Lightbulb, ChevronDown, ChevronUp } from 'lucide-react';
+import { Upload, FileText, MessageCircle, ThumbsUp, ThumbsDown, RefreshCw, Lightbulb, ChevronDown, ChevronUp, Save } from 'lucide-react';
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
+import { normalizeArrayField } from "@/lib/normalizeSupabaseArrays";
 import { Group, mockGroups } from "@/data/mockData";
 import { CATALOGO_JERARQUICO, criteriosParaContenidos, contenidosPorMateria, getSubtemaPorId, getCapituloPorSubtema, type Materia, type CapituloMacro, type SubtemaItem } from "@/data/catalogo";
 import { getCompetenciasEspecificas, getCriteriosLogroPorCompetencias, type CompetenciaEspecifica } from "@/data/competencias";
@@ -326,11 +331,102 @@ const EvaluacionesGrupo = () => {
   const [showAdvancedFeatures, setShowAdvancedFeatures] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState<Record<string, boolean>>({});
   const [requestInProgress, setRequestInProgress] = useState(false);
+  
+  // Save evaluation state
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [nombreEvaluacion, setNombreEvaluacion] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const { toast } = useToast();
 
   const selectedGroup: Group | undefined = useMemo(
     () => mockGroups.find(g => String(g.id) === selectedGroupId),
     [selectedGroupId]
   );
+
+  // Handle save evaluation
+  const handleSaveEvaluation = async () => {
+    if (!nombreEvaluacion.trim()) {
+      toast({
+        title: "Error",
+        description: "Debes ingresar un nombre para la evaluación",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (generatedEvaluations.length === 0) {
+      toast({
+        title: "Error",
+        description: "No hay evaluaciones generadas para guardar",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Usuario no autenticado');
+
+      const materiaFinal = esInterdisciplinaria 
+        ? materiasSeleccionadas.join(', ')
+        : materia || '';
+      
+      // Extract competency IDs from selected competencias
+      const competenciasIds = normalizeArrayField(selectedCompetenciasIds);
+      
+      const evaluacionData = {
+        user_id: user.id,
+        nombre: nombreEvaluacion.trim(),
+        materia: materiaFinal,
+        grupo_id: selectedGroupId,
+        nivel: selectedGroup?.id.includes('9') ? '9no' : '8vo',
+        fecha: new Date().toISOString().split('T')[0],
+        competencias_anep: competenciasIds,
+        contenidos: normalizeArrayField(selectedSubtemas),
+        criterios_logro: normalizeArrayField(selectedCriteriosLogro),
+        requerimientos,
+        evaluacion_generada: {
+          evaluaciones: generatedEvaluations,
+          base_prototype: basePrototype
+        },
+        is_saved: true,
+        saved_at: new Date().toISOString(),
+        deleted_at: null
+      };
+
+      const { data, error } = await supabase
+        .from('evaluaciones')
+        .insert(evaluacionData)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      toast({
+        title: "Evaluación guardada",
+        description: `"${nombreEvaluacion}" ha sido guardada correctamente`,
+      });
+
+      setSaveDialogOpen(false);
+      setNombreEvaluacion('');
+      
+      // Optional: navigate to Mis Evaluaciones
+      setTimeout(() => {
+        navigate('/mis-evaluaciones');
+      }, 1500);
+
+    } catch (error) {
+      console.error('Error guardando evaluación:', error);
+      toast({
+        title: "Error al guardar",
+        description: "No se pudo guardar la evaluación. Intenta nuevamente.",
+        variant: "destructive"
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   // Simple debounce for API calls
   const makeAPICall = async (apiCall: () => Promise<any>, evaluationId: string) => {
@@ -1327,9 +1423,24 @@ const EvaluacionesGrupo = () => {
               </TabsList>
 
               <TabsContent value="results" className="space-y-6">
-                <h2 className="text-2xl font-bold text-gray-800">
-                  Evaluaciones generadas para {selectedGroup?.name}
-                </h2>
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-2xl font-bold text-gray-800">
+                    Evaluaciones generadas para {selectedGroup?.name}
+                  </h2>
+                  <Button
+                    onClick={() => {
+                      // Prefill with a sensible default name
+                      const defaultName = `Evaluación ${esInterdisciplinaria ? materiasSeleccionadas.join(' + ') : materia} - ${selectedGroup?.name}`;
+                      setNombreEvaluacion(defaultName);
+                      setSaveDialogOpen(true);
+                    }}
+                    variant="default"
+                    className="gap-2"
+                  >
+                    <Save className="w-4 h-4" />
+                    Guardar evaluación
+                  </Button>
+                </div>
                 
                 {generatedEvaluations.map((evaluation) => (
                   <EvaluacionVisualRenderer
@@ -1376,6 +1487,55 @@ const EvaluacionesGrupo = () => {
             </Tabs>
           </div>
         )}
+
+        {/* Save Evaluation Dialog */}
+        <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Guardar Evaluación</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="nombre">Nombre de la evaluación</Label>
+                <Input
+                  id="nombre"
+                  value={nombreEvaluacion}
+                  onChange={(e) => setNombreEvaluacion(e.target.value)}
+                  placeholder="Ej: Evaluación Historia - 9no 1"
+                  className="mt-2"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Este nombre aparecerá en "Mis Evaluaciones"
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <Button
+                variant="outline"
+                onClick={() => setSaveDialogOpen(false)}
+                disabled={isSaving}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleSaveEvaluation}
+                disabled={isSaving || !nombreEvaluacion.trim()}
+              >
+                {isSaving ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                    Guardando...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 mr-2" />
+                    Guardar
+                  </>
+                )}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );
