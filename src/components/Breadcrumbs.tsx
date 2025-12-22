@@ -13,6 +13,8 @@ import {
 const routeConfig: Record<string, { label: string; parent?: string }> = {
   "/": { label: "Inicio" },
   "/evaluaciones": { label: "Evaluaciones Grupales", parent: "/" },
+  "/evaluaciones/nuevo": { label: "Generar Evaluación", parent: "/evaluaciones" },
+  "/mis-evaluaciones": { label: "Mis Evaluaciones", parent: "/evaluaciones" },
   "/planificacion": { label: "Planificación de Clase", parent: "/" },
   "/diagnostico": { label: "Diagnóstico Individual", parent: "/" },
   "/reportes": { label: "Reportes Ejecutivos", parent: "/" },
