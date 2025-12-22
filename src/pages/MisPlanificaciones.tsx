@@ -21,6 +21,7 @@ import { COMPETENCIAS_HISTORIA } from '@/data/competencias';
 import { COMPETENCIAS_CIUDADANIA } from '@/data/competenciasCiudadania';
 import { COMPETENCIAS_LITERATURA } from '@/data/competenciasLiteratura';
 import { normalizeSubjectName } from '@/lib/subjectNormalizer';
+import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 
 interface CompetenciaCount {
   id: string;           // ID de la competencia
@@ -102,6 +103,30 @@ const MisPlanificaciones: React.FC = () => {
     return COMPETENCY_COLORS[index];
   };
 
+  // Calculate relative luminance of a hex color (0-1)
+  const getLuminance = (hex: string): number => {
+    // Remove # if present
+    const rgb = hex.replace('#', '');
+    const r = parseInt(rgb.substring(0, 2), 16) / 255;
+    const g = parseInt(rgb.substring(2, 4), 16) / 255;
+    const b = parseInt(rgb.substring(4, 6), 16) / 255;
+    
+    // Apply gamma correction
+    const [rLinear, gLinear, bLinear] = [r, g, b].map(val => {
+      return val <= 0.03928 ? val / 12.92 : Math.pow((val + 0.055) / 1.055, 2.4);
+    });
+    
+    // Calculate relative luminance
+    return 0.2126 * rLinear + 0.7152 * gLinear + 0.0722 * bLinear;
+  };
+
+  // Get contrasting text color (white or dark) based on background luminance
+  const getContrastingTextColor = (hex: string): '#fff' | '#111' => {
+    const luminance = getLuminance(hex);
+    // If background is light (luminance > 0.5), use dark text, otherwise use light text
+    return luminance > 0.5 ? '#111' : '#fff';
+  };
+
   // Helper function to get competencies by subject
   const getCompetenciasByMateria = (materia: string) => {
     const normalized = normalizeSubjectName(materia);
@@ -153,8 +178,15 @@ const MisPlanificaciones: React.FC = () => {
 
         if (sesionError) throw sesionError;
 
+        // Normalize competencias_anep to ensure it's always a string[] array
+        // Supabase may return this field as null, string, or non-array, which breaks iteration
+        const sesionesNormalizadas = (sesionData || []).map((sesion) => ({
+          ...sesion,
+          competencias_anep: normalizeArrayField(sesion.competencias_anep),
+        }));
+
         setPlanificaciones((planData || []) as unknown as Planificacion[]);
-        setSesiones((sesionData || []) as unknown as SesionClase[]);
+        setSesiones(sesionesNormalizadas as unknown as SesionClase[]);
       } catch (error) {
         console.error('Error cargando datos:', error);
       } finally {
@@ -182,56 +214,185 @@ const MisPlanificaciones: React.FC = () => {
     return map;
   }, [competenciasCatalog]);
 
-  // Memoized: Filter sessions (dictada, date range, subject)
+  // Memoized: Filter sessions (with competencias_anep, date range, subject, group, exclude omitida)
   const sesionesFiltradas = useMemo(() => {
-    return sesiones.filter(sesion => {
-      // Only dictada sessions
-      if (sesion.estado !== 'dictada') return false;
-      
+    // DIAGNOSTIC: Log initial state
+    console.log('🔍 [BALANCE DIAGNOSTIC] Filtering sessions:', {
+      totalSessions: sesiones.length,
+      filtroMateria,
+      filtroGrupo,
+      fechaRange: fechaRange ? { from: fechaRange.from, to: fechaRange.to } : null,
+      totalPlanificaciones: planificaciones.length
+    });
+
+    let afterEstado = 0;
+    let afterCompetencias = 0;
+    let afterFecha = 0;
+    let afterMateria = 0;
+    let afterGrupo = 0;
+
+    const filtered = sesiones.filter(sesion => {
+      // Exclude only 'omitida' sessions (all other states count: backlog, planificada, dictada, pausada)
+      if (sesion.estado === 'omitida') {
+        return false;
+      }
+      afterEstado++;
+
+      // Must have at least one competency assigned (competencias_anep is already normalized at load time)
+      if (!sesion.competencias_anep || sesion.competencias_anep.length === 0) {
+        return false;
+      }
+      afterCompetencias++;
+
       // Date range filter
       if (fechaRange?.from || fechaRange?.to) {
-        if (!sesion.fecha) return false;
-        const fechaSesion = new Date(sesion.fecha);
-        if (fechaRange.from && fechaSesion < fechaRange.from) return false;
+        if (!sesion.fecha) {
+          return false;
+        }
+        // Parse date more reliably: handle both string and Date objects
+        const fechaSesion = sesion.fecha instanceof Date 
+          ? sesion.fecha 
+          : new Date(sesion.fecha + 'T00:00:00'); // Add time to avoid timezone issues
+        
+        if (fechaRange.from) {
+          const startDate = new Date(fechaRange.from);
+          startDate.setHours(0, 0, 0, 0);
+          if (fechaSesion < startDate) {
+            return false;
+          }
+        }
         if (fechaRange.to) {
           // Include sessions on the end date (set to end of day)
           const endDate = new Date(fechaRange.to);
           endDate.setHours(23, 59, 59, 999);
-          if (fechaSesion > endDate) return false;
+          if (fechaSesion > endDate) {
+            return false;
+          }
         }
       }
-      
+      afterFecha++;
+
       // Subject filter (MUST have a subject selected)
-      if (!filtroMateria || filtroMateria === 'all') return false;
+      if (!filtroMateria || filtroMateria === 'all') {
+        return false;
+      }
       
       const planPadre = planificaciones.find(p => p.id === sesion.planificacion_id);
-      if (!planPadre) return false;
-      if (planPadre.materia !== filtroMateria) return false;
+      if (!planPadre) {
+        return false;
+      }
+      
+      // Use normalizeSubjectName for consistent comparison
+      const materiaNormalizada = normalizeSubjectName(planPadre.materia);
+      const filtroMateriaNormalizado = normalizeSubjectName(filtroMateria);
+      if (materiaNormalizada !== filtroMateriaNormalizado) {
+        return false;
+      }
+      afterMateria++;
+
+      // Group filter (if a group is selected)
+      if (filtroGrupo && filtroGrupo !== 'all') {
+        if (planPadre.grupo_id !== filtroGrupo) {
+          return false;
+        }
+      }
+      afterGrupo++;
       
       return true;
     });
-  }, [sesiones, planificaciones, filtroMateria, fechaRange]);
+
+    // DIAGNOSTIC: Log filter results
+    console.log('🔍 [BALANCE DIAGNOSTIC] Filter results:', {
+      afterEstado,
+      afterFecha,
+      afterMateria,
+      afterGrupo,
+      finalFiltered: filtered.length
+    });
+
+    // DIAGNOSTIC: Log sample filtered sessions
+    if (filtered.length > 0) {
+      const samples = filtered.slice(0, 5);
+      console.log('🔍 [BALANCE DIAGNOSTIC] Sample filtered sessions:', samples.map(s => ({
+        id: s.id,
+        planificacion_id: s.planificacion_id,
+        fecha: s.fecha,
+        estado: s.estado,
+        competencias_anep: s.competencias_anep,
+        competencias_anep_length: s.competencias_anep?.length,
+        planPadre_materia: planificaciones.find(p => p.id === s.planificacion_id)?.materia,
+        planPadre_grupo_id: planificaciones.find(p => p.id === s.planificacion_id)?.grupo_id
+      })));
+    } else {
+      // DIAGNOSTIC: Debug why no sessions passed
+      const estados = [...new Set(sesiones.map(s => s.estado))];
+      const sesionesConMateria = sesiones.filter(s => {
+        const plan = planificaciones.find(p => p.id === s.planificacion_id);
+        if (!plan) return false;
+        const materiaNormalizada = normalizeSubjectName(plan.materia);
+        const filtroMateriaNormalizado = normalizeSubjectName(filtroMateria);
+        return materiaNormalizada === filtroMateriaNormalizado;
+      });
+      const sesionesConGrupo = filtroGrupo && filtroGrupo !== 'all' 
+        ? sesiones.filter(s => {
+            const plan = planificaciones.find(p => p.id === s.planificacion_id);
+            return plan && plan.grupo_id === filtroGrupo;
+          })
+        : sesiones;
+      
+      const sesionesNoOmitidas = sesiones.filter(s => s.estado !== 'omitida');
+      const sesionesConCompetencias = sesionesNoOmitidas.filter(s => 
+        s.competencias_anep && s.competencias_anep.length > 0
+      );
+      
+      console.log('🔍 [BALANCE DIAGNOSTIC] No filtered sessions. Debug info:', {
+        estadosDisponibles: estados,
+        sesionesNoOmitidas: sesionesNoOmitidas.length,
+        sesionesConCompetencias: sesionesConCompetencias.length,
+        sesionesConMateriaCorrecta: sesionesConMateria.length,
+        sesionesConGrupoCorrecto: sesionesConGrupo.length,
+        sesionesConFecha: sesiones.filter(s => s.fecha).length
+      });
+    }
+
+    return filtered;
+  }, [sesiones, planificaciones, filtroMateria, filtroGrupo, fechaRange]);
 
   // Memoized: Calculate competency counts
   const competenciasCount = useMemo<CompetenciaCount[]>(() => {
     // Only calculate if a subject is selected
     if (!filtroMateria || filtroMateria === 'all') {
+      console.log('🔍 [BALANCE DIAGNOSTIC] Balance: No subject selected');
       return [];
     }
+
+    // DIAGNOSTIC: Log input
+    console.log('🔍 [BALANCE DIAGNOSTIC] Balance calculation:', {
+      sesionesFiltradasCount: sesionesFiltradas.length,
+      competenciasCatalogSize: competenciasById.size
+    });
 
     const competenciasCountMap = new Map<string, number>();
     let totalCompetencias = 0;
 
+    // sesionesFiltradas already contains only sessions with competencias_anep.length > 0
     sesionesFiltradas.forEach(sesion => {
-      if (sesion.competencias_anep && sesion.competencias_anep.length > 0) {
-        sesion.competencias_anep.forEach(compId => {
-          competenciasCountMap.set(compId, (competenciasCountMap.get(compId) || 0) + 1);
-          totalCompetencias++;
-        });
-      }
+      // competencias_anep is already normalized and guaranteed to have length > 0 by filter
+      sesion.competencias_anep.forEach(compId => {
+        competenciasCountMap.set(compId, (competenciasCountMap.get(compId) || 0) + 1);
+        totalCompetencias++;
+      });
     });
 
-    return Array.from(competenciasCountMap.entries())
+    // DIAGNOSTIC: Log counting results
+    console.log('🔍 [BALANCE DIAGNOSTIC] Balance counting:', {
+      sesionesFiltradasCount: sesionesFiltradas.length,
+      totalCompetencias,
+      uniqueCompetencies: competenciasCountMap.size,
+      competenciasCountMapEntries: Array.from(competenciasCountMap.entries()).slice(0, 10) // First 10 for debugging
+    });
+
+    const result = Array.from(competenciasCountMap.entries())
       .map(([competenciaId, count]) => {
         const competenciaCompleta = competenciasById.get(competenciaId);
         const isUnknown = !competenciasById.has(competenciaId);
@@ -255,6 +416,14 @@ const MisPlanificaciones: React.FC = () => {
         }
         return (a.codigo || '').localeCompare(b.codigo || '');
       });
+
+    // DIAGNOSTIC: Log final result
+    console.log('🔍 [BALANCE DIAGNOSTIC] Balance final result:', {
+      resultLength: result.length,
+      result: result.slice(0, 5) // First 5 for debugging
+    });
+
+    return result;
   }, [sesionesFiltradas, competenciasById, filtroMateria]);
 
   // Memoized: Calculate pending competencies
@@ -300,6 +469,83 @@ const MisPlanificaciones: React.FC = () => {
         return a.codigo.localeCompare(b.codigo);
       });
   }, [sesionesFiltradas, competenciasCatalog, filtroMateria]);
+
+  // Helper: Determine why there are no filtered sessions (for UI messaging)
+  const getEmptyBalanceReason = useMemo(() => {
+    if (!filtroMateria || filtroMateria === 'all') {
+      return null; // Subject not selected - handled by conditional rendering
+    }
+
+    if (sesionesFiltradas.length === 0) {
+      // Check which filter is causing empty results
+      // Exclude only 'omitida', all other states count
+      const sesionesNoOmitidas = sesiones.filter(s => s.estado !== 'omitida');
+      const sesionesConCompetencias = sesionesNoOmitidas.filter(s => 
+        s.competencias_anep && s.competencias_anep.length > 0
+      );
+      
+      const sesionesConMateria = sesionesConCompetencias.filter(s => {
+        const plan = planificaciones.find(p => p.id === s.planificacion_id);
+        if (!plan) return false;
+        const materiaNormalizada = normalizeSubjectName(plan.materia);
+        const filtroMateriaNormalizado = normalizeSubjectName(filtroMateria);
+        return materiaNormalizada === filtroMateriaNormalizado;
+      });
+      
+      const sesionesConGrupo = filtroGrupo && filtroGrupo !== 'all'
+        ? sesionesConMateria.filter(s => {
+            const plan = planificaciones.find(p => p.id === s.planificacion_id);
+            return plan && plan.grupo_id === filtroGrupo;
+          })
+        : sesionesConMateria;
+      
+      const sesionesConFecha = fechaRange?.from || fechaRange?.to
+        ? sesionesConGrupo.filter(s => {
+            if (!s.fecha) return false;
+            const fechaSesion = s.fecha instanceof Date 
+              ? s.fecha 
+              : new Date(s.fecha + 'T00:00:00');
+            if (fechaRange.from) {
+              const startDate = new Date(fechaRange.from);
+              startDate.setHours(0, 0, 0, 0);
+              if (fechaSesion < startDate) return false;
+            }
+            if (fechaRange.to) {
+              const endDate = new Date(fechaRange.to);
+              endDate.setHours(23, 59, 59, 999);
+              if (fechaSesion > endDate) return false;
+            }
+            return true;
+          })
+        : sesionesConGrupo;
+
+      // Check if there are any sessions with competencies in the system
+      if (sesionesConCompetencias.length === 0) {
+        return 'No hay sesiones con competencias registradas en el sistema.';
+      }
+      
+      // Check subject filter
+      if (sesionesConMateria.length === 0) {
+        return `No hay sesiones con competencias registradas para la materia "${filtroMateria}".`;
+      }
+      
+      // Check group filter
+      if (filtroGrupo && filtroGrupo !== 'all' && sesionesConGrupo.length === 0) {
+        return `No hay sesiones con competencias registradas para el grupo "${filtroGrupo}" en la materia "${filtroMateria}".`;
+      }
+      
+      // Check date range filter
+      if ((fechaRange?.from || fechaRange?.to) && sesionesConFecha.length === 0) {
+        return `No hay sesiones con competencias registradas en el rango de fechas seleccionado para ${filtroGrupo && filtroGrupo !== 'all' ? `el grupo "${filtroGrupo}" en ` : ''}la materia "${filtroMateria}".`;
+      }
+      
+      // If we reach here, there are sessions but they don't have competencies
+      // This shouldn't happen with the new filter, but keep as fallback
+      return 'Hay sesiones, pero aún no tienen competencias asignadas.';
+    }
+
+    return null;
+  }, [sesiones, planificaciones, filtroMateria, filtroGrupo, fechaRange, sesionesFiltradas]);
 
   // Filtros
   const planificacionesFiltradas = planificaciones.filter(plan => {
@@ -787,7 +1033,8 @@ const MisPlanificaciones: React.FC = () => {
                 Balance de Competencias
               </CardTitle>
               <p className="text-sm text-muted-foreground">
-                Uso de competencias en sesiones dictadas ({filtroMateria})
+                Uso de competencias en sesiones guardadas
+                {filtroMateria && filtroMateria !== 'all' && ` (${filtroMateria}${filtroGrupo && filtroGrupo !== 'all' ? ` - ${filtroGrupo}` : ''})`}
                 {fechaRange?.from && fechaRange?.to && (
                   <span className="block mt-1">
                     {fechaRange.from.toLocaleDateString('es-ES')} - {fechaRange.to.toLocaleDateString('es-ES')}
@@ -805,24 +1052,15 @@ const MisPlanificaciones: React.FC = () => {
                 </div>
               ) : competenciasCount.length > 0 ? (
                 <div>
-                  <ResponsiveContainer width="100%" height={Math.max(300, competenciasCount.length * 50)}>
+                  <ResponsiveContainer width="100%" height={Math.max(200, competenciasCount.length * 50)}>
                     <BarChart
                       data={competenciasCount}
                       layout="vertical"
-                      margin={{ top: 5, right: 30, left: 120, bottom: 5 }}
+                      margin={{ top: 8, right: 16, bottom: 8, left: 0 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis type="number" />
-                      <YAxis
-                        type="category"
-                        dataKey="label"
-                        width={110}
-                        tick={{ fontSize: 11 }}
-                        tickFormatter={(value) => {
-                          // Truncate long labels, show full on hover via tooltip
-                          return value.length > 30 ? value.substring(0, 27) + '...' : value;
-                        }}
-                      />
+                      <XAxis type="number" hide />
+                      <YAxis type="category" dataKey="label" hide />
                       <Tooltip
                         content={({ active, payload }) => {
                           if (active && payload && payload.length) {
@@ -842,7 +1080,44 @@ const MisPlanificaciones: React.FC = () => {
                           return null;
                         }}
                       />
-                      <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                      <Bar 
+                        dataKey="count" 
+                        radius={[0, 4, 4, 0]}
+                        label={({ x, y, width, height, payload }) => {
+                          if (!payload || width < 20) return null;
+                          
+                          const barColor = getCompetencyColor(payload.competencia);
+                          const textColor = getContrastingTextColor(barColor);
+                          const label = payload.label || '';
+                          
+                          // Calculate approximate characters that fit (assuming ~7px per char)
+                          const availableWidth = width - 24; // 12px padding on each side
+                          const maxChars = Math.floor(availableWidth / 7);
+                          
+                          // Truncate label if needed
+                          const displayLabel = label.length > maxChars 
+                            ? label.substring(0, maxChars - 3) + '...'
+                            : label;
+                          
+                          // Optional: show count at the end if there's space
+                          const showCount = width > 150;
+                          const countText = showCount ? ` (${payload.count})` : '';
+                          const fullText = displayLabel + countText;
+                          
+                          return (
+                            <text
+                              x={x + 12}
+                              y={y + height / 2}
+                              fill={textColor}
+                              fontSize={12}
+                              fontWeight={500}
+                              dominantBaseline="middle"
+                            >
+                              {fullText}
+                            </text>
+                          );
+                        }}
+                      >
                         {competenciasCount.map((entry, index) => (
                           <Cell key={`cell-${index}`} fill={getCompetencyColor(entry.competencia)} />
                         ))}
@@ -852,10 +1127,10 @@ const MisPlanificaciones: React.FC = () => {
                 </div>
               ) : (
                 <div className="h-[300px] flex items-center justify-center">
-                  <div className="text-center">
+                  <div className="text-center max-w-md">
                     <BarChart3 className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-                    <p className="text-muted-foreground">
-                      No hay uso de competencias registrado en este período
+                    <p className="text-muted-foreground mb-2">
+                      {getEmptyBalanceReason || 'No hay uso de competencias registrado en este período'}
                     </p>
                   </div>
                 </div>
