@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,7 +11,7 @@ import { ArrowLeft, Search, BarChart3, Calendar, FileText, Download, Folder, Plu
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Planificacion, SesionClase } from '@/types/planificacion';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { DateRangePicker } from '@/components/ui/date-range-picker';
 import { DateRange } from 'react-day-picker';
 import { useToast } from '@/hooks/use-toast';
@@ -20,15 +20,21 @@ import { uploadFileToStorage, createCommunicationMessage } from '@/lib/storage';
 import { COMPETENCIAS_HISTORIA } from '@/data/competencias';
 import { COMPETENCIAS_CIUDADANIA } from '@/data/competenciasCiudadania';
 import { COMPETENCIAS_LITERATURA } from '@/data/competenciasLiteratura';
+import { normalizeSubjectName } from '@/lib/subjectNormalizer';
 
 interface CompetenciaCount {
-  competencia: string;
+  id: string;           // ID de la competencia
+  competencia: string;   // ID de la competencia (alias)
+  nombre: string;        // Nombre completo
+  codigo: string;        // Código (CE1, CE2, etc.) o '—' para desconocidas
   count: number;
   porcentaje: number;
+  label: string;         // Formatted label for chart: "CE# — Title" or "Unknown (id)"
 }
 
 interface CompetenciaPendiente {
   id: string;
+  codigo: string;       // Código (CE1, CE2, etc.)
   nombre: string;
   descripcion: string;
 }
@@ -38,8 +44,6 @@ const MisPlanificaciones: React.FC = () => {
   const { toast } = useToast();
   const [planificaciones, setPlanificaciones] = useState<Planificacion[]>([]);
   const [sesiones, setSesiones] = useState<SesionClase[]>([]);
-  const [competenciasCount, setCompetenciasCount] = useState<CompetenciaCount[]>([]);
-  const [competenciasPendientes, setCompetenciasPendientes] = useState<CompetenciaPendiente[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filtroMateria, setFiltroMateria] = useState<string>('');
   const [filtroGrupo, setFiltroGrupo] = useState<string>('');
@@ -69,6 +73,49 @@ const MisPlanificaciones: React.FC = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Color palette for competencies (deterministic, stable)
+  const COMPETENCY_COLORS = [
+    '#3b82f6', // blue
+    '#10b981', // green
+    '#f59e0b', // amber
+    '#ef4444', // red
+    '#8b5cf6', // purple
+    '#06b6d4', // cyan
+    '#f97316', // orange
+    '#ec4899', // pink
+    '#14b8a6', // teal
+    '#6366f1', // indigo
+    '#84cc16', // lime
+    '#eab308', // yellow
+  ];
+
+  // Deterministic color mapping: hash competency ID to palette index
+  const getCompetencyColor = (competencyId: string): string => {
+    // Simple hash function for deterministic color assignment
+    let hash = 0;
+    for (let i = 0; i < competencyId.length; i++) {
+      hash = ((hash << 5) - hash) + competencyId.charCodeAt(i);
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    const index = Math.abs(hash) % COMPETENCY_COLORS.length;
+    return COMPETENCY_COLORS[index];
+  };
+
+  // Helper function to get competencies by subject
+  const getCompetenciasByMateria = (materia: string) => {
+    const normalized = normalizeSubjectName(materia);
+    switch (normalized) {
+      case 'Historia':
+        return COMPETENCIAS_HISTORIA;
+      case 'Literatura':
+        return COMPETENCIAS_LITERATURA;
+      case 'Formación para la ciudadanía':
+        return COMPETENCIAS_CIUDADANIA;
+      default:
+        return [];
+    }
+  };
 
   // Cargar planificaciones y sesiones
   useEffect(() => {
@@ -108,9 +155,6 @@ const MisPlanificaciones: React.FC = () => {
 
         setPlanificaciones((planData || []) as unknown as Planificacion[]);
         setSesiones((sesionData || []) as unknown as SesionClase[]);
-
-        // Calcular contador de competencias y pendientes
-        calcularCompetenciasCount((sesionData || []) as unknown as SesionClase[]);
       } catch (error) {
         console.error('Error cargando datos:', error);
       } finally {
@@ -121,60 +165,141 @@ const MisPlanificaciones: React.FC = () => {
     cargarDatos();
   }, []);
 
-  // Calcular contador de competencias con filtros aplicados
-  const calcularCompetenciasCount = (sesionesList: SesionClase[]) => {
-    // Aplicar filtros a las sesiones
-    const sesionesFiltradas = sesionesList.filter(sesion => {
-      // Solo sesiones dictadas
+  // Memoized: Get competencies catalog for selected subject
+  const competenciasCatalog = useMemo(() => {
+    if (!filtroMateria || filtroMateria === 'all') {
+      return [];
+    }
+    return getCompetenciasByMateria(filtroMateria);
+  }, [filtroMateria]);
+
+  // Memoized: Build competenciasById map for quick lookup
+  const competenciasById = useMemo(() => {
+    const map = new Map<string, any>();
+    competenciasCatalog.forEach(comp => {
+      map.set(comp.id, comp);
+    });
+    return map;
+  }, [competenciasCatalog]);
+
+  // Memoized: Filter sessions (dictada, date range, subject)
+  const sesionesFiltradas = useMemo(() => {
+    return sesiones.filter(sesion => {
+      // Only dictada sessions
       if (sesion.estado !== 'dictada') return false;
       
-      // Filtro de fecha
+      // Date range filter
       if (fechaRange?.from || fechaRange?.to) {
+        if (!sesion.fecha) return false;
         const fechaSesion = new Date(sesion.fecha);
         if (fechaRange.from && fechaSesion < fechaRange.from) return false;
-        if (fechaRange.to && fechaSesion > fechaRange.to) return false;
+        if (fechaRange.to) {
+          // Include sessions on the end date (set to end of day)
+          const endDate = new Date(fechaRange.to);
+          endDate.setHours(23, 59, 59, 999);
+          if (fechaSesion > endDate) return false;
+        }
       }
       
-      // Filtros de planificación padre
+      // Subject filter (MUST have a subject selected)
+      if (!filtroMateria || filtroMateria === 'all') return false;
+      
       const planPadre = planificaciones.find(p => p.id === sesion.planificacion_id);
       if (!planPadre) return false;
-      
-      if (filtroMateria && filtroMateria !== 'all' && planPadre.materia !== filtroMateria) return false;
-      if (filtroGrupo && filtroGrupo !== 'all' && planPadre.grupo_id !== filtroGrupo) return false;
-      if (filtroCarpeta && filtroCarpeta !== 'all' && planPadre.carpeta !== filtroCarpeta) return false;
+      if (planPadre.materia !== filtroMateria) return false;
       
       return true;
     });
+  }, [sesiones, planificaciones, filtroMateria, fechaRange]);
 
-    const competenciasMap = new Map<string, number>();
+  // Memoized: Calculate competency counts
+  const competenciasCount = useMemo<CompetenciaCount[]>(() => {
+    // Only calculate if a subject is selected
+    if (!filtroMateria || filtroMateria === 'all') {
+      return [];
+    }
+
+    const competenciasCountMap = new Map<string, number>();
     let totalCompetencias = 0;
 
     sesionesFiltradas.forEach(sesion => {
       if (sesion.competencias_anep && sesion.competencias_anep.length > 0) {
-        sesion.competencias_anep.forEach(comp => {
-          competenciasMap.set(comp, (competenciasMap.get(comp) || 0) + 1);
+        sesion.competencias_anep.forEach(compId => {
+          competenciasCountMap.set(compId, (competenciasCountMap.get(compId) || 0) + 1);
           totalCompetencias++;
         });
       }
     });
 
-    const competenciasArray: CompetenciaCount[] = Array.from(competenciasMap.entries())
-      .map(([competencia, count]) => ({
-        competencia,
-        count,
-        porcentaje: totalCompetencias > 0 ? Math.round((count / totalCompetencias) * 100) : 0
-      }))
-      .sort((a, b) => b.count - a.count);
+    return Array.from(competenciasCountMap.entries())
+      .map(([competenciaId, count]) => {
+        const competenciaCompleta = competenciasById.get(competenciaId);
+        const isUnknown = !competenciasById.has(competenciaId);
+        
+        return {
+          id: competenciaId,
+          competencia: competenciaId,
+          nombre: isUnknown ? `Unknown (${competenciaId})` : (competenciaCompleta?.nombre || competenciaId),
+          codigo: isUnknown ? '—' : (competenciaCompleta?.codigo || competenciaId),
+          count,
+          porcentaje: totalCompetencias > 0 ? Math.round((count / totalCompetencias) * 100) : 0,
+          label: isUnknown 
+            ? `Unknown (${competenciaId})`
+            : `${competenciaCompleta?.codigo || competenciaId} — ${competenciaCompleta?.nombre || competenciaId}`
+        };
+      })
+      .sort((a, b) => {
+        // Sort by count DESC, then by code ASC
+        if (b.count !== a.count) {
+          return b.count - a.count;
+        }
+        return (a.codigo || '').localeCompare(b.codigo || '');
+      });
+  }, [sesionesFiltradas, competenciasById, filtroMateria]);
 
-    setCompetenciasCount(competenciasArray);
-  };
-
-  // Recalcular cuando cambien los filtros
-  useEffect(() => {
-    if (sesiones.length > 0) {
-      calcularCompetenciasCount(sesiones);
+  // Memoized: Calculate pending competencies
+  const competenciasPendientes = useMemo<CompetenciaPendiente[]>(() => {
+    // Only calculate if a subject is selected
+    if (!filtroMateria || filtroMateria === 'all') {
+      return [];
     }
-  }, [sesiones, planificaciones, filtroMateria, filtroGrupo, filtroCarpeta, fechaRange]);
+
+    if (competenciasCatalog.length === 0) {
+      return [];
+    }
+
+    // Get unique set of used competency IDs
+    const competenciasUsadasIds = new Set<string>();
+    sesionesFiltradas.forEach(sesion => {
+      if (sesion.competencias_anep && sesion.competencias_anep.length > 0) {
+        sesion.competencias_anep.forEach(compId => {
+          competenciasUsadasIds.add(compId);
+        });
+      }
+    });
+
+    // Pending = all competencies in catalog whose id is NOT in USED set
+    // Unknown IDs are ignored (only catalog competencies count)
+    return competenciasCatalog
+      .filter(comp => !competenciasUsadasIds.has(comp.id))
+      .map(comp => ({
+        id: comp.id,
+        codigo: comp.codigo,
+        nombre: comp.nombre,
+        descripcion: comp.descripcion
+      }))
+      .sort((a, b) => {
+        // Sort by numeric order from codigo (CE1, CE2, CE10 should be 1,2,10)
+        const extractNumber = (code: string) => {
+          const match = code.match(/\d+/);
+          return match ? parseInt(match[0], 10) : 999;
+        };
+        const numA = extractNumber(a.codigo);
+        const numB = extractNumber(b.codigo);
+        if (numA !== numB) return numA - numB;
+        return a.codigo.localeCompare(b.codigo);
+      });
+  }, [sesionesFiltradas, competenciasCatalog, filtroMateria]);
 
   // Filtros
   const planificacionesFiltradas = planificaciones.filter(plan => {
@@ -239,7 +364,7 @@ const MisPlanificaciones: React.FC = () => {
       // Soft delete: update deleted_at timestamp
       const { error } = await supabase
         .from('planificaciones')
-        .update({ deleted_at: new Date().toISOString() })
+        .update({ deleted_at: new Date().toISOString() } as any)
         .in('id', idsArray);
 
       if (error) {
@@ -368,7 +493,8 @@ const MisPlanificaciones: React.FC = () => {
       });
     }
   };
-  const getAnalisisPedagogico = () => {
+  // Memoized: Pedagogical analysis (optional, can be removed if not needed)
+  const analisis = useMemo(() => {
     if (competenciasCount.length === 0) return null;
     
     const promedio = competenciasCount.reduce((sum, comp) => sum + comp.count, 0) / competenciasCount.length;
@@ -376,9 +502,7 @@ const MisPlanificaciones: React.FC = () => {
     const descuidadas = competenciasCount.filter(comp => comp.count < promedio * 0.5);
     
     return { sobretrabajadas, descuidadas, promedio };
-  };
-
-  const analisis = getAnalisisPedagogico();
+  }, [competenciasCount]);
 
   // Exportar datos
   const handleExportarExcel = () => {
@@ -640,139 +764,173 @@ const MisPlanificaciones: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* Contador de Competencias */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
-        {/* Tabla de Competencias */}
+      {/* Balance y Competencias Pendientes */}
+      {(!filtroMateria || filtroMateria === 'all') ? (
         <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="w-5 h-5" />
-              Balance de Competencias
-            </CardTitle>
-            <p className="text-sm text-muted-foreground">
-              Cuántas veces se trabajó cada competencia a lo largo del año
-            </p>
-          </CardHeader>
-          <CardContent>
-            {/* Análisis Pedagógico */}
-            {analisis && (analisis.sobretrabajadas.length > 0 || analisis.descuidadas.length > 0) && (
-              <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                <div className="flex items-center gap-2 mb-2">
-                  <AlertTriangle className="h-4 w-4 text-amber-600" />
-                  <span className="font-medium text-amber-800 text-sm">Análisis Pedagógico</span>
-                </div>
-                <div className="text-xs text-amber-700 space-y-1">
-                  {analisis.sobretrabajadas.length > 0 && (
-                    <p>• Sobretrabajadas: {analisis.sobretrabajadas.map(c => c.competencia).join(', ')}</p>
-                  )}
-                  {analisis.descuidadas.length > 0 && (
-                    <p>• Necesitan más atención: {analisis.descuidadas.map(c => c.competencia).join(', ')}</p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-3 max-h-96 overflow-y-auto">
-              {competenciasCount.length > 0 ? (
-                competenciasCount.map((comp, index) => (
-                  <div key={index} className="flex items-center justify-between p-3 border border-border rounded-lg">
-                    <div className="flex-1">
-                      <div className="font-medium text-sm">{comp.competencia}</div>
-                      <div className="text-xs text-muted-foreground">{comp.porcentaje}% del total</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="secondary">
-                        {comp.count} veces
-                      </Badge>
-                      {analisis && comp.count > analisis.promedio * 1.5 && (
-                        <TrendingUp className="h-3 w-3 text-orange-500" />
-                      )}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-center py-8 text-muted-foreground">
-                  <BarChart3 className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                  <p>No hay competencias registradas en el rango seleccionado</p>
-                </div>
-              )}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Competencias Pendientes */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Clock className="w-5 h-5" />
-            Competencias Pendientes
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {competenciasPendientes.length === 0 ? (
-            <div className="text-center py-8">
-              <div className="text-muted-foreground">
-                {planificacionesFiltradas.length === 0 
-                  ? "No hay planificaciones en el período seleccionado"
-                  : "¡Excelente! Todas las competencias objetivo han sido trabajadas"
-                }
-              </div>
+          <CardContent className="p-12">
+            <div className="text-center">
+              <BarChart3 className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+              <h3 className="text-lg font-semibold mb-2">Selecciona una materia</h3>
+              <p className="text-muted-foreground">
+                Selecciona una materia para ver el balance de competencias y las competencias pendientes.
+              </p>
             </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="text-sm text-muted-foreground mb-4">
-                Competencias definidas como objetivo pero aún no trabajadas en sesiones validadas:
-              </div>
-              {competenciasPendientes.map((comp, index) => (
-                <div key={comp.id} className="border rounded-lg p-3 bg-yellow-50">
-                  <div className="font-medium text-sm">{comp.nombre}</div>
-                  <div className="text-sm text-muted-foreground mt-1">
-                    {comp.descripcion}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-        {/* Gráfico de Competencias */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Distribución Visual</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              Visualización del balance de competencias trabajadas
-            </p>
-          </CardHeader>
-          <CardContent>
-            {competenciasCount.length > 0 ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={competenciasCount.slice(0, 10)}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis 
-                    dataKey="competencia" 
-                    tick={{ fontSize: 10 }}
-                    angle={-45}
-                    textAnchor="end"
-                    height={60}
-                  />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="count" fill="hsl(var(--primary))" />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-[300px] flex items-center justify-center text-muted-foreground">
-                <div className="text-center">
-                  <BarChart3 className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                  <p>Sin datos para mostrar</p>
-                </div>
-              </div>
-            )}
           </CardContent>
         </Card>
-      </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Balance de Competencias - Horizontal Bar Chart */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <BarChart3 className="w-5 h-5" />
+                Balance de Competencias
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Uso de competencias en sesiones dictadas ({filtroMateria})
+                {fechaRange?.from && fechaRange?.to && (
+                  <span className="block mt-1">
+                    {fechaRange.from.toLocaleDateString('es-ES')} - {fechaRange.to.toLocaleDateString('es-ES')}
+                  </span>
+                )}
+              </p>
+            </CardHeader>
+            <CardContent>
+              {isLoading ? (
+                <div className="h-[400px] flex items-center justify-center">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+                    <p className="text-muted-foreground">Calculando balance...</p>
+                  </div>
+                </div>
+              ) : competenciasCount.length > 0 ? (
+                <div>
+                  <ResponsiveContainer width="100%" height={Math.max(300, competenciasCount.length * 50)}>
+                    <BarChart
+                      data={competenciasCount}
+                      layout="vertical"
+                      margin={{ top: 5, right: 30, left: 120, bottom: 5 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis type="number" />
+                      <YAxis
+                        type="category"
+                        dataKey="label"
+                        width={110}
+                        tick={{ fontSize: 11 }}
+                        tickFormatter={(value) => {
+                          // Truncate long labels, show full on hover via tooltip
+                          return value.length > 30 ? value.substring(0, 27) + '...' : value;
+                        }}
+                      />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            const data = payload[0].payload;
+                            return (
+                              <div className="bg-background border border-border rounded-lg p-3 shadow-lg">
+                                <p className="font-semibold">{data.label}</p>
+                                <p className="text-sm text-muted-foreground">
+                                  Usada {data.count} vez{data.count !== 1 ? 'es' : ''}
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  {data.porcentaje}% del total
+                                </p>
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                        {competenciasCount.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={getCompetencyColor(entry.competencia)} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="h-[300px] flex items-center justify-center">
+                  <div className="text-center">
+                    <BarChart3 className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                    <p className="text-muted-foreground">
+                      No hay uso de competencias registrado en este período
+                    </p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Competencias Pendientes */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Clock className="w-5 h-5" />
+                Competencias Pendientes
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Competencias no trabajadas en el período seleccionado
+              </p>
+            </CardHeader>
+            <CardContent>
+              {isLoading ? (
+                <div className="h-[400px] flex items-center justify-center">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+                    <p className="text-muted-foreground">Calculando pendientes...</p>
+                  </div>
+                </div>
+              ) : competenciasCatalog.length === 0 ? (
+                <div className="h-[300px] flex items-center justify-center">
+                  <div className="text-center">
+                    <Clock className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                    <p className="text-sm text-muted-foreground">
+                      No hay competencias definidas para esta materia.
+                    </p>
+                  </div>
+                </div>
+              ) : competenciasPendientes.length > 0 ? (
+                <div className="space-y-3 max-h-[500px] overflow-y-auto">
+                  {competenciasPendientes.map((comp) => (
+                    <div
+                      key={comp.id}
+                      className="border rounded-lg p-4 bg-yellow-50/50 hover:bg-yellow-50 transition-colors"
+                    >
+                      <div className="flex items-start gap-2 mb-2">
+                        <Badge variant="outline" className="text-xs font-mono shrink-0">
+                          {comp.codigo}
+                        </Badge>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-sm leading-tight">{comp.nombre}</div>
+                        </div>
+                      </div>
+                      {comp.descripcion && (
+                        <div className="text-xs text-muted-foreground mt-2 line-clamp-2">
+                          {comp.descripcion}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="h-[300px] flex items-center justify-center">
+                  <div className="text-center">
+                    <Clock className="w-12 h-12 mx-auto mb-4 text-green-600 opacity-50" />
+                    <p className="font-medium text-foreground mb-1">
+                      ¡Excelente!
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Todas las competencias fueron trabajadas en este período
+                    </p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Lista de Planificaciones */}
       <Card>
