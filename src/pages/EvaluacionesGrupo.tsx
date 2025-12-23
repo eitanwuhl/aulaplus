@@ -375,6 +375,19 @@ const EvaluacionesGrupo = () => {
       // Extract competency IDs from selected competencias
       const competenciasIds = normalizeArrayField(selectedCompetenciasIds);
       
+      // ===== DIAGNOSTIC LOGGING FOR BUG B =====
+      console.log('[🔍 DIAGNOSTIC] selectedGroup inspection:', {
+        selectedGroup,
+        selectedGroup_type: typeof selectedGroup,
+        selectedGroup_id: selectedGroup?.id,
+        selectedGroup_id_type: typeof selectedGroup?.id,
+        selectedGroup_id_isArray: Array.isArray(selectedGroup?.id),
+        selectedGroup_has_includes: typeof selectedGroup?.id?.includes,
+        selectedGroupId_state: selectedGroupId,
+        selectedGroupId_state_type: typeof selectedGroupId
+      });
+      // ===== END DIAGNOSTIC =====
+      
       const evaluacionData = {
         user_id: user.id,
         nombre: nombreEvaluacion.trim(),
