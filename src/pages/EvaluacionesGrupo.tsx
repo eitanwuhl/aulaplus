@@ -375,25 +375,33 @@ const EvaluacionesGrupo = () => {
       // Extract competency IDs from selected competencias
       const competenciasIds = normalizeArrayField(selectedCompetenciasIds);
       
-      // ===== DIAGNOSTIC LOGGING FOR BUG B =====
-      console.log('[🔍 DIAGNOSTIC] selectedGroup inspection:', {
-        selectedGroup,
-        selectedGroup_type: typeof selectedGroup,
-        selectedGroup_id: selectedGroup?.id,
-        selectedGroup_id_type: typeof selectedGroup?.id,
-        selectedGroup_id_isArray: Array.isArray(selectedGroup?.id),
-        selectedGroup_has_includes: typeof selectedGroup?.id?.includes,
-        selectedGroupId_state: selectedGroupId,
-        selectedGroupId_state_type: typeof selectedGroupId
-      });
-      // ===== END DIAGNOSTIC =====
+      // Derive nivel from selectedGroup.year (type-safe)
+      // year format: "9º Año" or "8º Año" -> extract number and convert to "9no" or "8vo"
+      const getNivelFromGroup = (group: Group | undefined): string => {
+        if (!group?.year) {
+          return '8vo'; // Default fallback
+        }
+        
+        // Extract year number from "9º Año" or "8º Año"
+        const yearMatch = group.year.match(/(\d+)/);
+        if (yearMatch && yearMatch[1]) {
+          const yearNum = parseInt(yearMatch[1], 10);
+          return yearNum === 9 ? '9no' : '8vo';
+        }
+        
+        // Fallback: check if year string contains "9" or "8"
+        if (group.year.includes('9')) return '9no';
+        if (group.year.includes('8')) return '8vo';
+        
+        return '8vo'; // Default fallback
+      };
       
       const evaluacionData = {
         user_id: user.id,
         nombre: nombreEvaluacion.trim(),
         materia: materiaFinal,
         grupo_id: selectedGroupId,
-        nivel: selectedGroup?.id.includes('9') ? '9no' : '8vo',
+        nivel: getNivelFromGroup(selectedGroup),
         fecha: new Date().toISOString().split('T')[0],
         competencias_anep: competenciasIds,
         contenidos: normalizeArrayField(selectedSubtemas),
