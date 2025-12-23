@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { DiagnosticErrorBoundary } from '@/components/DiagnosticErrorBoundary';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -269,6 +270,12 @@ const MisEvaluaciones: React.FC = () => {
 
   // Memoized: Calculate competency counts
   const competenciasCount = useMemo<CompetenciaCount[]>(() => {
+    console.log('[🔍 DIAGNOSTIC] competenciasCount useMemo executing:', {
+      filtroMateria,
+      evaluacionesFiltradas_length: evaluacionesFiltradas.length,
+      competenciasById_size: competenciasById.size
+    });
+
     if (!filtroMateria || filtroMateria === 'all') {
       return [];
     }
@@ -276,11 +283,34 @@ const MisEvaluaciones: React.FC = () => {
     const competenciasCountMap = new Map<string, number>();
     let totalCompetencias = 0;
 
-    evaluacionesFiltradas.forEach(evaluacion => {
-      evaluacion.competencias_anep.forEach(compId => {
-        competenciasCountMap.set(compId, (competenciasCountMap.get(compId) || 0) + 1);
-        totalCompetencias++;
+    try {
+      evaluacionesFiltradas.forEach((evaluacion, idx) => {
+        console.log(`[🔍 DIAGNOSTIC] Processing evaluacion ${idx}:`, {
+          id: evaluacion.id,
+          competencias_anep: evaluacion.competencias_anep,
+          competencias_anep_type: typeof evaluacion.competencias_anep,
+          competencias_anep_isArray: Array.isArray(evaluacion.competencias_anep),
+          competencias_anep_length: evaluacion.competencias_anep?.length
+        });
+
+        if (!Array.isArray(evaluacion.competencias_anep)) {
+          console.error('[🔍 DIAGNOSTIC] competencias_anep is NOT an array for evaluacion:', evaluacion.id, evaluacion.competencias_anep);
+          return;
+        }
+
+        evaluacion.competencias_anep.forEach(compId => {
+          competenciasCountMap.set(compId, (competenciasCountMap.get(compId) || 0) + 1);
+          totalCompetencias++;
+        });
       });
+    } catch (e) {
+      console.error('[🔍 DIAGNOSTIC] Error in competenciasCount forEach:', e);
+      throw e;
+    }
+
+    console.log('[🔍 DIAGNOSTIC] competenciasCountMap:', {
+      size: competenciasCountMap.size,
+      entries: Array.from(competenciasCountMap.entries()).slice(0, 3)
     });
 
     return Array.from(competenciasCountMap.entries())
@@ -487,7 +517,32 @@ const MisEvaluaciones: React.FC = () => {
     }
   };
 
+  // ===== DIAGNOSTIC: Log state on every render =====
+  console.log('[🔍 DIAGNOSTIC MisEvaluaciones] Render state:', {
+    isLoading,
+    evaluaciones_count: evaluaciones.length,
+    evaluaciones_sample: evaluaciones.slice(0, 2).map(e => ({
+      id: e.id,
+      nombre: e.nombre,
+      fecha: e.fecha,
+      fecha_type: typeof e.fecha,
+      saved_at: e.saved_at,
+      saved_at_type: typeof e.saved_at,
+      competencias_anep_length: e.competencias_anep?.length,
+      competencias_anep_type: typeof e.competencias_anep,
+      competencias_anep_isArray: Array.isArray(e.competencias_anep)
+    })),
+    filtroMateria,
+    filtroGrupo,
+    fechaRange,
+    competenciasCatalog_length: competenciasCatalog.length,
+    evaluacionesFiltradas_length: evaluacionesFiltradas.length,
+    competenciasCount_length: competenciasCount.length
+  });
+  // ===== END DIAGNOSTIC =====
+
   return (
+    <DiagnosticErrorBoundary componentName="MisEvaluaciones">
     <div className="container space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -883,6 +938,7 @@ const MisEvaluaciones: React.FC = () => {
         </DialogContent>
       </Dialog>
     </div>
+    </DiagnosticErrorBoundary>
   );
 };
 
