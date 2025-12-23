@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { DiagnosticErrorBoundary } from '@/components/DiagnosticErrorBoundary';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -149,13 +148,31 @@ const MisEvaluaciones: React.FC = () => {
           throw evalError;
         }
 
-        // Normalize competencias_anep
-        const evaluacionesNormalizadas = (evalData || []).map((evaluacion) => ({
-          ...evaluacion,
-          competencias_anep: normalizeArrayField(evaluacion.competencias_anep),
-        }));
+        // Normalize data at load time to ensure consistent types
+        const evaluacionesNormalizadas = (evalData || []).map((evaluacion) => {
+          // Normalize competencias_anep: always ensure it's a string[]
+          const competenciasNormalizadas = normalizeArrayField(evaluacion.competencias_anep);
+          
+          // Normalize fecha: convert empty string to null, validate format
+          let fechaNormalizada: string | null = null;
+          if (evaluacion.fecha) {
+            const fechaStr = String(evaluacion.fecha).trim();
+            if (fechaStr) {
+              // Validate date format (YYYY-MM-DD or similar)
+              const dateObj = new Date(fechaStr);
+              if (!isNaN(dateObj.getTime())) {
+                fechaNormalizada = fechaStr;
+              }
+            }
+          }
+          
+          return {
+            ...evaluacion,
+            competencias_anep: competenciasNormalizadas,
+            fecha: fechaNormalizada,
+          };
+        });
 
-        console.log('[EVALUACIONES] Loaded:', evaluacionesNormalizadas.length);
         setEvaluaciones(evaluacionesNormalizadas as unknown as Evaluacion[]);
       } catch (error) {
         console.error('Error cargando evaluaciones:', error);
@@ -191,16 +208,9 @@ const MisEvaluaciones: React.FC = () => {
 
   // Memoized: Filter evaluaciones (with competencias_anep, date range, subject, group)
   const evaluacionesFiltradas = useMemo(() => {
-    console.log('[EVALUACIONES] Filtering evaluaciones:', {
-      totalEvaluaciones: evaluaciones.length,
-      filtroMateria,
-      filtroGrupo,
-      fechaRange: fechaRange ? { from: fechaRange.from, to: fechaRange.to } : null
-    });
-
     const filtered = evaluaciones.filter(evaluacion => {
-      // Must have at least one competency assigned
-      if (!evaluacion.competencias_anep || evaluacion.competencias_anep.length === 0) {
+      // Must have at least one competency assigned (competencias_anep is always array after normalization)
+      if (!Array.isArray(evaluacion.competencias_anep) || evaluacion.competencias_anep.length === 0) {
         return false;
       }
 
@@ -265,17 +275,11 @@ const MisEvaluaciones: React.FC = () => {
     });
 
     console.log('[EVALUACIONES] Filtered:', filtered.length);
-    return filtered;
-  }, [evaluaciones, filtroMateria, filtroGrupo, fechaRange]);
+      return filtered;
+    }, [evaluaciones, filtroMateria, filtroGrupo, fechaRange]);
 
   // Memoized: Calculate competency counts
   const competenciasCount = useMemo<CompetenciaCount[]>(() => {
-    console.log('[🔍 DIAGNOSTIC] competenciasCount useMemo executing:', {
-      filtroMateria,
-      evaluacionesFiltradas_length: evaluacionesFiltradas.length,
-      competenciasById_size: competenciasById.size
-    });
-
     if (!filtroMateria || filtroMateria === 'all') {
       return [];
     }
@@ -283,34 +287,16 @@ const MisEvaluaciones: React.FC = () => {
     const competenciasCountMap = new Map<string, number>();
     let totalCompetencias = 0;
 
-    try {
-      evaluacionesFiltradas.forEach((evaluacion, idx) => {
-        console.log(`[🔍 DIAGNOSTIC] Processing evaluacion ${idx}:`, {
-          id: evaluacion.id,
-          competencias_anep: evaluacion.competencias_anep,
-          competencias_anep_type: typeof evaluacion.competencias_anep,
-          competencias_anep_isArray: Array.isArray(evaluacion.competencias_anep),
-          competencias_anep_length: evaluacion.competencias_anep?.length
-        });
+    evaluacionesFiltradas.forEach((evaluacion) => {
+      // Defensive guard: competencias_anep should always be array after normalization, but guard as last line of defense
+      if (!Array.isArray(evaluacion.competencias_anep)) {
+        return;
+      }
 
-        if (!Array.isArray(evaluacion.competencias_anep)) {
-          console.error('[🔍 DIAGNOSTIC] competencias_anep is NOT an array for evaluacion:', evaluacion.id, evaluacion.competencias_anep);
-          return;
-        }
-
-        evaluacion.competencias_anep.forEach(compId => {
-          competenciasCountMap.set(compId, (competenciasCountMap.get(compId) || 0) + 1);
-          totalCompetencias++;
-        });
+      evaluacion.competencias_anep.forEach(compId => {
+        competenciasCountMap.set(compId, (competenciasCountMap.get(compId) || 0) + 1);
+        totalCompetencias++;
       });
-    } catch (e) {
-      console.error('[🔍 DIAGNOSTIC] Error in competenciasCount forEach:', e);
-      throw e;
-    }
-
-    console.log('[🔍 DIAGNOSTIC] competenciasCountMap:', {
-      size: competenciasCountMap.size,
-      entries: Array.from(competenciasCountMap.entries()).slice(0, 3)
     });
 
     return Array.from(competenciasCountMap.entries())
@@ -348,7 +334,8 @@ const MisEvaluaciones: React.FC = () => {
 
     const competenciasUsadasIds = new Set<string>();
     evaluacionesFiltradas.forEach(evaluacion => {
-      if (evaluacion.competencias_anep && evaluacion.competencias_anep.length > 0) {
+      // competencias_anep is always array after normalization, but guard as last line of defense
+      if (Array.isArray(evaluacion.competencias_anep) && evaluacion.competencias_anep.length > 0) {
         evaluacion.competencias_anep.forEach(compId => {
           competenciasUsadasIds.add(compId);
         });
@@ -383,7 +370,7 @@ const MisEvaluaciones: React.FC = () => {
 
     if (evaluacionesFiltradas.length === 0) {
       const evaluacionesConCompetencias = evaluaciones.filter(e => 
-        e.competencias_anep && e.competencias_anep.length > 0
+        Array.isArray(e.competencias_anep) && e.competencias_anep.length > 0
       );
       
       const evaluacionesConMateria = evaluacionesConCompetencias.filter(e => {
@@ -517,32 +504,7 @@ const MisEvaluaciones: React.FC = () => {
     }
   };
 
-  // ===== DIAGNOSTIC: Log state on every render =====
-  console.log('[🔍 DIAGNOSTIC MisEvaluaciones] Render state:', {
-    isLoading,
-    evaluaciones_count: evaluaciones.length,
-    evaluaciones_sample: evaluaciones.slice(0, 2).map(e => ({
-      id: e.id,
-      nombre: e.nombre,
-      fecha: e.fecha,
-      fecha_type: typeof e.fecha,
-      saved_at: e.saved_at,
-      saved_at_type: typeof e.saved_at,
-      competencias_anep_length: e.competencias_anep?.length,
-      competencias_anep_type: typeof e.competencias_anep,
-      competencias_anep_isArray: Array.isArray(e.competencias_anep)
-    })),
-    filtroMateria,
-    filtroGrupo,
-    fechaRange,
-    competenciasCatalog_length: competenciasCatalog.length,
-    evaluacionesFiltradas_length: evaluacionesFiltradas.length,
-    competenciasCount_length: competenciasCount.length
-  });
-  // ===== END DIAGNOSTIC =====
-
   return (
-    <DiagnosticErrorBoundary componentName="MisEvaluaciones">
     <div className="container space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -938,7 +900,6 @@ const MisEvaluaciones: React.FC = () => {
         </DialogContent>
       </Dialog>
     </div>
-    </DiagnosticErrorBoundary>
   );
 };
 
