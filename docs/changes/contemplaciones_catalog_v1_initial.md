@@ -1,7 +1,7 @@
 # Reporte: Inicio Catálogo Contemplaciones v2
 
 **Fecha:** 2026-01-23  
-**Commit:** `b2cb032` (a ser modificado)  
+**Commit:** `59d5aab`  
 **Rama:** `Nuevos-perfiles-y-reglas-para-contemplaciones`
 
 ---
@@ -81,17 +81,20 @@
 **Nivel:** 🟢 **BAJO**
 
 **Razón:**
-- Solo documentación y estructura de datos
+- Se creó un nuevo archivo TypeScript (`src/lib/contemplaciones/catalog.ts`) con el catálogo y funciones helper
+- Este archivo **no está integrado/consumido** por ningún componente de UI ni por código existente
 - No hay cambios funcionales en el código existente
 - No hay cambios en la base de datos
 - No hay cambios en la UI
 - Archivos nuevos, no modifican comportamiento existente
-- El catálogo es solo una fuente de datos estáticos
+- El catálogo es una fuente de datos estáticos que aún no se utiliza en runtime
 
 **Consideraciones:**
+- El archivo TypeScript `catalog.ts` es nuevo y no está siendo importado por ningún módulo existente
 - Los tipos TypeScript son nuevos y no afectan código existente
-- Las funciones helper están listas para ser usadas pero aún no se integran
+- Las funciones helper están listas para ser usadas pero aún no se integran en la aplicación
 - La documentación es informativa y no afecta el runtime
+- El comportamiento actual de la aplicación no cambia porque el catálogo no está siendo consumido
 
 ---
 
@@ -141,14 +144,18 @@ cat CONTEMPLACIONES_V2.md | grep "2026-01-23"
 - Verificar que hay nota sobre badge "Sugerido"
 
 ### Paso 6: Verificar deduplicación
-```typescript
-// Probar en consola del navegador o Node.js
-import { normalizeContemplacionId, areContemplacionesDuplicadas } from './src/lib/contemplaciones/catalog';
-
-normalizeContemplacionId('contemplacion-9')  // → 'contemplacion-9-22'
-normalizeContemplacionId('contemplacion-22') // → 'contemplacion-9-22'
-areContemplacionesDuplicadas('contemplacion-9', 'contemplacion-22') // → true
-```
+- Ejecutar typecheck del proyecto para validar que `catalog.ts` compila correctamente:
+  ```bash
+  # Si el proyecto tiene TypeScript configurado
+  npm run typecheck
+  # o
+  npx tsc --noEmit
+  ```
+- Verificar manualmente en `src/lib/contemplaciones/catalog.ts` que:
+  - La función `normalizeContemplacionId()` convierte `'contemplacion-9'` y `'contemplacion-22'` a `'contemplacion-9-22'`
+  - La función `areContemplacionesDuplicadas()` retorna `true` para `('contemplacion-9', 'contemplacion-22')`
+  - El array `CONTEMPLACIONES_CATALOG` contiene solo una entrada con `id: 'contemplacion-9-22'` (no hay entradas separadas para #9 y #22)
+- (Opcional) Si hay tests configurados, crear un test unitario que valide la deduplicación
 
 ---
 
