@@ -19,6 +19,7 @@ import { mockGroups } from '@/data/mockData';
 import { ModalityDistribution } from './ModalityDistribution';
 import { UnidadDidacticaBuilder } from './UnidadDidacticaBuilder';
 import { Materia } from '@/data/catalogo';
+import { useToast } from '@/hooks/use-toast';
 
 interface WizardStepsProps {
   wizardData: WizardData;
@@ -45,6 +46,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
   isLoading,
   validation
 }) => {
+  const { toast } = useToast();
 
   // Pristine state tracking: campos no muestran errores hasta que el usuario intente avanzar o interactúe
   const [submitAttempted, setSubmitAttempted] = useState<Record<number, boolean>>({});
@@ -146,6 +148,23 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
     setSubmitAttempted(prev => ({ ...prev, [currentPaso]: true }));
 
     if (!validation.valid) {
+      // DEV: Log validation failure for debugging
+      if (import.meta.env.DEV) {
+        console.warn('[WizardSteps] Final validation failed', {
+          errors: validation.errors,
+          firstInvalidField: validation.firstInvalidField,
+          tipo_planificacion: wizardData.tipo_planificacion
+        });
+      }
+      
+      // Show user-visible feedback
+      toast({
+        title: "Campos obligatorios incompletos",
+        description: "Hay campos obligatorios sin completar. Revisá los pasos anteriores.",
+        variant: "destructive",
+        duration: 5000
+      });
+      
       // Focus primer campo inválido (puede estar en pasos anteriores)
       focusFirstInvalidField(validation);
       
@@ -155,7 +174,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
 
     // Validación exitosa: crear planificación
     onFinish();
-  }, [wizardData.paso, validation, focusFirstInvalidField, onFinish]);
+  }, [wizardData.paso, wizardData.tipo_planificacion, validation, focusFirstInvalidField, onFinish, toast]);
 
   const renderPaso0 = () => (
     <Card>
@@ -797,13 +816,15 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
               })
             }
             totalClasesDisponibles={
-              wizardData.horario && wizardData.contexto?.fecha_inicio && wizardData.contexto?.fecha_fin
-                ? Math.floor(
-                    (new Date(wizardData.contexto.fecha_fin).getTime() - 
-                     new Date(wizardData.contexto.fecha_inicio).getTime()) / 
-                    (1000 * 60 * 60 * 24 * 7)
-                  ) * wizardData.horario.horas_semanales
-                : 0
+              wizardData.tipo_planificacion === 'sin_periodo'
+                ? (wizardData.contexto?.cantidad_sesiones || 0)
+                : wizardData.horario && wizardData.contexto?.fecha_inicio && wizardData.contexto?.fecha_fin
+                  ? Math.floor(
+                      (new Date(wizardData.contexto.fecha_fin).getTime() - 
+                       new Date(wizardData.contexto.fecha_inicio).getTime()) / 
+                      (1000 * 60 * 60 * 24 * 7)
+                    ) * wizardData.horario.horas_semanales
+                  : 0
             }
             errorCompetencias={getError('competencias_especificas')}
           />
@@ -837,6 +858,65 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           </p>
         )}
       </div>
+
+      {/* PHASE 3.1: Tema de cada clase (opcional) */}
+      {(() => {
+        // Calcular número total de sesiones basado en unidades didácticas
+        const unidadesDidacticas = wizardData.enfoque?.unidades_didacticas || [];
+        const totalSesiones = unidadesDidacticas.reduce((sum, unidad) => {
+          const clasesEstimadas = (unidad.clases_estimadas && unidad.clases_estimadas > 0 && !isNaN(unidad.clases_estimadas))
+            ? unidad.clases_estimadas
+            : 1;
+          return sum + clasesEstimadas;
+        }, 0);
+
+        const sessionBriefs = wizardData.enfoque?.sessionBriefs || Array(Math.max(totalSesiones, 0)).fill(undefined);
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Tema de cada clase (opcional)</CardTitle>
+              <CardDescription className="mt-2">
+                Podés indicar el tema o foco de cada clase. Si dejás un campo vacío, la IA definirá automáticamente el tema de esa clase.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {totalSesiones === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Primero definí al menos una unidad didáctica y la cantidad de clases para habilitar estos campos.
+                </p>
+              ) : (
+                Array.from({ length: totalSesiones }, (_, index) => {
+                  const sessionNumber = index + 1;
+                  return (
+                    <div key={index} className="space-y-2">
+                      <Label htmlFor={`session-brief-${index}`}>
+                        Clase {sessionNumber} – Tema de la clase
+                      </Label>
+                      <Input
+                        id={`session-brief-${index}`}
+                        type="text"
+                        value={sessionBriefs[index] || ''}
+                        onChange={(e) => {
+                          const newBriefs = [...sessionBriefs];
+                          const trimmedValue = e.target.value.trim();
+                          newBriefs[index] = trimmedValue || undefined;
+                          onUpdateEnfoque({
+                            ...wizardData.enfoque,
+                            sessionBriefs: newBriefs
+                          });
+                        }}
+                        placeholder="Ej: Surgimiento y contexto histórico del Batllismo"
+                        className="w-full"
+                      />
+                    </div>
+                  );
+                })
+              )}
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* Requerimientos del Docente */}
       <Card>

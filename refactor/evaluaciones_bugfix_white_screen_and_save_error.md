@@ -601,3 +601,20 @@ npm run dev
 
 **Status**: ✅ Fixes implementados y documentados  
 **Próximo paso**: Testing manual + commit
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

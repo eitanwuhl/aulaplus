@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { User as SupabaseUser, Session } from '@supabase/supabase-js';
 
@@ -44,6 +44,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
+  const profileUpsertInProgress = useRef<Set<string>>(new Set());
 
   // Function to ensure demo user exists and login silently in background
   const ensureSupabaseAuth = async () => {
@@ -78,16 +79,59 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         setSession(session);
         
         // Create or update profile silently in background when authenticated
+        // Use idempotent upsert with conflict handling to avoid 409 spam
         if (session?.user) {
-          setTimeout(() => {
-            supabase.from('profiles').upsert({
-              user_id: session.user.id,
-              display_name: 'Profesor Demo',
-              role: 'teacher'
-            }).then(() => {
-              console.log('Profile updated silently');
-            });
-          }, 0);
+          const userId = session.user.id;
+          
+          // Prevent multiple concurrent upserts for the same user
+          if (profileUpsertInProgress.current.has(userId)) {
+            if (import.meta.env.DEV) {
+              console.log(`[AuthContext] Profile upsert already in progress for user ${userId}, skipping`);
+            }
+            return;
+          }
+          
+          profileUpsertInProgress.current.add(userId);
+          
+          // Use upsert with onConflict to handle existing profiles gracefully
+          supabase.from('profiles').upsert({
+            user_id: userId,
+            display_name: 'Profesor Demo',
+            role: 'teacher'
+          }, {
+            onConflict: 'user_id'
+          }).then(({ error }) => {
+            if (error) {
+              // Treat 409 (Conflict) as success - profile already exists
+              if (error.code === '23505' || error.code === 'PGRST116' || error.message?.includes('duplicate') || error.message?.includes('unique')) {
+                if (import.meta.env.DEV) {
+                  console.log(`[AuthContext] Profile already exists for user ${userId} (this is OK)`);
+                }
+              } else {
+                // Only log non-409 errors
+                console.error(`[AuthContext] Error upserting profile for user ${userId}:`, error);
+              }
+            } else {
+              if (import.meta.env.DEV) {
+                console.log(`[AuthContext] Profile upserted successfully for user ${userId}`);
+              }
+            }
+          }).catch((error) => {
+            // Handle unexpected errors
+            if (error.code === '23505' || error.code === 'PGRST116' || error.message?.includes('duplicate') || error.message?.includes('unique')) {
+              // 409-like error - treat as success
+              if (import.meta.env.DEV) {
+                console.log(`[AuthContext] Profile conflict (already exists) for user ${userId} (this is OK)`);
+              }
+            } else {
+              console.error(`[AuthContext] Unexpected error upserting profile for user ${userId}:`, error);
+            }
+          }).finally(() => {
+            // Remove from in-progress set after a short delay to prevent rapid re-execution
+            setTimeout(() => {
+              profileUpsertInProgress.current.delete(userId);
+            }, 1000);
+          });
         }
 
         if (!isInitialized) {

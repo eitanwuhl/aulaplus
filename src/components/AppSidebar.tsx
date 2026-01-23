@@ -1,4 +1,3 @@
-import { useState } from "react"
 import { 
   Home, 
   Users, 
@@ -6,11 +5,11 @@ import {
   Calendar, 
   BarChart3, 
   Settings,
-  BookOpen,
   ClipboardList,
   FolderOpen
 } from "lucide-react"
 import { NavLink, useLocation } from "react-router-dom"
+import logo from "@/assets/logo/aulaplus-logo.png.png"
 
 import {
   Sidebar,
@@ -86,17 +85,19 @@ export function AppSidebar() {
 
   return (
     <Sidebar className={open ? "w-64" : "w-16"} collapsible="icon">
-      <SidebarHeader className="border-b border-border p-4">
-        <div className="flex items-center gap-3">
-          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-primary to-primary-light flex items-center justify-center">
-            <BookOpen className="h-4 w-4 text-primary-foreground" />
-          </div>
-          {open && (
-            <div className="flex flex-col">
-              <h2 className="text-sm font-semibold text-sidebar-foreground">Aula+</h2>
-              <p className="text-xs text-sidebar-foreground/70">Plataforma Educativa</p>
-            </div>
-          )}
+      <SidebarHeader className="border-b border-border py-4">
+        <div className="flex items-center px-2" style={{ minHeight: '3.5rem', height: '100%' }}>
+          <img 
+            src={logo} 
+            alt="Aula+" 
+            className={`transition-all duration-200 object-contain ${
+              open ? "max-h-[72px] w-auto" : "h-12 w-12"
+            }`}
+            style={{
+              display: 'block'
+            }}
+            draggable="false"
+          />
         </div>
       </SidebarHeader>
 

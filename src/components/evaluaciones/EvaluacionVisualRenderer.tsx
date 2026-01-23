@@ -19,6 +19,7 @@ interface EvaluacionVisualRendererProps {
     content: string;
     version: number;
     adaptations?: string[];
+    assignedStudents?: string[];  // Student names assigned to this version
   };
   subject?: string;
   selectedContent?: { nombre: string }[];
@@ -112,6 +113,7 @@ export const EvaluacionVisualRenderer: React.FC<EvaluacionVisualRendererProps> =
             criteriosLogro={criteriosLogro}
             version={String(evaluation.version)}
             students={students}
+            assignedStudents={evaluation.assignedStudents}
           />
         </CardContent>
       </Card>

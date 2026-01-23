@@ -5,13 +5,14 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Clock, FileText, FileDown, Bot, Sparkles, Lightbulb, Loader2, Wand2 } from 'lucide-react';
+import { Clock, FileText, FileDown, Bot, Sparkles, Lightbulb, Loader2, Wand2, AlertTriangle } from 'lucide-react';
 import { SesionClase } from '@/types/planificacion';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { PDFGenerator } from '@/components/PDFGenerator';
 import { parsePlan, buildPlanHtml, ParsedPlan } from '@/lib/planParser';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
+import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupContext';
 
 interface EditorSesionNuevoProps {
   sesion: SesionClase | null;
@@ -99,6 +100,80 @@ const stripLeadingDuplicateSectionHeading = (html: string, section: 'inicio' | '
   return out.trim();
 };
 
+/**
+ * Robust extraction of "Diferenciación/Adaptaciones" content from HTML sections.
+ * This is a defensive layer to ensure diferenciacion is removed from inicio/desarrollo/cierre
+ * even if the parser missed it. Extracts both heading-based and inline patterns.
+ */
+function extractDiferenciacionFromHtml(html: string): { cleanedHtml: string; extracted: string } {
+  if (!html) return { cleanedHtml: '', extracted: '' };
+  
+  let cleaned = html;
+  const extracted: string[] = [];
+  const toRemove: string[] = [];
+  
+  // Pattern 1: H2 heading with "Diferenciación/Adaptaciones" followed by content until next H1/H2 or end
+  const h2Pattern = /<h2[^>]*>[\s\S]*?(?:diferenciaci[oó]n(?:es)?(?:\s*(?:\/|y)\s*adaptaciones?)?|adaptaciones?)[\s\S]*?<\/h2>([\s\S]*?)(?=<h[12][^>]*>|$)/gi;
+  let match;
+  const htmlCopy1 = html;
+  while ((match = h2Pattern.exec(htmlCopy1)) !== null) {
+    const fullMatch = match[0];
+    const content = match[1].trim();
+    if (content) {
+      extracted.push(content);
+      toRemove.push(fullMatch);
+    }
+  }
+  
+  // Pattern 2: Paragraph with strong label "Diferenciación/Adaptaciones:" followed by list/paragraphs
+  // Matches: <p><strong>Diferenciación/Adaptaciones:</strong></p> followed by content (ul, p, etc.)
+  const strongLabelPattern = /<p[^>]*>\s*<strong>\s*(?:diferenciaci[oó]n(?:es)?(?:\s*(?:\/|y)\s*adaptaciones?)?|adaptaciones?)\s*:?\s*<\/strong>\s*<\/p>\s*([\s\S]*?)(?=<h[1-6][^>]*>|<p[^>]*>\s*<strong>\s*(?!diferenciaci[oó]n|adaptaciones)|$)/gi;
+  const htmlCopy2 = html;
+  while ((match = strongLabelPattern.exec(htmlCopy2)) !== null) {
+    const fullMatch = match[0];
+    const content = match[1].trim();
+    if (content) {
+      extracted.push(content);
+      toRemove.push(fullMatch);
+    }
+  }
+  
+  // Pattern 3: Any remaining inline mentions in single paragraph (defensive)
+  // Matches: <p>...<strong>Diferenciación/Adaptaciones:</strong>...</p>
+  // This should catch things that weren't caught by patterns 1 and 2
+  const inlinePattern = /<p[^>]*>[\s\S]*?<strong>\s*(?:diferenciaci[oó]n(?:es)?(?:\s*(?:\/|y)\s*adaptaciones?)?|adaptaciones?)\s*:?\s*<\/strong>[\s\S]*?<\/p>/gi;
+  const htmlCopy3 = html;
+  while ((match = inlinePattern.exec(htmlCopy3)) !== null) {
+    const fullMatch = match[0];
+    // Extract content after the label
+    const content = fullMatch.replace(/<p[^>]*>[\s\S]*?<strong>\s*(?:diferenciaci[oó]n(?:es)?(?:\s*(?:\/|y)\s*adaptaciones?)?|adaptaciones?)\s*:?\s*<\/strong>\s*/gi, '').replace(/<\/p>$/, '').trim();
+    if (content && content.length > 0) {
+      extracted.push(`<p>${content}</p>`);
+      toRemove.push(fullMatch);
+    }
+  }
+  
+  // Remove all matched blocks (in reverse order to preserve indices)
+  toRemove.sort((a, b) => html.indexOf(b) - html.indexOf(a));
+  toRemove.forEach(block => {
+    cleaned = cleaned.replace(block, '');
+  });
+  
+  // Clean up extra whitespace
+  cleaned = cleaned
+    .replace(/(\s*<br\s*\/?>\s*){2,}/gi, '<br />')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  
+  const mergedExtracted = extracted.filter(e => e && e.length > 0).join('\n\n');
+  
+  if (mergedExtracted && import.meta.env.DEV) {
+    console.log('[EditorSesionNuevo] Extracted diferenciacion content from section:', mergedExtracted.substring(0, 100) + '...');
+  }
+  
+  return { cleanedHtml: cleaned, extracted: mergedExtracted };
+}
+
 export function EditorSesionNuevo({ 
   sesion, 
   onActualizar, 
@@ -107,6 +182,27 @@ export function EditorSesionNuevo({
   materia,
   nivel
 }: EditorSesionNuevoProps) {
+  // PHASE 3.2.1 FIX: Defensive guard - prevent crash if sesion is missing
+  if (!sesion) {
+    return (
+      <Card className="h-full flex items-center justify-center p-12">
+        <div className="text-center max-w-md space-y-4">
+          <div className="flex justify-center">
+            <div className="rounded-full bg-muted p-6">
+              <AlertTriangle className="h-8 w-8 text-muted-foreground" />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-xl font-semibold">No hay sesión seleccionada</h3>
+            <p className="text-sm text-muted-foreground">
+              Selecciona una sesión del calendario o del backlog para ver su contenido.
+            </p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState('clase');
   const [isAILoading, setIsAILoading] = useState(false);
@@ -135,7 +231,30 @@ export function EditorSesionNuevo({
     }
 
     try {
-      return parsePlan(planHtml, recursos);
+      const parsed = parsePlan(planHtml, recursos);
+      
+      // Defensive normalization: Extract any remaining "Diferenciación/Adaptaciones" 
+      // from inicio/desarrollo/cierre sections to ensure it only appears at the bottom
+      const inicioClean = extractDiferenciacionFromHtml(parsed.inicio || '');
+      const desarrolloClean = extractDiferenciacionFromHtml(parsed.desarrollo || '');
+      const cierreClean = extractDiferenciacionFromHtml(parsed.cierre || '');
+      
+      // Merge all extracted diferenciacion content
+      const allExtracted = [
+        inicioClean.extracted,
+        desarrolloClean.extracted,
+        cierreClean.extracted,
+        parsed.diferenciacion || ''
+      ].filter(e => e && e.trim().length > 0).join('\n\n');
+      
+      return {
+        inicio: inicioClean.cleanedHtml,
+        desarrollo: desarrolloClean.cleanedHtml,
+        cierre: cierreClean.cleanedHtml,
+        recursos: parsed.recursos || recursos || [],
+        diferenciacion: allExtracted || undefined,
+        durations: parsed.durations
+      };
     } catch (error) {
       console.error('Error parsing plan for rendering:', error);
       // Fallback to empty structure if parsing fails
@@ -285,6 +404,19 @@ export function EditorSesionNuevo({
 
     setIsAILoading(true);
     try {
+      // PHASE 4: Load group context from Supabase + mockGroups
+      const grupoId = await getGrupoIdFromPlanificacion(planificacionId);
+      const groupContext = await loadGroupContext(grupoId);
+      
+      if (groupContext.perfilGrupo) {
+        console.log('[PHASE4-EditorSesion] Using group profile:', {
+          tamanio: groupContext.perfilGrupo.tamanio,
+          dominante: groupContext.perfilGrupo.dominante,
+          estudiantesConAjustes: groupContext.estudiantes?.length || 0,
+          teacherSugerenciasPresent: !!groupContext.teacherSugerencias
+        });
+      }
+      
       const payload = {
         modo: 'generar_plan_html',
         sesionId: sesion.id,
@@ -295,7 +427,10 @@ export function EditorSesionNuevo({
         contenidos: sesion.contenidos_anep || [],
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
-        instruccionesDocente: undefined
+        instruccionesDocente: undefined,
+        // PHASE 4: Include group profile and student adjustments if available
+        ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
+        ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes })
       };
 
       console.log('Generando plan inicial con payload:', payload);
@@ -477,7 +612,12 @@ export function EditorSesionNuevo({
     );
   }
 
-  const contenidoPrincipal = sesion.contenidos_anep?.[0] || 'Sin contenido definido';
+  // PHASE 3.2.1 FIX: Display priority for session detail card
+  // Priority: 1) macro content (contenidos_anep[0]), 2) session_brief || titulo, 3) fallback
+  const macro = sesion.contenidos_anep?.[0];
+  const brief = sesion.session_brief || sesion.titulo;
+  const mainTitle = macro || brief || `Sesión ${sesion.orden}`;
+  const subtitle = macro && brief ? brief : null; // Show brief as subtitle only if macro exists
 
   return (
     <div className="space-y-6">
@@ -485,7 +625,12 @@ export function EditorSesionNuevo({
       {/* Cabecera: Título = Contenido + Metadatos */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-2xl">{contenidoPrincipal}</CardTitle>
+          <CardTitle className="text-2xl">{mainTitle}</CardTitle>
+          {subtitle && (
+            <p className="text-sm text-muted-foreground mt-2 font-normal">
+              {subtitle}
+            </p>
+          )}
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
@@ -715,7 +860,7 @@ export function EditorSesionNuevo({
             <div id="sesion-pdf-content" className="hidden print:block space-y-6 p-8">
               {/* 1. Cabecera */}
               <div className="border-b pb-4">
-                <h1 className="text-2xl font-bold mb-3">{contenidoPrincipal}</h1>
+                <h1 className="text-2xl font-bold mb-3">{mainTitle}</h1>
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <p><strong>Fecha:</strong> {sesion.fecha 
                     ? new Date(sesion.fecha).toLocaleDateString('es-ES', { 

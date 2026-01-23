@@ -27,6 +27,7 @@ interface SimplifiedSmartRubricProps {
   criteriosLogro?: string[];
   version?: string;
   students?: any[];
+  assignedStudents?: string[];  // Student names assigned to this version (source of truth)
   duracionMinutos?: number;
 }
 
@@ -35,6 +36,7 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
   criteriosLogro = [],
   version = "1",
   students = [],
+  assignedStudents = [],
   duracionMinutos = 90
 }) => {
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
@@ -113,8 +115,47 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
     };
   };
 
+  // Normalize student name for comparison (handles accents, whitespace, casing)
+  const normalizeStudentName = (name: string): string => {
+    if (!name) return '';
+    return name
+      .trim()
+      .replace(/\s+/g, ' ')  // Collapse multiple whitespace to single space
+      .toLowerCase()
+      .normalize('NFD')       // Decompose accented characters
+      .replace(/[\u0300-\u036f]/g, ''); // Remove diacritics/accents
+  };
+
   // ESTUDIANTES CONTEMPLADOS - Integrado en la rúbrica global
+  // Uses assignedStudents as source of truth when available
   const generateStudentAssignments = (): StudentAssignment[] => {
+    // If assignedStudents is provided, use it to filter students by name (with normalization)
+    if (assignedStudents && assignedStudents.length > 0 && students && students.length > 0) {
+      // Normalize assigned student names for comparison
+      const assignedStudentNamesNormalized = new Set(
+        assignedStudents.map(name => normalizeStudentName(name))
+      );
+      
+      // Filter students by matching normalized names
+      const filteredStudents = students.filter(student => {
+        const studentName = student.name || `Estudiante ${student.id}`;
+        const normalizedStudentName = normalizeStudentName(studentName);
+        return assignedStudentNamesNormalized.has(normalizedStudentName);
+      });
+      
+      // If assignedStudents was provided but no matches found, return empty (don't fallback)
+      if (filteredStudents.length === 0) {
+        return []; // Empty list - assignedStudents exists but no matches found
+      }
+      
+      // Return matched students
+      return filteredStudents.map(student => ({
+        nombre: student.name || `Estudiante ${student.id}`,
+        justificacion: generateContextualJustification(student, evaluationContent)
+      }));
+    }
+
+    // Fallback: Only use legacy logic when assignedStudents is NOT provided (undefined/empty)
     if (!students || students.length === 0) {
       // Usar estudiantes mock si no se proporcionan
       const selectedStudents = mockStudents.slice(0, Math.min(4, mockStudents.length));
@@ -124,7 +165,7 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
       }));
     }
 
-    // Distribución equilibrada evitando repeticiones
+    // Distribución equilibrada evitando repeticiones (fallback only when assignedStudents not provided)
     const selectedStudents = students.slice(0, Math.min(4, students.length));
     return selectedStudents.map(student => ({
       nombre: student.name || `Estudiante ${student.id}`,
@@ -262,12 +303,23 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {studentAssignments.map((assignment, index) => (
-              <div key={index} className="p-4 border border-border rounded-lg">
-                <h4 className="font-semibold text-foreground mb-2">{assignment.nombre}</h4>
-                <p className="text-sm text-muted-foreground">{assignment.justificacion}</p>
+            {studentAssignments.length === 0 && assignedStudents && assignedStudents.length > 0 ? (
+              <div className="p-4 border border-amber-200 bg-amber-50/50 rounded-lg text-center">
+                <p className="text-sm text-amber-800">
+                  No se encontraron estudiantes que coincidan con los nombres asignados a esta versión.
+                </p>
+                <p className="text-xs text-amber-700 mt-2">
+                  Verifica que los nombres en el grupo coincidan con los estudiantes asignados.
+                </p>
               </div>
-            ))}
+            ) : (
+              studentAssignments.map((assignment, index) => (
+                <div key={index} className="p-4 border border-border rounded-lg">
+                  <h4 className="font-semibold text-foreground mb-2">{assignment.nombre}</h4>
+                  <p className="text-sm text-muted-foreground">{assignment.justificacion}</p>
+                </div>
+              ))
+            )}
           </div>
         </CardContent>
       </Card>

@@ -58,6 +58,40 @@ const TeacherGroups = () => {
     setSelectedStudent(null);
   };
 
+  // Helper function to check if a student requires adjustments (explicit flags only)
+  const studentRequiresAdjustments = (student: MockStudent): boolean => {
+    // Source of truth: explicit flags from localStorage or student.informeTecnico
+    // Check localStorage first (user-controlled values)
+    try {
+      const accesoKey = `adecuacionAcceso:${student.id}`;
+      const contenidoKey = `adecuacionContenido:${student.id}`;
+      
+      const accesoFromStorage = localStorage.getItem(accesoKey);
+      const contenidoFromStorage = localStorage.getItem(contenidoKey);
+      
+      if (accesoFromStorage !== null) {
+        const accesoValue = JSON.parse(accesoFromStorage);
+        if (accesoValue === true) return true;
+      }
+      
+      if (contenidoFromStorage !== null) {
+        const contenidoValue = JSON.parse(contenidoFromStorage);
+        if (contenidoValue === true) return true;
+      }
+    } catch (error) {
+      // If localStorage read fails, fall through to fallback
+    }
+    
+    // Fallback: check student.informeTecnico (if present in mock data)
+    if (student.informeTecnico) {
+      if (student.informeTecnico.requiereAdecuacionAcceso === true) return true;
+      if (student.informeTecnico.requiereAdecuacionContenido === true) return true;
+    }
+    
+    // Default: no adjustments required
+    return false;
+  };
+
   const getGroupStats = (group: MockGroup) => {
     const students = group.students;
     // Convertir progreso a calificaciones (0-100 -> 1-12 scale)
@@ -66,8 +100,9 @@ const TeacherGroups = () => {
       return sum + grade;
     }, 0) / students.length;
     
+    // Count students with explicit adjustment flags (source of truth)
     const studentsWithAdjustments = students.filter(student => 
-      student.contemplaciones && student.contemplaciones.length > 0
+      studentRequiresAdjustments(student)
     ).length;
     
     return {

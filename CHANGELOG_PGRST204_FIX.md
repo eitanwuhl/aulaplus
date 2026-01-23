@@ -311,3 +311,23 @@ Si después de aplicar la migración persiste el error:
 **Acción requerida**: Usuario debe aplicar migración (`npx supabase db push`)
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

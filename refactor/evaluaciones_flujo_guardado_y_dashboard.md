@@ -539,3 +539,20 @@ pendientes = catálogo.filter(comp => !usadas.has(comp.id))
 **Branch**: `Aulaplus-by-eitan-2`  
 **Build**: Pasa sin errores de TypeScript  
 **Próximo paso**: Testing manual y commit
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -264,11 +264,6 @@ ESTRUCTURA EXACTA REQUERIDA:
     <li>Los estudiantes escriben en 5 líneas su respuesta.</li>
   </ul>
   <p><strong>Recursos:</strong> proyector, láminas impresas.</p>
-  <p><strong>Diferenciación/Adaptaciones:</strong></p>
-  <ul>
-    <li>Visual: Imágenes claras y coloridas.</li>
-    <li>Auditivo: Lectura en voz alta de testimonios.</li>
-  </ul>
 
   <h2>Desarrollo (100 min)</h2>
   <h3>Parte A – Mapa Mental Colaborativo</h3>
@@ -290,6 +285,18 @@ ESTRUCTURA EXACTA REQUERIDA:
     <li>Cada estudiante aporta una palabra que resuma lo aprendido.</li>
     <li>El docente vincula esas palabras con el vocabulario de la unidad.</li>
   </ul>
+
+  <h2>Diferenciación/Adaptaciones</h2>
+  <ul>
+    <li><strong>Momento:</strong> Inicio - durante la actividad de apertura<br>
+        <strong>Perfil/Necesidad:</strong> Estudiantes con dificultades de atención<br>
+        <strong>Propósito:</strong> Facilitar la participación activa desde el inicio de la clase<br>
+        <strong>Cómo aplicarla:</strong> Proporcionar apoyos visuales (imágenes claras y coloridas) y permitir respuestas orales además de escritas. Lectura en voz alta de testimonios para estudiantes con perfil auditivo.</li>
+    <li><strong>Momento:</strong> Desarrollo - durante el trabajo grupal del mapa mental<br>
+        <strong>Perfil/Necesidad:</strong> Estudiantes con necesidades de adaptación curricular<br>
+        <strong>Propósito:</strong> Garantizar acceso al contenido principal mediante participación estructurada<br>
+        <strong>Cómo aplicarla:</strong> Organizar grupos heterogéneos, asignar roles claros (facilitador, registrador, presentador) y proporcionar guías paso a paso con ejemplos concretos.</li>
+  </ul>
 </section>
 
 CONTEXTO DE LA CLASE:
@@ -307,8 +314,11 @@ ${htmlActual}
 
 REQUISITOS OBLIGATORIOS:
 - USAR EXACTAMENTE: <h1> para título principal, <h2> para etapas, <h3> para subactividades
-- INCLUIR SIEMPRE: <strong>Actividad:</strong>, <strong>Recursos:</strong>, <strong>Diferenciación/Adaptaciones:</strong>
-- USAR: <ul><li> para listas, <p> para párrafos, <em> para citas/preguntas
+- INCLUIR SIEMPRE: <strong>Actividad:</strong> y <strong>Recursos:</strong> en cada sección principal
+- NUNCA incluir "Diferenciación/Adaptaciones" dentro de Inicio, Desarrollo o Cierre
+- La sección "Diferenciación/Adaptaciones" DEBE aparecer DESPUÉS de Cierre, al final del plan
+- Cada adaptación DEBE incluir: <strong>Momento:</strong> (cuándo aplicar), <strong>Perfil/Necesidad:</strong> (para quién), <strong>Propósito:</strong> (qué mejora), <strong>Cómo aplicarla:</strong> (instrucciones concretas)
+- USAR: <ul><li> para listas, <p> para párrafos, <em> para citas/preguntas, <br> para saltos de línea dentro de <li>
 - DEVOLVER SOLO HTML VÁLIDO, sin explicaciones ni comentarios
 `;
   

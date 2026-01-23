@@ -227,7 +227,11 @@ serve(async (req) => {
       groupContext, 
       type = 'modification',
       adaptationLevel = 'standard',
-      prompt: customPrompt
+      prompt: customPrompt,
+      // PHASE 2.1: unitContext para generación progresiva (opcional para backward compatibility)
+      unitContext,
+      // PHASE 3: Optional per-session focus override
+      sessionBrief
     } = await req.json();
 
     console.log('Request received:', { type, adaptationLevel, modification });
@@ -282,36 +286,142 @@ Estructura requerida:
       userPrompt = customPrompt || 'Genera una planificación de clase en HTML válido siguiendo la estructura requerida.';
 
     } else if (type === 'planning') {
+      // PHASE 2.2.1: Construir contexto de secuencia didáctica si unitContext está presente (explanatory text in English)
+      const sequenceContext = unitContext ? `
+DIDACTIC SEQUENCE CONTEXT:
+This class is part of a thematic unit called "${unitContext.contenido}".
+
+- This is class ${unitContext.claseEnUnidad} of ${unitContext.totalClasesUnidad} in this unit.
+- Content must be progressive and non-repetitive.
+- Do NOT repeat explanations already covered in previous classes.
+- Do NOT restate long explanations from previous classes; assume the prior class introduced the basics.
+${unitContext.claseEnUnidad === 1 ? '- This is the FIRST class: Focus on introduction, contextualization, and initial exploration.' : ''}
+${unitContext.claseEnUnidad > 1 && unitContext.claseEnUnidad < unitContext.totalClasesUnidad ? `- This is a MIDDLE class (${unitContext.claseEnUnidad} of ${unitContext.totalClasesUnidad}): Begin with a brief activation of prior knowledge connecting to the previous class, without repeating long explanations. Deepen and complexify the content. Avoid introducing new core concepts.` : ''}
+${unitContext.claseEnUnidad === unitContext.totalClasesUnidad && !unitContext.isExtraSlot ? '- This is the FINAL class: Avoid introducing new core concepts. Focus on integration, transfer, debate, or applied activities.' : ''}
+${unitContext.isExtraSlot ? `- This is an ADDITIONAL class beyond the original sequence (class ${unitContext.claseEnUnidad} of ${unitContext.totalClasesUnidad}): Use it preferably for guided review, integrative activities, formative assessment, or an applied project.` : ''}
+
+` : '';
+
+      // PHASE 3.2.1: Build sessionBrief section if provided - PEDAGOGICALLY BINDING
+      const sessionBriefSection = sessionBrief?.trim() ? `
+ENFOQUE ESPECÍFICO DE ESTA SESIÓN (TEACHER OVERRIDE):
+Topic: "${sessionBrief.trim()}"
+
+MANDATORY RULES (HIGH PRIORITY):
+1. All main activities (INICIO, DESARROLLO, CIERRE) MUST be explicitly oriented toward this topic.
+   - INICIO: Opening activity must directly introduce or activate prior knowledge related to "${sessionBrief.trim()}"
+   - DESARROLLO: Main activities must develop, explore, or apply concepts from "${sessionBrief.trim()}" - NOT generic content
+   - CIERRE: Synthesis must connect back to "${sessionBrief.trim()}" explicitly
+
+2. Include at least 3 guiding questions that directly reference concepts from the topic (not generic).
+   - Questions must use specific terminology or concepts from "${sessionBrief.trim()}"
+   - Example: If topic is "Surgimiento del Batllismo", questions should mention "Batllismo", "Batlle", "reformas", NOT just "el período histórico"
+
+3. For each main activity, include a short justification explaining how it addresses the session focus.
+   - Add a note like: "Esta actividad desarrolla [concepto específico del sessionBrief] porque..."
+   - Make the connection explicit, not implicit
+
+4. Avoid generic activities (e.g. "general discussion", "analyze the topic") unless clearly anchored to the session brief.
+   - Replace generic phrases with specific references to "${sessionBrief.trim()}"
+   - Example: Instead of "discutir el tema", use "discutir cómo [aspecto específico del sessionBrief] se relaciona con..."
+
+5. If the session brief is narrower than the macro content, prioritize depth over coverage.
+   - Focus deeply on "${sessionBrief.trim()}" even if it means covering less of the macro ANEP content
+   - Quality and specificity over breadth
+
+CRITICAL: This sessionBrief is a TEACHER OVERRIDE that takes absolute priority over generic ANEP content wording.
+- The entire lesson structure must serve this specific focus.
+- Do NOT generate a generic lesson and then try to fit the sessionBrief into it.
+- Generate the lesson AROUND the sessionBrief from the start.
+
+` : '';
+
+      // PHASE 3 (Profile Usage): Build group profile and student adjustments section (Plain Text Path)
+      const groupProfileSectionText = groupContext?.students?.length || groupContext?.dominantProfile ? `
+
+GROUP PROFILE AND STUDENT ADJUSTMENTS:
+${groupContext.dominantProfile ? `- Dominant learning style: ${groupContext.dominantProfile}` : ''}
+${groupContext.students?.length ? `- Total students: ${groupContext.students.length}
+- Students with specific adjustments: ${groupContext.students.filter((s: any) => s.contemplaciones?.length || s.ajustes).length}
+${groupContext.students
+  .filter((s: any) => s.contemplaciones?.length || s.ajustes)
+  .slice(0, 5)  // Limit to 5 for brevity in plain text path
+  .map((s: any, idx: number) => `
+  Student ${String.fromCharCode(65 + idx)} (${s.perfil || 'Not specified'}):
+  - Adjustments: ${s.ajustes || 'None'}
+  ${s.contemplaciones?.length ? `- Accommodations: ${s.contemplaciones.join('; ')}` : ''}
+`).join('\n')}
+` : ''}
+
+MANDATORY PEDAGOGICAL RULES (ACTIVE USE):
+Rule A — Evidence Inside Activities:
+- Each section (INICIO, DESARROLLO, CIERRE) MUST include at least ONE explicit pedagogical decision derived from group profile or student adjustments.
+- Example in INICIO: "Actividad: Visual opener using color-coded cards for 5 minutes..."
+- Example in DESARROLLO: "Actividad: Group work with assigned roles (auditory learners lead discussion, kinesthetic learners manipulate materials)..."
+- Avoid generic phrases — decisions must be CONCRETE and OBSERVABLE inside "Actividad:" text.
+
+Rule B — Student Adjustments:
+${groupContext?.students?.filter((s: any) => s.contemplaciones?.length).length ? `- Since ${groupContext.students.filter((s: any) => s.contemplaciones?.length).length} students have specific accommodations, embed at LEAST TWO concrete adaptations directly into "Actividad:" descriptions (do NOT create new sections).
+- Use language: supports, scaffolding, access options, multiple representations.
+` : '- Include at least ONE UDL-based support embedded in DESARROLLO activities.'}
+
+Rule C — No Stereotypes:
+- DO NOT invent diagnoses. Use respectful language: supports, scaffolding, options.
+
+Rule D — Do Not Force:
+- If NO profile and NO adjustments exist, output remains identical to previous behavior.
+
+` : '';
+
       // Planificación de clase con IA
-      systemPrompt = `Eres un experto en planificación didáctica y pedagogía. Tu tarea es crear sugerencias específicas y prácticas para planificación de clases, considerando diferentes estilos de aprendizaje y necesidades de adaptación curricular.
+      systemPrompt = `You are an expert in didactic planning and pedagogy. Your task is to create specific and practical suggestions for class planning, considering different learning styles and curricular adaptation needs.
 
-PRINCIPIOS PEDAGÓGICOS:
-- Aprendizaje significativo y contextualizado
-- Atención a la diversidad y estilos de aprendizaje
-- Uso de metodologías activas y participativas
-- Inclusión de evaluación formativa
-- Recursos variados y accesibles
+PEDAGOGICAL PRINCIPLES:
+- Meaningful and contextualized learning
+- Attention to diversity and learning styles
+- Use of active and participatory methodologies
+- Inclusion of formative assessment
+- Varied and accessible resources
 
-ESTRUCTURA DE CLASE ESPERADA:
-- Apertura motivadora (15 min)
-- Desarrollo principal (45 min) 
-- Cierre y síntesis (20 min)
+EXPECTED CLASS STRUCTURE:
+- Motivational opening (15 min)
+- Main development (40 min) 
+- Closing and synthesis (5 min)
 
-CONTEXTO ESPECÍFICO:
-Materia: ${groupContext?.subject || 'No especificada'}
-Contenidos: ${groupContext?.content?.join(', ') || 'No especificados'}
-Perfil dominante: ${groupContext?.dominantProfile || 'Mixto'}
-Objetivo: ${groupContext?.objective || 'No especificado'}
-Estudiantes: ${groupContext?.students?.length || 0}
-Grupo: ${groupContext?.groupName || 'Sin nombre'}`;
+SPECIFIC CONTEXT:
+Subject: ${groupContext?.subject || 'Not specified'}
+Contents: ${groupContext?.content?.join(', ') || 'Not specified'}
+Dominant profile: ${groupContext?.dominantProfile || 'Mixed'}
+Objective: ${groupContext?.objective || 'Not specified'}
+Students: ${groupContext?.students?.length || 0}
+Group: ${groupContext?.groupName || 'No name'}`;
 
-      userPrompt = `SOLICITUD DE PLANIFICACIÓN:
+      // PHASE 3.2.1: Log sessionBrief in modify-evaluation
+      if (sessionBrief?.trim()) {
+        console.log(`[SESSION_BRIEF] modify-evaluation recibió sessionBrief: "${sessionBrief.trim()}"`);
+      }
+
+      userPrompt = `PLANNING REQUEST:
 ${modification}
+${sessionBriefSection}${sequenceContext}${groupProfileSectionText}ADDITIONAL CONTEXT:
+${groupContext?.additionalContext || 'Not specified'}
 
-CONTEXTO ADICIONAL:
-${groupContext?.additionalContext || 'No especificado'}
+TASK: Generate specific, practical, and applicable didactic suggestions. Include concrete activities, necessary resources, and adaptations for different learning styles.
 
-TAREA: Genera sugerencias didácticas específicas, prácticas y aplicables. Incluye actividades concretas, recursos necesarios y adaptaciones para diferentes estilos de aprendizaje.`;
+MANDATORY OUTPUT FORMAT:
+- The response MUST be plain text (NO HTML, NO Markdown, NO code fences).
+- The response MUST start with "INICIO" and MUST end after the "CIERRE" section.
+- NO preamble, NO trailing text, NO extra sections or labels (Title, Objectives, Notes, etc.).
+- MUST include exactly one section for each header, in this exact order:
+  * INICIO
+  * DESARROLLO
+  * CIERRE
+- Each section MUST include:
+  * Actividad: (one or more sentences describing the activity)
+  * Recursos: (comma-separated list)
+- Do NOT include any other top-level headers.
+- Headers MUST be uppercase Spanish: INICIO, DESARROLLO, CIERRE.
+${sessionBrief?.trim() ? '- If sessionBrief is provided, ensure the DESARROLLO section directly and clearly develops that focus. Do NOT introduce a different main topic.' : ''}`;
 
     } else {
       // Generación/Modificación de evaluación LISTA PARA EL ALUMNO

@@ -46,3 +46,20 @@ CREATE POLICY "Users can update their own evaluaciones"
 COMMENT ON POLICY "Users can view their own evaluaciones" ON evaluaciones IS 'Authenticated users can view their own saved, non-deleted evaluaciones';
 COMMENT ON POLICY "Users can insert their own evaluaciones" ON evaluaciones IS 'Authenticated users can create new evaluaciones';
 COMMENT ON POLICY "Users can update their own evaluaciones" ON evaluaciones IS 'Authenticated users can update their own evaluaciones (including soft delete)';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

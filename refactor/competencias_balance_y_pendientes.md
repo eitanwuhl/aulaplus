@@ -495,3 +495,86 @@ function getCompetencyColor(competencyId: string): string {
 ---
 
 **Status UI**: ✅ Implementado y documentado
+
+---
+
+## 🔧 Fix: Normalización de Datos (competencias_anep)
+
+**Fecha**: 2025-12-19  
+**Problema**: El gráfico "Balance de Competencias" mostraba "No usage recorded" aunque había sesiones con `competencias_anep` para la materia seleccionada.
+
+### Causa Raíz
+
+El campo `competencias_anep` no se normalizaba al cargar desde Supabase. Supabase puede devolver este campo en diferentes formatos:
+- Como array `string[]` (esperado)
+- Como `null` o `undefined`
+- Como string (si hay problemas de serialización)
+- Como objeto (si hay problemas de parsing)
+
+Cuando el código intentaba iterar sobre `competencias_anep` usando `.forEach()`, fallaba silenciosamente si el campo no era un array válido, resultando en un balance vacío.
+
+### Solución Implementada
+
+**Ubicación**: `src/pages/MisPlanificaciones.tsx`, después de cargar sesiones (línea ~157)
+
+**Cambio**:
+```typescript
+import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
+
+// Después de cargar sesiones desde Supabase
+const sesionesNormalizadas = (sesionData || []).map((sesion) => ({
+  ...sesion,
+  competencias_anep: normalizeArrayField(sesion.competencias_anep),
+}));
+
+setSesiones(sesionesNormalizadas as unknown as SesionClase[]);
+```
+
+**Comportamiento**:
+- `competencias_anep` siempre termina siendo un `string[]` válido
+- Si viene como `null` o `undefined` → se convierte en `[]`
+- Si viene como string → se convierte en array
+- Si viene como objeto → se normaliza según la lógica de `normalizeArrayField()`
+
+### Por Qué Funciona
+
+1. **Normalización al cargar**: Garantiza que todos los datos estén en el formato correcto antes de cualquier procesamiento
+2. **Sin cambios en lógica de negocio**: El fix es puramente de normalización de datos; no modifica filtros, cálculos ni reglas de negocio
+3. **Consistencia**: Usa la misma función de normalización (`normalizeArrayField`) que se usa en otras partes de la aplicación (ej: `PlanificacionWizard.tsx`, `useFullSessionGeneration.ts`)
+
+### Impacto
+
+- ✅ El balance muestra datos correctamente cuando hay sesiones con competencias
+- ✅ No afecta "Competencias Pendientes" (ya funcionaba correctamente)
+- ✅ Mejora la robustez del código al manejar formatos inconsistentes de Supabase
+- ✅ Consistente con el resto de la aplicación
+
+### Verificación
+
+Después del fix:
+- Seleccionar una materia (ej: "Historia")
+- Verificar que "Balance de Competencias" muestra barras horizontales cuando hay sesiones con `estado === 'dictada'` y `competencias_anep` no vacío
+- Verificar que "Competencias Pendientes" sigue funcionando correctamente
+- `npm run build` pasa sin errores de TypeScript
+
+---
+
+**Status Fix**: ✅ Implementado y verificado
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

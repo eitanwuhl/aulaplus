@@ -201,9 +201,18 @@ export const CalendarioDnD: React.FC<CalendarioDnDProps> = ({
                         sesion.bloqueo_reserva && "cursor-not-allowed opacity-50"
                       )}
                     >
-                      <div className="flex items-center gap-1">
-                        {sesion.bloqueo_reserva && <Lock className="h-3 w-3" />}
-                        <span className="truncate">{sesion.titulo || `S${sesion.orden}`}</span>
+                      <div className="flex flex-col gap-0.5">
+                        <div className="flex items-center gap-1">
+                          {sesion.bloqueo_reserva && <Lock className="h-3 w-3" />}
+                          <span className="truncate font-medium">
+                            {sesion.session_brief || sesion.titulo || `S${sesion.orden}`}
+                          </span>
+                        </div>
+                        {sesion.session_brief && sesion.contenidos_anep?.[0] && (
+                          <span className="text-[10px] text-muted-foreground truncate">
+                            {sesion.contenidos_anep[0]}
+                          </span>
+                        )}
                       </div>
                       {getEstadoBadge(sesion.estado)}
                     </div>

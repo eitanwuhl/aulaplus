@@ -54,7 +54,7 @@ export const BacklogSesiones: React.FC<BacklogSesionesProps> = ({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
                       <h4 className="font-medium text-sm truncate">
-                        {sesion.titulo || `Sesión ${sesion.orden}`}
+                        {sesion.session_brief || sesion.titulo || `Sesión ${sesion.orden}`}
                       </h4>
                       <div className="flex items-center gap-1 text-xs text-muted-foreground shrink-0">
                         <Clock className="h-3 w-3" />
@@ -63,7 +63,7 @@ export const BacklogSesiones: React.FC<BacklogSesionesProps> = ({
                     </div>
                     {sesion.contenidos_anep && sesion.contenidos_anep.length > 0 && (
                       <p className="text-xs text-muted-foreground truncate mt-1">
-                        {sesion.contenidos_anep[0]}
+                        {sesion.session_brief ? `Contenido ANEP: ${sesion.contenidos_anep[0]}` : sesion.contenidos_anep[0]}
                       </p>
                     )}
                     {sesion.competencias_anep && sesion.competencias_anep.length > 0 && (
