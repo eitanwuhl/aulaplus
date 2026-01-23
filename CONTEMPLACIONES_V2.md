@@ -6,7 +6,7 @@ Esta rama está dedicada al desarrollo de nuevos perfiles y reglas para contempl
 
 **Estado:** Fase inicial - Solo seguridad, sin cambios funcionales aún.
 
-**Fecha de inicio:** $(Get-Date -Format "yyyy-MM-dd")
+**Fecha de inicio:** 2026-01-23
 
 ---
 
