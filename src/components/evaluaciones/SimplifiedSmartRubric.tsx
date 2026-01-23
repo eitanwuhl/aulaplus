@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -7,6 +7,7 @@ import { COMPETENCIAS_HISTORIA } from '@/data/competencias';
 import { COMPETENCIAS_LITERATURA } from '@/data/competenciasLiteratura';
 import { COMPETENCIAS_CIUDADANIA } from '@/data/competenciasCiudadania';
 import { mockStudents } from '@/data/mockData';
+import { enforceForEvaluation, type Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 
 interface RubricItem {
   codigo: string;
@@ -217,6 +218,24 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
   const globalRubric = generateGlobalRubric();
   const studentAssignments = generateStudentAssignments();
 
+  // Obtener recordatorios determinísticos usando el motor de enforcement
+  const perStudentReminders = useMemo(() => {
+    // Convertir estudiantes al formato esperado por el enforcement engine
+    const enforcementStudents: EnforcementStudent[] = (students || []).map(s => ({
+      id: s.id,
+      name: s.name || `Estudiante ${s.id}`
+    }));
+
+    // Si no hay estudiantes, retornar Map vacío
+    if (enforcementStudents.length === 0) {
+      return new Map<string | number, string[]>();
+    }
+
+    // Obtener recordatorios usando el motor de enforcement
+    const enforcementOutput = enforceForEvaluation(enforcementStudents);
+    return enforcementOutput.perStudentReminders;
+  }, [students]);
+
   const toggleExpanded = (codigo: string) => {
     setExpandedItems(prev => ({
       ...prev,
@@ -313,12 +332,40 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
                 </p>
               </div>
             ) : (
-              studentAssignments.map((assignment, index) => (
-                <div key={index} className="p-4 border border-border rounded-lg">
-                  <h4 className="font-semibold text-foreground mb-2">{assignment.nombre}</h4>
-                  <p className="text-sm text-muted-foreground">{assignment.justificacion}</p>
-                </div>
-              ))
+              studentAssignments.map((assignment, index) => {
+                // Encontrar el estudiante para obtener su ID y recordatorios
+                const student = students?.find(s => {
+                  const studentName = s.name || `Estudiante ${s.id}`;
+                  return normalizeStudentName(studentName) === normalizeStudentName(assignment.nombre);
+                });
+
+                // Obtener recordatorios para este estudiante
+                const reminders = student ? (perStudentReminders.get(student.id) || []) : [];
+
+                return (
+                  <div key={index} className="p-4 border border-border rounded-lg">
+                    <h4 className="font-semibold text-foreground mb-2">{assignment.nombre}</h4>
+                    <p className="text-sm text-muted-foreground mb-3">{assignment.justificacion}</p>
+                    
+                    {/* Recordatorios determinísticos del motor de enforcement */}
+                    {reminders.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-border">
+                        <div className="text-xs font-medium text-muted-foreground mb-2">
+                          Recordatorios para esta evaluación:
+                        </div>
+                        <ul className="space-y-1.5">
+                          {reminders.map((reminder, reminderIndex) => (
+                            <li key={reminderIndex} className="text-sm text-foreground flex items-start gap-2">
+                              <span className="text-primary mt-0.5">•</span>
+                              <span>{reminder}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
         </CardContent>
