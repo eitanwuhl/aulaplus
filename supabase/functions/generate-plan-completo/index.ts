@@ -48,8 +48,131 @@ serve(async (req) => {
       perfilGrupo,
       estudiantes,
       instruccionesDocente,
-      planActual
+      planActual,
+      // PHASE 2: unitContext para generación progresiva (opcional para backward compatibility)
+      unitContext,
+      // PHASE 3: Optional per-session focus override
+      sessionBrief
     } = await req.json();
+
+    // PHASE 2.1: Construir sección de contexto de secuencia didáctica si unitContext está presente
+    const secuenciaContext = unitContext ? `
+CONTEXTO DE SECUENCIA DIDÁCTICA:
+Esta clase forma parte de una unidad temática llamada "${unitContext.contenido}".
+
+- Esta es la clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad} de esta unidad.
+- El contenido debe ser progresivo y no repetitivo.
+- No repitas explicaciones ya dadas en clases anteriores.
+- El título de la clase debe reflejar el enfoque específico de esta sesión y debe ser diferente de otras clases en la misma unidad.
+
+INSTRUCCIONES ESPECÍFICAS SEGÚN POSICIÓN:
+${unitContext.claseEnUnidad === 1 ? '- Esta es la PRIMERA clase: Enfócate en introducción, contextualización y exploración inicial. El título debe reflejar este propósito introductorio.' : ''}
+${unitContext.claseEnUnidad > 1 && unitContext.claseEnUnidad < unitContext.totalClasesUnidad ? `- Esta es una clase INTERMEDIA (${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}): Comienza con una breve activación de conocimientos previos conectando con la clase anterior, sin repetir explicaciones largas. Profundiza y complejiza el contenido. Evita introducir nuevos conceptos centrales. El título debe reflejar este enfoque de profundización.' : ''}
+${unitContext.claseEnUnidad === unitContext.totalClasesUnidad && !unitContext.isExtraSlot ? '- Esta es la ÚLTIMA clase: Evita introducir nuevos conceptos centrales. Enfócate en integración, transferencia, debate o actividades aplicadas. El título debe reflejar este propósito de síntesis/aplicación.' : ''}
+${unitContext.isExtraSlot ? `- Esta es una clase ADICIONAL más allá de la secuencia original (clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}): Úsala preferentemente para repaso guiado, actividades integradoras, evaluación formativa o un proyecto aplicado. El título debe reflejar claramente este propósito (ej: "Repaso Integrador", "Proyecto Aplicado", "Evaluación Formativa").` : ''}
+
+` : '';
+
+    // PHASE 3.2.1: Build sessionBrief section if provided - PEDAGOGICALLY BINDING
+    const sessionBriefSection = sessionBrief?.trim() ? `
+ENFOQUE ESPECÍFICO DE ESTA SESIÓN (TEACHER OVERRIDE):
+Topic: "${sessionBrief.trim()}"
+
+MANDATORY RULES (HIGH PRIORITY):
+1. All main activities (INICIO, DESARROLLO, CIERRE) MUST be explicitly oriented toward this topic.
+   - INICIO: Opening activity must directly introduce or activate prior knowledge related to "${sessionBrief.trim()}"
+   - DESARROLLO: Main activities must develop, explore, or apply concepts from "${sessionBrief.trim()}" - NOT generic content
+   - CIERRE: Synthesis must connect back to "${sessionBrief.trim()}" explicitly
+
+2. Include at least 3 guiding questions that directly reference concepts from the topic (not generic).
+   - Questions must use specific terminology or concepts from "${sessionBrief.trim()}"
+   - Example: If topic is "Surgimiento del Batllismo", questions should mention "Batllismo", "Batlle", "reformas", NOT just "el período histórico"
+
+3. For each main activity, include a short justification explaining how it addresses the session focus.
+   - Add a note like: "Esta actividad desarrolla [concepto específico del sessionBrief] porque..."
+   - Make the connection explicit, not implicit
+
+4. Avoid generic activities (e.g. "general discussion", "analyze the topic") unless clearly anchored to the session brief.
+   - Replace generic phrases with specific references to "${sessionBrief.trim()}"
+   - Example: Instead of "discutir el tema", use "discutir cómo [aspecto específico del sessionBrief] se relaciona con..."
+
+5. If the session brief is narrower than the macro content, prioritize depth over coverage.
+   - Focus deeply on "${sessionBrief.trim()}" even if it means covering less of the macro ANEP content
+   - Quality and specificity over breadth
+
+6. The title H1 MUST be exactly this sessionBrief, word for word, without reformulation or interpretation.
+
+CRITICAL: This sessionBrief is a TEACHER OVERRIDE that takes absolute priority over generic ANEP content wording.
+- The entire lesson structure must serve this specific focus.
+- Do NOT generate a generic lesson and then try to fit the sessionBrief into it.
+- Generate the lesson AROUND the sessionBrief from the start.
+
+` : '';
+
+    // PHASE 3 (Profile Usage): Build group profile and student adjustments section
+    const groupProfileSection = perfilGrupo || (estudiantes && estudiantes.length > 0) ? `
+PERFIL DEL GRUPO Y AJUSTES DE ESTUDIANTES:
+${perfilGrupo ? `
+Composición del grupo:
+- Total de estudiantes: ${perfilGrupo.tamanio || 'no especificado'}
+- Estilo de aprendizaje dominante: ${perfilGrupo.dominante || 'mixto'}
+${perfilGrupo.distribucion ? `- Distribución de estilos de aprendizaje:
+${Object.entries(perfilGrupo.distribucion).map(([estilo, count]) => `  * ${estilo}: ${count} estudiante(s)`).join('\n')}` : ''}
+` : ''}
+${estudiantes && estudiantes.length > 0 ? `
+Estudiantes con ajustes específicos (${estudiantes.filter((e: any) => e.ajustes || (e.contemplaciones && e.contemplaciones.length > 0)).length}):
+${estudiantes
+  .filter((e: any) => e.ajustes || (e.contemplaciones && e.contemplaciones.length > 0))
+  .map((e: any, idx: number) => `
+  Estudiante ${String.fromCharCode(65 + idx)} (${e.perfil || 'No especificado'}):
+  - Ajustes: ${e.ajustes || 'Ninguno especificado'}
+  ${e.contemplaciones && e.contemplaciones.length > 0 ? `- Contemplaciones específicas:
+${e.contemplaciones.map((c: string) => `    * ${c}`).join('\n')}` : ''}
+`).join('\n')}
+` : ''}
+
+REGLAS PEDAGÓGICAS OBLIGATORIAS (USO ACTIVO):
+Regla A — Evidencia Dentro de las Actividades:
+- La sección DESARROLLO DEBE incluir AL MENOS DOS decisiones pedagógicas explícitas derivadas del perfil del grupo o de los ajustes de estudiantes.
+- Ejemplo: "Estudiantes visuales: actividad dividida en dos bloques de 7 minutos con checklist visual paso a paso"
+- Ejemplo: "Estudiantes kinestésicos: materiales manipulables para explorar el concepto"
+- Evitar frases genéricas como "considerar estilos de aprendizaje" — las decisiones deben ser CONCRETAS y OBSERVABLES.
+
+Regla B — Ajustes de Estudiantes:
+${estudiantes && estudiantes.filter((e: any) => e.contemplaciones && e.contemplaciones.length > 0).length > 0 ? `- Dado que ${estudiantes.filter((e: any) => e.contemplaciones && e.contemplaciones.length > 0).length} estudiante(s) tienen contemplaciones específicas, la sección "Diferenciación/Adaptaciones" DEBE incluir AL MENOS TRES adaptaciones concretas y accionables.
+- Cada adaptación DEBE especificar:
+  * <strong>Momento:</strong> Momento exacto (Inicio/Desarrollo/Cierre + actividad específica)
+  * <strong>Perfil/Necesidad:</strong> Qué perfil de estudiante o necesidad atiende
+  * <strong>Propósito:</strong> Qué facilita o mejora
+  * <strong>Cómo aplicarla:</strong> Instrucciones concretas y prácticas (no vagas)
+- NO inventar diagnósticos o condiciones. Usar lenguaje: apoyos, andamiaje, acceso, opciones de representación, opciones de expresión.
+` : '- Incluir al menos UNA adaptación general basada en UDL en "Diferenciación/Adaptaciones".'}
+
+Regla C — Sin Estereotipos o Diagnósticos Inventados:
+- NO inventar diagnósticos, condiciones o etiquetas que no estén presentes en los datos de estudiantes.
+- Usar lenguaje respetuoso, alineado con DUA: apoyos, andamiaje, múltiples medios de representación/expresión/participación.
+- Si el perfil del grupo es mixto o la información es limitada, aplicar principios básicos de DUA sin asumir déficits.
+
+Regla D — No Forzar Contenido:
+- Si NO hay perfil de grupo Y NO hay ajustes de estudiantes, NO agregar personalización artificial.
+- Mantener compatibilidad hacia atrás: salida idéntica al comportamiento anterior.
+
+` : '';
+
+    // PHASE 2: Construir sección de instrucciones del docente con contexto adicional
+    const instruccionesDocenteSection = instruccionesDocente ? `
+INSTRUCCIONES DEL DOCENTE:
+${instruccionesDocente}
+
+Estas instrucciones pueden:
+- Aplicar a toda la planificación
+- Aplicar solo a algunas clases
+- Indicar temas específicos para una clase puntual
+
+Respeta explícitamente estas indicaciones si están presentes.
+No inventes una secuencia distinta si el docente ya la definió.
+
+` : '';
 
     const prompt = `
 Sos un asistente pedagógico experto en planificación de clases para el sistema educativo uruguayo (ANEP).
@@ -58,17 +181,14 @@ ${modo === 'regenerar' ? 'Modificá' : 'Generá'} el plan de la sesión ${orden}
 CONTEXTO DE LA CLASE:
 - Materia: ${materia || 'Sin especificar'}
 - Nivel: ${nivel || 'Sin especificar'}
-- Contenidos ANEP: ${Array.isArray(contenidos) ? contenidos.join(', ') : contenidos || 'Sin especificar'}
+- Contenidos ANEP (macro): ${Array.isArray(contenidos) ? contenidos.join(', ') : contenidos || 'Sin especificar'}
 - Competencias: ${Array.isArray(competencias) ? competencias.join(', ') : competencias || 'Sin especificar'}
 - Criterios de logro: ${Array.isArray(criterios) ? criterios.join(', ') : criterios || 'Sin especificar'}
-${perfilGrupo ? `- Perfil del grupo: ${perfilGrupo.dominante || 'mixto'} (${perfilGrupo.tamanio || 'sin especificar'} estudiantes)` : ''}
-${estudiantes?.length ? `- Estudiantes con ajustes: ${estudiantes.filter(e => e.ajustes?.length).length}` : ''}
-${instruccionesDocente ? `\nINSTRUCCIONES DEL DOCENTE:\n${instruccionesDocente}` : ''}
-${planActual ? `\nPLAN ACTUAL A MODIFICAR:\n${planActual}` : ''}
+${sessionBriefSection}${secuenciaContext}${groupProfileSection}${instruccionesDocenteSection}${planActual ? `\nPLAN ACTUAL A MODIFICAR:\n${planActual}` : ''}
 
 ESTRUCTURA OBLIGATORIA - DEVOLVER SOLO HTML VÁLIDO:
 <section id="plan">
-  <h1>Planificación de Clase</h1>
+  <h1>${sessionBrief?.trim() || 'Título específico y claro de esta clase (debe ser diferente de otras clases en la misma unidad)'}</h1>
 
   <h2><strong>Inicio (15 min)</strong></h2>
   <h3>Actividad de apertura motivadora</h3>
@@ -79,11 +199,6 @@ ESTRUCTURA OBLIGATORIA - DEVOLVER SOLO HTML VÁLIDO:
     <li>Paso detallado 3</li>
   </ul>
   <p><strong>Recursos:</strong> Lista de recursos específicos</p>
-  <p><strong>Diferenciación/Adaptaciones:</strong></p>
-  <ul>
-    <li>Adaptación para perfil visual</li>
-    <li>Adaptación para perfil auditivo</li>
-  </ul>
 
   <h2><strong>Desarrollo (${Math.max(duracionMin - 20, 30)} min)</strong></h2>
   <h3>Parte A - Actividad principal</h3>
@@ -105,23 +220,47 @@ ESTRUCTURA OBLIGATORIA - DEVOLVER SOLO HTML VÁLIDO:
     <li>Síntesis de lo aprendido</li>
     <li>Reflexión grupal</li>
   </ul>
+
+  <h2><strong>Diferenciación/Adaptaciones</strong></h2>
+  <ul>
+    <li><strong>Momento:</strong> Inicio - durante la actividad de apertura<br>
+        <strong>Perfil/Necesidad:</strong> Estudiantes con dificultades de atención<br>
+        <strong>Propósito:</strong> Facilitar la participación activa desde el inicio de la clase<br>
+        <strong>Cómo aplicarla:</strong> Proporcionar apoyos visuales (imágenes claras) y permitir respuestas orales además de escritas</li>
+    <li><strong>Momento:</strong> Desarrollo - durante el trabajo grupal<br>
+        <strong>Perfil/Necesidad:</strong> Estudiantes con necesidades de adaptación curricular<br>
+        <strong>Propósito:</strong> Garantizar acceso al contenido principal<br>
+        <strong>Cómo aplicarla:</strong> Organizar grupos heterogéneos, asignar roles claros y proporcionar guías paso a paso con ejemplos</li>
+    <li><strong>Momento:</strong> Cierre - durante la síntesis<br>
+        <strong>Perfil/Necesidad:</strong> Estudiantes con dificultades de expresión escrita<br>
+        <strong>Propósito:</strong> Permitir demostración de comprensión por múltiples vías<br>
+        <strong>Cómo aplicarla:</strong> Aceptar síntesis mediante dibujos, mapas conceptuales o exposición oral además de textos escritos</li>
+  </ul>
 </section>
 
 REQUISITOS ESTRICTOS:
 1. Usar SOLO HTML válido - NO Markdown, NO code fences
-2. Incluir SIEMPRE: <strong>Actividad:</strong>, <strong>Recursos:</strong>, <strong>Diferenciación/Adaptaciones:</strong>
-3. Adaptar duraciones según el tiempo total (${duracionMin} min)
-4. Incluir actividades específicas y detalladas
-5. Considerar diferenciación para estudiantes con necesidades especiales
-6. OBLIGATORIO: Los títulos H2 de Inicio, Desarrollo y Cierre DEBEN tener <strong> dentro del H2
-7. EJEMPLO CORRECTO: <h2><strong>Inicio (15 min)</strong></h2>
-8. EJEMPLO INCORRECTO: <h2>Inicio (15 min)</h2>
+2. NUNCA incluir "Diferenciación/Adaptaciones" dentro de las secciones Inicio, Desarrollo o Cierre
+3. Incluir SIEMPRE: <strong>Actividad:</strong> y <strong>Recursos:</strong> en cada sección principal
+4. Adaptar duraciones según el tiempo total (${duracionMin} min)
+5. Incluir actividades específicas y detalladas
+${sessionBrief?.trim() ? '6. OBLIGATORIO CRÍTICO: El título H1 DEBE SER EXACTAMENTE el sessionBrief proporcionado, palabra por palabra, sin ninguna modificación, reformulación ni interpretación. Este es un override del docente que tiene prioridad absoluta.' : '6. OBLIGATORIO: El título H1 debe ser específico y diferente de otras clases en la misma unidad. No reutilices títulos de otras clases.'}
+7. OBLIGATORIO: Los títulos H2 de Inicio, Desarrollo y Cierre DEBEN tener <strong> dentro del H2
+8. EJEMPLO CORRECTO: <h2><strong>Inicio (15 min)</strong></h2>
+9. EJEMPLO INCORRECTO: <h2>Inicio (15 min)</h2>
+10. OBLIGATORIO: La sección "Diferenciación/Adaptaciones" DEBE aparecer DESPUÉS de Cierre, al final del plan
+11. Cada adaptación DEBE incluir:
+    - <strong>Momento:</strong> Indica exactamente cuándo aplicar (Inicio/Desarrollo/Cierre y actividad específica)
+    - <strong>Perfil/Necesidad:</strong> Para qué perfil de estudiante o necesidad está dirigida
+    - <strong>Propósito:</strong> Qué mejora o facilita esta adaptación
+    - <strong>Cómo aplicarla:</strong> Instrucciones concretas y prácticas, no vagas
 
 DEVOLVER JSON EXACTO:
 {
   "plan_html": "<section id=\\"plan\\">...</section>",
   "argumento_competencias": "<p>Explicación de cómo las actividades desarrollan las competencias seleccionadas</p>",
-  "recursos": ["Proyector", "Pizarrón", "Marcadores", "Material específico"]
+  "recursos": ["Proyector", "Pizarrón", "Marcadores", "Material específico"],
+  "titulo": "${sessionBrief?.trim() || 'Título extraído del H1 generado'}"
 }
 `;
 
@@ -170,6 +309,32 @@ DEVOLVER JSON EXACTO:
       };
     }
 
+    // Extract title from HTML (either from parsed JSON or from sessionBrief)
+    // Priority: 1) sessionBrief (teacher override), 2) Extract H1 from generated HTML
+    let extractedTitle = sessionBrief?.trim();
+    if (!extractedTitle && parsed.plan_html) {
+      // Extract H1 from HTML
+      const h1Match = parsed.plan_html.match(/<h1[^>]*>(.*?)<\/h1>/i);
+      if (h1Match && h1Match[1]) {
+        extractedTitle = h1Match[1].trim();
+      }
+    }
+    
+    // Add titulo to response if not already present
+    if (extractedTitle && !parsed.titulo) {
+      parsed.titulo = extractedTitle;
+      console.log('[generate-plan-completo] Extracted title:', extractedTitle);
+    }
+
+    // PHASE 3.2.1: Verify sessionBrief is reflected in generated content
+    if (sessionBrief?.trim()) {
+      const briefInContent = parsed.plan_html?.toLowerCase().includes(sessionBrief.trim().toLowerCase());
+      console.log(`[SESSION_BRIEF] Verificación: sessionBrief "${sessionBrief.trim()}" ${briefInContent ? 'ENCONTRADO' : 'NO ENCONTRADO'} en HTML generado`);
+      if (!briefInContent) {
+        console.warn(`[SESSION_BRIEF] ADVERTENCIA: El sessionBrief no aparece explícitamente en el contenido generado. Revisar prompt.`);
+      }
+    }
+
     // Validar estructura HTML
     if (!parsed.plan_html || !parsed.plan_html.includes('<section id="plan">')) {
       console.error('Invalid HTML structure, creating fallback plan');
@@ -188,11 +353,6 @@ DEVOLVER JSON EXACTO:
     <li>Organizar el aula según la modalidad de trabajo</li>
   </ul>
   <p><strong>Recursos:</strong> Pizarra, marcadores</p>
-  <p><strong>Diferenciación/Adaptaciones:</strong></p>
-  <ul>
-    <li>Visual: Apoyos gráficos y esquemas</li>
-    <li>Auditivo: Explicaciones orales claras</li>
-  </ul>
 
   <h2><strong>Desarrollo (${Math.max(duracionMin - 20, 30)} min)</strong></h2>
   <h3>Parte A - Exploración del contenido</h3>
@@ -216,6 +376,18 @@ DEVOLVER JSON EXACTO:
     <li>Síntesis de lo aprendido</li>
     <li>Reflexión grupal</li>
     <li>Proyección para próximas clases</li>
+  </ul>
+
+  <h2><strong>Diferenciación/Adaptaciones</strong></h2>
+  <ul>
+    <li><strong>Momento:</strong> Inicio - durante la actividad de apertura<br>
+        <strong>Perfil/Necesidad:</strong> Estudiantes con dificultades de atención<br>
+        <strong>Propósito:</strong> Facilitar la participación activa desde el inicio<br>
+        <strong>Cómo aplicarla:</strong> Proporcionar apoyos visuales (imágenes claras) y permitir respuestas orales además de escritas</li>
+    <li><strong>Momento:</strong> Desarrollo - durante el trabajo grupal<br>
+        <strong>Perfil/Necesidad:</strong> Estudiantes con necesidades de adaptación curricular<br>
+        <strong>Propósito:</strong> Garantizar acceso al contenido principal<br>
+        <strong>Cómo aplicarla:</strong> Organizar grupos heterogéneos, asignar roles claros y proporcionar guías paso a paso</li>
   </ul>
 </section>`,
         argumento_competencias: `<p>Las actividades propuestas favorecen el desarrollo de competencias mediante la construcción colaborativa de conocimientos y la aplicación práctica de conceptos.</p>`,

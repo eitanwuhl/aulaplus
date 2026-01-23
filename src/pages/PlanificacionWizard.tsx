@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useToast } from '@/hooks/use-toast';
 import { usePlanificacionWizard } from '@/hooks/usePlanificacionWizard';
 import { useFullSessionGeneration } from '@/hooks/useFullSessionGeneration';
+import type { UnidadDidactica, UnitAssignmentMetadata } from '@/types/planificacion';
 import { WizardSteps } from '@/components/planificacion/WizardSteps';
 import { supabase } from '@/integrations/supabase/client';
 import {
@@ -14,11 +15,262 @@ import {
   buildCompetenciasContenidosMap,
 } from '@/lib/competencyExtractor';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
+import { loadGroupContext } from '@/utils/groupContext';
+
+// PHASE 1: Helper para expandir unidades según clases_estimadas (reutilizable)
+function expandUnitsToSessionPlan(
+  unidades: UnidadDidactica[]
+): UnitAssignmentMetadata[] {
+  const expanded: UnitAssignmentMetadata[] = [];
+  
+  for (let i = 0; i < unidades.length; i++) {
+    const unidad = unidades[i];
+    // Validar clases_estimadas: si es <= 0 o NaN, usar 1 como default
+    const totalClases = (unidad.clases_estimadas && unidad.clases_estimadas > 0 && !isNaN(unidad.clases_estimadas))
+      ? unidad.clases_estimadas
+      : 1;
+    
+    for (let claseNum = 1; claseNum <= totalClases; claseNum++) {
+      expanded.push({
+        unidadIndex: i,
+        unidadId: unidad.id,
+        contenido_texto: unidad.contenido_texto,
+        competencias_ids: unidad.competencias_ids || [],
+        claseEnUnidad: claseNum,
+        totalClasesUnidad: totalClases,
+        isExtraSlot: false
+      });
+    }
+  }
+  
+  return expanded;
+}
+
+// PHASE 1: Helper para mapear sesiones a unidades expandidas (reutilizable)
+function mapSessionsToUnits(
+  totalSlots: number,
+  expandedPlan: UnitAssignmentMetadata[]
+): UnitAssignmentMetadata[] {
+  if (expandedPlan.length === 0) {
+    // Fallback: crear sesiones con contenido genérico
+    return Array.from({ length: totalSlots }, () => ({
+      unidadIndex: -1,
+      unidadId: '',
+      contenido_texto: 'Contenido general',
+      competencias_ids: [],
+      claseEnUnidad: 1,
+      totalClasesUnidad: 1,
+      isExtraSlot: false
+    }));
+  }
+  
+  if (totalSlots <= expandedPlan.length) {
+    // Caso normal o truncado: usar las primeras totalSlots
+    return expandedPlan.slice(0, totalSlots);
+  }
+  
+  // Caso: más sesiones que clases estimadas
+  // Repetir última unidad para sesiones adicionales
+  const remaining = totalSlots - expandedPlan.length;
+  const lastUnit = expandedPlan[expandedPlan.length - 1];
+  
+  const additionalSessions: UnitAssignmentMetadata[] = [];
+  for (let i = 1; i <= remaining; i++) {
+    additionalSessions.push({
+      ...lastUnit,
+      claseEnUnidad: lastUnit.totalClasesUnidad + i,
+      isExtraSlot: true
+    });
+  }
+  
+  return [...expandedPlan, ...additionalSessions];
+}
+
+// PHASE 3.2: Helper to load session briefs from database
+async function loadSessionBriefs(
+  planificacionId: string
+): Promise<(string | undefined)[] | undefined> {
+  try {
+    // Fetch sessions ordered by orden
+    const { data: sesiones, error: sesionesError } = await supabase
+      .from('sesiones_clase')
+      .select('session_brief, orden')
+      .eq('planificacion_id', planificacionId)
+      .order('orden', { ascending: true });
+
+    if (sesionesError) {
+      console.error('[loadSessionBriefs] Error fetching sessions:', sesionesError);
+      return undefined;
+    }
+
+    if (!sesiones || sesiones.length === 0) {
+      return undefined;
+    }
+
+    // P1 FIX: Build array aligned to orden (handle sparse/non-contiguous ordens)
+    // Determine max orden
+    const maxOrden = Math.max(...sesiones.map(s => s.orden ?? 0).filter(o => o > 0));
+    if (!maxOrden || maxOrden <= 0) {
+      return undefined;
+    }
+
+    // Build array sized maxOrden, fill with undefined
+    const briefs = Array<string | undefined>(maxOrden).fill(undefined);
+    
+    // Assign briefs[orden-1] = session_brief ?? undefined
+    sesiones.forEach(s => {
+      if ((s.orden ?? 0) > 0) {
+        briefs[(s.orden as number) - 1] = s.session_brief ?? undefined;
+      }
+    });
+
+    console.log(`[loadSessionBriefs] Loaded ${briefs.length} session briefs from DB (max orden: ${maxOrden})`);
+    return briefs;
+  } catch (error) {
+    console.error('[loadSessionBriefs] Error loading session briefs:', error);
+    return undefined;
+  }
+}
+
+// PHASE 3.2: Helper to check if array has meaningful briefs (at least one non-empty after trimming)
+function hasMeaningfulBriefs(arr?: (string | undefined)[]): boolean {
+  return Array.isArray(arr) && arr.some(v => (v ?? '').trim().length > 0);
+}
+
+// PHASE 3.2: Resolver to get sessionBriefs from wizard state or DB (source-of-truth)
+async function resolveSessionBriefs(
+  planificacionId: string,
+  wizardSessionBriefs: (string | undefined)[] | undefined
+): Promise<(string | undefined)[] | undefined> {
+  // P3 FIX: Treat "meaningful wizard state" as having at least one non-empty entry
+  // If wizard has meaningful briefs, prefer it (latest unsaved edits)
+  if (hasMeaningfulBriefs(wizardSessionBriefs)) {
+    return wizardSessionBriefs;
+  }
+
+  // Otherwise, load from DB
+  const dbBriefs = await loadSessionBriefs(planificacionId);
+  
+  // If DB has meaningful briefs, use them
+  if (hasMeaningfulBriefs(dbBriefs)) {
+    return dbBriefs;
+  }
+
+  // If both are empty/undefined, return undefined (backward compatibility)
+  return undefined;
+}
+
+// PHASE 3.2: Helper to persist session briefs to database
+type PersistResult = { ok: boolean; attempted: number; failures: number };
+
+async function persistSessionBriefs(
+  planificacionId: string,
+  sessionBriefs: (string | undefined)[] | undefined
+): Promise<PersistResult> {
+  // If no sessionBriefs provided, return early
+  if (!sessionBriefs || sessionBriefs.length === 0) {
+    return { ok: true, attempted: 0, failures: 0 };
+  }
+
+  try {
+    // Fetch sessions for this planning ordered by orden
+    const { data: sesiones, error: sesionesError } = await supabase
+      .from('sesiones_clase')
+      .select('id, orden')
+      .eq('planificacion_id', planificacionId)
+      .order('orden', { ascending: true });
+
+    if (sesionesError) {
+      console.error('[persistSessionBriefs] Error fetching sessions:', sesionesError);
+      return { ok: false, attempted: 0, failures: 0 };
+    }
+
+    if (!sesiones || sesiones.length === 0) {
+      console.warn('[persistSessionBriefs] No sessions found for planning:', planificacionId);
+      return { ok: true, attempted: 0, failures: 0 };
+    }
+
+    // P1 FIX: Map briefs by orden (NOT array index)
+    // sessionBriefs[i] corresponds to session with orden = i + 1
+    const updates = sesiones
+      .filter(s => (s.orden ?? 0) > 0) // Only update sessions with valid orden > 0
+      .map((s) => {
+        const idx = (s.orden as number) - 1; // Convert orden (1-based) to array index (0-based)
+        const brief = idx >= 0 && idx < sessionBriefs.length ? sessionBriefs[idx] : undefined;
+        return {
+          id: s.id,
+          session_brief: brief?.trim() || null
+        };
+      });
+
+    if (updates.length === 0) {
+      return { ok: true, attempted: 0, failures: 0 };
+    }
+
+    // Apply updates using Promise.allSettled to avoid blocking on individual failures
+    const results = await Promise.allSettled(
+      updates.map(update =>
+        supabase
+          .from('sesiones_clase')
+          .update({ session_brief: update.session_brief })
+          .eq('id', update.id)
+      )
+    );
+
+    // Count failures
+    const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    const failureCount = failures.length;
+    const ok = failureCount === 0;
+
+    if (failures.length > 0) {
+      console.error('[persistSessionBriefs] Some updates failed:', failures);
+      failures.forEach((failure) => {
+        const failureIndex = results.findIndex(r => r === failure);
+        if (failureIndex >= 0 && failureIndex < updates.length) {
+          const failedUpdate = updates[failureIndex];
+          console.error(`[persistSessionBriefs] Failed update for session ${failedUpdate.id}:`, failure.reason);
+        }
+      });
+    } else {
+      console.log(`[persistSessionBriefs] Successfully persisted ${updates.length} session briefs`);
+    }
+
+    return { ok, attempted: updates.length, failures: failureCount };
+  } catch (error) {
+    // Log error and return failure result (non-blocking per requirement)
+    console.error('[persistSessionBriefs] Error persisting session briefs:', error);
+    return { ok: false, attempted: 0, failures: 0 };
+  }
+}
+
+// PHASE 4: Use shared helper for group context (removed local implementation)
+// See src/utils/groupContext.ts for centralized logic
 
 // Función para generar automáticamente los planes de todas las sesiones
-const generarPlanesAutomaticamente = async (planificacionId: string, materia: string, nivel: string) => {
+const generarPlanesAutomaticamente = async (
+  planificacionId: string, 
+  materia: string, 
+  nivel: string,
+  sessionBriefs?: (string | undefined)[],  // PHASE 3.1: Optional per-session focus overrides
+  grupoId?: string  // PHASE 3 (Profile Usage): Optional grupo_id to fetch profile
+) => {
   try {
     console.log('Iniciando generación automática de planes...');
+    
+    // PHASE 4: Load group context from Supabase + mockGroups (shared helper)
+    const groupContext = await loadGroupContext(grupoId);
+    
+    if (groupContext.perfilGrupo) {
+      console.log('[PHASE4-Profile] Using group profile:', {
+        tamanio: groupContext.perfilGrupo.tamanio,
+        dominante: groupContext.perfilGrupo.dominante,
+        distribucion: groupContext.perfilGrupo.distribucion,
+        estudiantesConAjustes: groupContext.estudiantes?.length || 0,
+        teacherSugerenciasPresent: !!groupContext.teacherSugerencias
+      });
+    } else {
+      console.log('[PHASE4-Profile] No group profile available (backward compatibility mode)');
+    }
     
     // Obtener la planificación completa con sus datos
     const { data: planificacion, error: planificacionError } = await supabase
@@ -51,13 +303,45 @@ const generarPlanesAutomaticamente = async (planificacionId: string, materia: st
 
     console.log(`Generando planes para ${sesiones.length} sesiones...`);
 
-    // Usar los datos de la planificación para todas las sesiones
-    const contenidos = planificacion.contenidos_programa || [];
-    const competencias = planificacion.competencias_seleccionadas || [];
+    // PHASE 1: Obtener unidades didácticas y aplicar mapeo determinístico
+    const unidadesDidacticas: UnidadDidactica[] = (planificacion.unidades_didacticas as any) || [];
+    const expandedPlan = expandUnitsToSessionPlan(unidadesDidacticas);
+    const sessionAssignments = mapSessionsToUnits(sesiones.length, expandedPlan);
+    
+    // PHASE 3.1: Use sessionBriefs passed as parameter (from wizardData.enfoque.sessionBriefs)
+    // If not provided, use empty array (backward compatibility)
+    const sessionBriefsArray = sessionBriefs || [];
+    
+    // DEV-only: Log resumen de asignaciones
+    if (import.meta.env.DEV) {
+      const summary = {
+        totalUnidades: unidadesDidacticas.length,
+        totalClasesEstimadas: unidadesDidacticas.reduce((sum, u) => sum + (u.clases_estimadas || 1), 0),
+        totalExpanded: expandedPlan.length,
+        totalSesiones: sesiones.length,
+        primerosAsignamientos: sessionAssignments.slice(0, 5).map(a => ({
+          unidad: a.contenido_texto.substring(0, 30),
+          claseEnUnidad: a.claseEnUnidad,
+          totalClases: a.totalClasesUnidad,
+          isExtra: a.isExtraSlot
+        }))
+      };
+      console.log('[PHASE1-generarPlanesAutomaticamente] Mapeo unidades→sesiones:', summary);
+    }
+
+    // Extraer todas las competencias de las unidades didácticas
+    const competenciasAll: string[] = Array.from(new Set(
+      unidadesDidacticas.flatMap((u) => (u.competencias_ids || []))
+    ));
+    
+    // Usar competencias de planificación como fallback si no hay en unidades
+    const competencias = competenciasAll.length > 0 
+      ? competenciasAll 
+      : (planificacion.competencias_seleccionadas || []);
     const criterios = planificacion.mapeo_competencias_contenidos || [];
 
     console.log('Datos de la planificación:', {
-      contenidos,
+      totalUnidades: unidadesDidacticas.length,
       competencias,
       criterios,
       materia,
@@ -72,15 +356,32 @@ const generarPlanesAutomaticamente = async (planificacionId: string, materia: st
     for (let i = 0; i < sesiones.length; i++) {
       const sesion = sesiones[i];
       
-      // Asignar competencias específicas a esta sesión (distribuir entre sesiones)
-      const competenciasPorSesion = Math.ceil(competencias.length / sesiones.length);
-      const inicioCompetencias = (sesion.orden - 1) * competenciasPorSesion;
-      const finCompetencias = Math.min(inicioCompetencias + competenciasPorSesion, competencias.length);
-      const competenciasSesion = competencias.slice(inicioCompetencias, finCompetencias);
+      // PHASE 1: Usar asignación determinística
+      const assignment = sessionAssignments[i];
+      
+      // Usar competencias de la unidad asignada, o todas si no hay específicas
+      const competenciasSesion = assignment.competencias_ids.length > 0
+        ? assignment.competencias_ids
+        : competencias;
+      
+      // Usar contenido de la unidad asignada
+      const contenidosSesion = [assignment.contenido_texto];
 
-      console.log(`Sesión ${sesion.orden}: Competencias asignadas:`, competenciasSesion);
-      console.log(`Total competencias: ${competencias.length}, Competencias por sesión: ${competenciasPorSesion}`);
-      console.log(`Rango para sesión ${sesion.orden}: ${inicioCompetencias} a ${finCompetencias}`);
+      // PHASE 2: Construir unitContext para generación progresiva
+      const unitContext = {
+        unidadId: assignment.unidadId,
+        contenido: assignment.contenido_texto,
+        claseEnUnidad: assignment.claseEnUnidad,
+        totalClasesUnidad: assignment.totalClasesUnidad,
+        ...(assignment.isExtraSlot && { isExtraSlot: true })
+      };
+
+      console.log(`Sesión ${sesion.orden}:`, {
+        contenido: assignment.contenido_texto.substring(0, 40),
+        claseEnUnidad: assignment.claseEnUnidad,
+        totalClasesUnidad: assignment.totalClasesUnidad,
+        competencias: competenciasSesion.length
+      });
       
       // Delay inicial entre sesiones para evitar rate limiting
       if (i > 0) {
@@ -93,6 +394,16 @@ const generarPlanesAutomaticamente = async (planificacionId: string, materia: st
       
       while (intentos < maxIntentos) {
         try {
+          // PHASE 3.1: Extract sessionBrief from UI state
+          const sessionBrief = sessionBriefsArray[i]?.trim();
+          
+          // PHASE 3.2.1: Log sessionBrief extraction for verification
+          if (sessionBrief) {
+            console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: sessionBrief extraído de wizard state: "${sessionBrief}"`);
+          } else {
+            console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: NO hay sessionBrief en wizard state (índice ${i})`);
+          }
+          
           const payload = {
             modo: 'generar_plan_html',
             sesionId: sesion.id,
@@ -100,10 +411,17 @@ const generarPlanesAutomaticamente = async (planificacionId: string, materia: st
             duracionMin: sesion.duracion_minutos,
             materia: materia || 'Sin especificar',
             nivel: nivel || 'Sin especificar',
-            contenidos: contenidos,
-            competencias: competenciasSesion, // Usar competencias específicas de esta sesión
+            contenidos: contenidosSesion, // PHASE 1: Usar contenido de unidad asignada
+            competencias: competenciasSesion, // PHASE 1: Usar competencias de unidad asignada
             criterios: criterios,
-            instruccionesDocente: undefined
+            instruccionesDocente: planificacion.requerimientos_docente || undefined, // PHASE 2: Incluir requerimientos del docente
+            // PHASE 2: Incluir unitContext para generación progresiva
+            unitContext: unitContext,
+            // PHASE 3: Include sessionBrief if provided (non-empty, trimmed)
+            ...(sessionBrief?.trim() && { sessionBrief: sessionBrief.trim() }),
+            // PHASE 3 (Profile Usage): Include group profile and student adjustments if available
+            ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
+            ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes })
           };
 
           console.log(`Generando plan para sesión ${sesion.orden} (intento ${intentos + 1}/${maxIntentos}) con payload:`, payload);
@@ -137,18 +455,47 @@ const generarPlanesAutomaticamente = async (planificacionId: string, materia: st
           }
 
           // Actualizar la sesión con el plan generado
-          console.log(`Guardando competencias para sesión ${sesion.orden}:`, competenciasSesion);
+          console.log(`Guardando para sesión ${sesion.orden}:`, {
+            contenido: contenidosSesion[0]?.substring(0, 40),
+            competencias: competenciasSesion.length,
+            titulo: data.titulo || sessionBrief || '(sin título)'
+          });
+          
+          // Build update payload
+          const updatePayload: any = {
+            plan_desarrollo: { html_completo: data.plan_html },
+            argumento_competencias: data.argumento_competencias,
+            recursos: normalizeArrayField(data.recursos),
+            contenidos_anep: normalizeArrayField(contenidosSesion), // PHASE 1: Contenido de unidad asignada
+            competencias_anep: normalizeArrayField(competenciasSesion),
+            criterios_logro_anep: normalizeArrayField(criterios)
+          };
+          
+          // PHASE 3.2.1 FIX: Update titulo if available (from Edge Function response or sessionBrief)
+          // Priority: 1) data.titulo (extracted from generated HTML), 2) sessionBrief (teacher input)
+          if (data.titulo) {
+            updatePayload.titulo = data.titulo;
+            console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: titulo actualizado desde Edge Function: "${data.titulo}"`);
+          } else if (sessionBrief) {
+            updatePayload.titulo = sessionBrief;
+            console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: titulo actualizado desde sessionBrief: "${sessionBrief}"`);
+          } else {
+            console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: NO se actualiza titulo (ni data.titulo ni sessionBrief disponibles)`);
+          }
+          
+          // PHASE 3.2.1: Log DB update payload
+          console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: Actualizando DB con titulo=${updatePayload.titulo || '(null)'}`);
+          
           const { error: updateError } = await supabase
             .from('sesiones_clase')
-            .update({
-              plan_desarrollo: { html_completo: data.plan_html },
-              argumento_competencias: data.argumento_competencias,
-              recursos: normalizeArrayField(data.recursos),
-              contenidos_anep: normalizeArrayField(contenidos),
-              competencias_anep: normalizeArrayField(competenciasSesion),
-              criterios_logro_anep: normalizeArrayField(criterios)
-            })
+            .update(updatePayload)
             .eq('id', sesion.id);
+          
+          if (!updateError) {
+            console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: DB actualizada exitosamente con titulo`);
+          } else {
+            console.error(`[SESSION_BRIEF] Sesión ${sesion.orden}: Error actualizando DB:`, updateError);
+          }
 
           if (updateError) {
             console.error(`Error actualizando sesión ${sesion.orden}:`, updateError);
@@ -215,6 +562,7 @@ export default function PlanificacionWizard() {
   const { toast } = useToast();
   const [isGeneratingPlans, setIsGeneratingPlans] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
   const {
     wizardData,
     isLoading,
@@ -268,10 +616,18 @@ export default function PlanificacionWizard() {
     await new Promise(resolve => setTimeout(resolve, 5000));
     
     try {
+      // PHASE 3.2: Resolve sessionBriefs from wizard state or DB (source-of-truth)
+      const resolvedBriefs = await resolveSessionBriefs(
+        wizardData.planificacionId,
+        wizardData.enfoque?.sessionBriefs
+      );
+
       const planesGenerados = await generarPlanesAutomaticamente(
         wizardData.planificacionId, 
         wizardData.materia || 'Sin especificar', 
-        wizardData.nivel || 'Sin especificar'
+        wizardData.nivel || 'Sin especificar',
+        resolvedBriefs,  // PHASE 3.2: Use resolved briefs (wizard state or DB)
+        wizardData.contexto?.grupo_id  // PHASE 3 (Profile Usage): Pass grupo_id
       );
       
       if (planesGenerados) {
@@ -298,12 +654,67 @@ export default function PlanificacionWizard() {
   };
 
   const handleFinish = async () => {
-    if (!wizardData.contexto || !wizardData.horario || !wizardData.enfoque) {
+    // DEV: Log validation state at start
+    if (import.meta.env.DEV) {
+      console.log('[PlanificacionWizard] handleFinish called', {
+        tipo_planificacion: wizardData.tipo_planificacion,
+        hasContexto: !!wizardData.contexto,
+        hasHorario: !!wizardData.horario,
+        hasEnfoque: !!wizardData.enfoque
+      });
+    }
+
+    // Conditional validation based on tipo_planificacion
+    // Always require contexto and enfoque
+    if (!wizardData.contexto || !wizardData.enfoque) {
+      toast({
+        title: "Error",
+        description: "Faltan datos requeridos para crear la planificación",
+        variant: "destructive"
+      });
       return;
     }
 
+    // Require horario ONLY for periodo_especifico
+    if (wizardData.tipo_planificacion !== 'sin_periodo' && !wizardData.horario) {
+      toast({
+        title: "Error",
+        description: "Faltan datos requeridos para crear la planificación (horario no configurado)",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // For sin_periodo, validate cantidad_sesiones and duracion_por_sesion
+    if (wizardData.tipo_planificacion === 'sin_periodo') {
+      if (!wizardData.contexto.cantidad_sesiones || wizardData.contexto.cantidad_sesiones <= 0) {
+        toast({
+          title: "Error",
+          description: "Debes especificar una cantidad de sesiones mayor a 0",
+          variant: "destructive"
+        });
+        return;
+      }
+      if (!wizardData.contexto.duracion_por_sesion || wizardData.contexto.duracion_por_sesion <= 0) {
+        toast({
+          title: "Error",
+          description: "Debes especificar una duración por sesión mayor a 0 minutos",
+          variant: "destructive"
+        });
+        return;
+      }
+    }
+
+    // Prevent double-clicks and concurrent creation attempts
+    if (isCreating || isLoading || isGeneratingPlans) {
+      console.warn('[PlanificacionWizard] Creation already in progress, ignoring duplicate request');
+      return;
+    }
+
+    setIsCreating(true);
     setIsLoading(true);
     setError(null);
+    setGenerationError(null);
 
     try {
       // Ensure we have a valid session
@@ -311,10 +722,11 @@ export default function PlanificacionWizard() {
       const { data: { user }, error: userError } = await supabase.auth.getUser();
       
       if (userError || !user) {
-        console.log('No valid session, ensuring demo auth...');
+        console.log('[PlanificacionWizard] No valid session, ensuring demo auth...');
         const { error: ensureError } = await supabase.functions.invoke('ensure-demo-users');
         if (ensureError) {
-          console.error('Error ensuring demo users:', ensureError);
+          console.error('[PlanificacionWizard] Error ensuring demo users:', ensureError);
+          // Non-blocking: continue anyway
         }
         
         const { error: signInError } = await supabase.auth.signInWithPassword({
@@ -323,14 +735,24 @@ export default function PlanificacionWizard() {
         });
         
         if (signInError) {
-          throw new Error('No se pudo autenticar. Por favor, intenta hacer login nuevamente.');
+          const errorMsg = `No se pudo autenticar: ${signInError.message}`;
+          if (import.meta.env.DEV) {
+            console.error('[PlanificacionWizard] Sign-in error:', signInError);
+          }
+          throw new Error(errorMsg);
         }
         
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         const { data: { user: retryUser }, error: retryError } = await supabase.auth.getUser();
         if (retryError || !retryUser) {
-          throw new Error('No se pudo establecer la sesión de usuario.');
+          const errorMsg = retryError 
+            ? `No se pudo establecer la sesión: ${retryError.message}`
+            : 'No se pudo establecer la sesión de usuario.';
+          if (import.meta.env.DEV) {
+            console.error('[PlanificacionWizard] Retry get user error:', retryError);
+          }
+          throw new Error(errorMsg);
         }
         currentUser = retryUser;
       } else {
@@ -357,8 +779,9 @@ export default function PlanificacionWizard() {
           materia: wizardData.contexto.materia,
           fecha_inicio: wizardData.contexto.fecha_inicio || null,
           fecha_fin: wizardData.contexto.fecha_fin || null,
-          horas_semanales: wizardData.horario.horas_semanales,
-          configuracion_horario: wizardData.horario.configuracion,
+          // horario fields: only for periodo_especifico
+          horas_semanales: wizardData.horario?.horas_semanales || null,
+          configuracion_horario: wizardData.horario?.configuracion || null,
           unidades_didacticas: wizardData.enfoque.unidades_didacticas,
           competencias_seleccionadas: competenciasSeleccionadas,
           contenidos_programa: contenidosPrograma,
@@ -378,14 +801,18 @@ export default function PlanificacionWizard() {
         .maybeSingle();
 
       if (planError) {
-        console.error('Plan error:', planError);
+        if (import.meta.env.DEV) {
+          console.error('[PlanificacionWizard] Plan creation error:', planError);
+        }
         // GUARDRAIL: Si la columna is_saved no existe (PGRST204), mensaje más claro
         if (planError.code === 'PGRST204' || planError.message.includes('is_saved')) {
           throw new Error(`❌ MIGRACIÓN FALTANTE: La columna 'is_saved' no existe en tabla planificaciones. Ejecuta: supabase db push`);
         }
-        throw new Error(`Error DB (${planError.code}): ${planError.message}`);
+        throw new Error(`Error al crear la planificación: ${planError.message || planError.code || 'Error desconocido'}`);
       }
-      if (!planificacion) throw new Error('No se pudo crear la planificación');
+      if (!planificacion) {
+        throw new Error('No se pudo crear la planificación. La respuesta de la base de datos está vacía.');
+      }
 
       console.log('Planificación creada:', planificacion.id);
       
@@ -421,8 +848,10 @@ export default function PlanificacionWizard() {
           .insert(sesionesBacklog);
 
         if (sesionesError) {
-          console.error('Sesiones error:', sesionesError);
-          throw new Error(`Error creando sesiones (${sesionesError.code}): ${sesionesError.message}`);
+          if (import.meta.env.DEV) {
+            console.error('[PlanificacionWizard] Sessions creation error:', sesionesError);
+          }
+          throw new Error(`Error al crear las sesiones: ${sesionesError.message || sesionesError.code || 'Error desconocido'}`);
         }
 
         console.log('Sesiones creadas exitosamente en backlog');
@@ -467,8 +896,10 @@ export default function PlanificacionWizard() {
           .insert(sesionesCalendario);
 
         if (sesionesError) {
-          console.error('Sesiones error:', sesionesError);
-          throw new Error(`Error creando sesiones (${sesionesError.code}): ${sesionesError.message}`);
+          if (import.meta.env.DEV) {
+            console.error('[PlanificacionWizard] Sessions creation error:', sesionesError);
+          }
+          throw new Error(`Error al crear las sesiones: ${sesionesError.message || sesionesError.code || 'Error desconocido'}`);
         }
 
         console.log('Sesiones creadas exitosamente en calendario');
@@ -476,6 +907,35 @@ export default function PlanificacionWizard() {
         toast({
           title: "¡Planificación con fechas creada!",
           description: `Se crearon ${fechasSesiones.length} sesiones automáticamente en el calendario`,
+        });
+      }
+
+      // PHASE 3.2: Persist session briefs to database before generation
+      // This ensures briefs survive refresh/navigation and are available for retry
+      const sessionBriefsToPersist = wizardData.enfoque?.sessionBriefs;
+      
+      // PHASE 3.2.1: Log session briefs before persistence
+      if (sessionBriefsToPersist && sessionBriefsToPersist.length > 0) {
+        const meaningfulBriefs = sessionBriefsToPersist.filter(b => b?.trim());
+        console.log(`[SESSION_BRIEF] Persistiendo ${meaningfulBriefs.length} session briefs a DB antes de generación`);
+        meaningfulBriefs.forEach((brief, idx) => {
+          console.log(`[SESSION_BRIEF]   Sesión ${idx + 1}: "${brief}"`);
+        });
+      } else {
+        console.log(`[SESSION_BRIEF] NO hay session briefs para persistir (wizard state vacío)`);
+      }
+      
+      const persistResult = await persistSessionBriefs(planificacion.id, sessionBriefsToPersist);
+      
+      // PHASE 3.2.1: Log persistence result
+      console.log(`[SESSION_BRIEF] Resultado de persistencia: ok=${persistResult.ok}, attempted=${persistResult.attempted}, failures=${persistResult.failures}`);
+      
+      // P2 FIX: Show warning toast if persistence had failures (non-blocking)
+      if (!persistResult.ok || persistResult.failures > 0) {
+        toast({
+          title: "Advertencia",
+          description: "No se pudieron guardar algunos temas de las clases. La generación continuará con los valores actuales.",
+          variant: "default"
         });
       }
 
@@ -489,27 +949,50 @@ export default function PlanificacionWizard() {
       
       // Esperar a que se complete la generación antes de navegar
       try {
-        const planesGenerados = await generarPlanesAutomaticamente(planificacion.id, planificacion.materia, planificacion.nivel);
+        const planesGenerados = await generarPlanesAutomaticamente(
+          planificacion.id, 
+          planificacion.materia, 
+          planificacion.nivel,
+          wizardData.enfoque?.sessionBriefs,  // PHASE 3.1: Pass sessionBriefs from wizard state
+          wizardData.contexto?.grupo_id  // PHASE 3 (Profile Usage): Pass grupo_id
+        );
         
         if (planesGenerados) {
           toast({
             title: "¡Planificación completa!",
             description: "Todos los planes de clase han sido generados y guardados.",
           });
-          navigate(`/planificacion/${planificacion.id}`);
+          
+          // Navigate to workspace after successful creation
+          const planificacionId = planificacion.id;
+          console.log(`[PlanificacionWizard] Navigating to workspace: /planificacion/${planificacionId}`);
+          navigate(`/planificacion/${planificacionId}`);
+          return; // Exit early on success
         } else {
-          throw new Error('No se pudieron generar todos los planes');
+          throw new Error('No se pudieron generar todos los planes. Algunas sesiones pueden no tener contenido generado.');
         }
       } catch (generationError) {
-        console.error('Error en generación automática:', generationError);
-        const errorMessage = generationError instanceof Error ? generationError.message : 'Error desconocido';
+        const errorMessage = generationError instanceof Error ? generationError.message : 'Error desconocido al generar planes';
+        if (import.meta.env.DEV) {
+          console.error('[PlanificacionWizard] Error en generación automática:', generationError);
+        }
         setGenerationError(errorMessage);
+        
+        // Show error toast but still navigate if plan was created
         toast({
-          title: "Error en generación",
-          description: "Hubo un problema al generar los planes. Revisa la consola para más detalles.",
-          variant: "destructive"
+          title: "Advertencia",
+          description: "La planificación se creó pero hubo problemas al generar algunos planes. Puedes generarlos más tarde desde el workspace.",
+          variant: "default"
         });
-        // NO navegar si hay errores - mantener en pantalla de carga
+        
+        // Navigate anyway if plan was created (partial success)
+        if (planificacion?.id) {
+          console.log(`[PlanificacionWizard] Navigating to workspace despite generation errors: /planificacion/${planificacion.id}`);
+          navigate(`/planificacion/${planificacion.id}`);
+          return;
+        }
+        
+        // Only block navigation if plan creation itself failed
         setIsGeneratingPlans(false);
         return;
       } finally {
@@ -517,17 +1000,22 @@ export default function PlanificacionWizard() {
       }
 
     } catch (error) {
-      console.error('Error creando planificación:', error);
       const errorMessage = error instanceof Error ? error.message : 'No se pudo crear la planificación. Inténtalo nuevamente.';
       
+      if (import.meta.env.DEV) {
+        console.error('[PlanificacionWizard] Error creando planificación:', error);
+      }
+      
       toast({
-        title: "Error",
+        title: "Error al crear planificación",
         description: errorMessage,
-        variant: "destructive"
+        variant: "destructive",
+        duration: 5000 // Show longer for errors
       });
       setError(`Error creando la planificación: ${errorMessage}`);
     } finally {
       setIsLoading(false);
+      setIsCreating(false);
     }
   };
 
@@ -636,7 +1124,7 @@ export default function PlanificacionWizard() {
         onNext={handleNext}
         onPrev={handlePrev}
         onFinish={handleFinish}
-        isLoading={isLoading || isGenerating}
+        isLoading={isLoading || isGenerating || isCreating}
         validation={validation}
       />
 

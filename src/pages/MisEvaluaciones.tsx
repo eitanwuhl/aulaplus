@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { ArrowLeft, Search, BarChart3, Clock, Trash2, FolderOpen } from 'lucide-react';
+import { ArrowLeft, Search, BarChart3, Clock, Trash2, FolderOpen, RefreshCw, AlertTriangle, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -19,6 +19,7 @@ import { COMPETENCIAS_CIUDADANIA } from '@/data/competenciasCiudadania';
 import { COMPETENCIAS_LITERATURA } from '@/data/competenciasLiteratura';
 import { normalizeSubjectName } from '@/lib/subjectNormalizer';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 interface CompetenciaCount {
   id: string;
@@ -66,6 +67,7 @@ const MisEvaluaciones: React.FC = () => {
   const [filtroGrupo, setFiltroGrupo] = useState<string>('');
   const [fechaRange, setFechaRange] = useState<DateRange | undefined>();
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -123,10 +125,10 @@ const MisEvaluaciones: React.FC = () => {
   };
 
   // Load evaluaciones
-  useEffect(() => {
-    const cargarDatos = async () => {
-      setIsLoading(true);
-      try {
+  const cargarDatos = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
         const { data: evalData, error: evalError } = await supabase
           .from('evaluaciones')
           .select('*')
@@ -174,8 +176,10 @@ const MisEvaluaciones: React.FC = () => {
         });
 
         setEvaluaciones(evaluacionesNormalizadas as unknown as Evaluacion[]);
-      } catch (error) {
-        console.error('Error cargando evaluaciones:', error);
+      } catch (err) {
+        console.error('Error cargando evaluaciones:', err);
+        const errorObj = err instanceof Error ? err : new Error('Error desconocido al cargar evaluaciones');
+        setError(errorObj);
         toast({
           title: "Error",
           description: "No se pudieron cargar las evaluaciones",
@@ -186,6 +190,7 @@ const MisEvaluaciones: React.FC = () => {
       }
     };
 
+  useEffect(() => {
     cargarDatos();
   }, [toast]);
 
@@ -504,8 +509,79 @@ const MisEvaluaciones: React.FC = () => {
     }
   };
 
+  // Render loading state
+  if (isLoading) {
+    return (
+      <ErrorBoundary>
+        <div className="container space-y-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-4">
+              <Button variant="ghost" size="sm" onClick={() => navigate('/evaluaciones')}>
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Volver
+              </Button>
+              <div>
+                <h1 className="text-3xl font-bold">Mis Evaluaciones</h1>
+                <p className="text-muted-foreground">
+                  Gestiona tus evaluaciones guardadas y visualiza el balance de competencias
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center justify-center min-h-[400px]">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+              <p className="text-muted-foreground">Cargando evaluaciones...</p>
+            </div>
+          </div>
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
+  // Render error state
+  if (error) {
+    return (
+      <ErrorBoundary>
+        <div className="container space-y-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-4">
+              <Button variant="ghost" size="sm" onClick={() => navigate('/evaluaciones')}>
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Volver
+              </Button>
+              <div>
+                <h1 className="text-3xl font-bold">Mis Evaluaciones</h1>
+                <p className="text-muted-foreground">
+                  Gestiona tus evaluaciones guardadas y visualiza el balance de competencias
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center justify-center min-h-[400px]">
+            <div className="text-center max-w-md">
+              <AlertTriangle className="w-16 h-16 mx-auto mb-4 text-destructive" />
+              <h3 className="text-lg font-semibold mb-2">Error al cargar evaluaciones</h3>
+              <p className="text-muted-foreground mb-6">
+                No se pudieron cargar las evaluaciones. Por favor, intentá nuevamente.
+              </p>
+              <Button onClick={cargarDatos}>
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Reintentar
+              </Button>
+            </div>
+          </div>
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
+  // Render empty state (when no data at all, not just filtered out)
+  const hasNoData = evaluaciones.length === 0;
+
   return (
-    <div className="container space-y-6">
+    <ErrorBoundary>
+      <div className="container space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
@@ -522,6 +598,23 @@ const MisEvaluaciones: React.FC = () => {
         </div>
       </div>
 
+      {/* Empty State - No data at all */}
+      {hasNoData ? (
+        <div className="flex items-center justify-center min-h-[500px]">
+          <div className="text-center max-w-md">
+            <FolderOpen className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+            <h3 className="text-lg font-semibold mb-2">Aún no has guardado evaluaciones</h3>
+            <p className="text-muted-foreground mb-6">
+              Genera una evaluación y guárdala para verla aquí y visualizar el balance de competencias.
+            </p>
+            <Button onClick={() => navigate('/evaluaciones/nuevo')}>
+              <Plus className="h-4 w-4 mr-2" />
+              Generar evaluación
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <>
       {/* Filters */}
       <div className="flex flex-wrap gap-4 items-center">
         <div className="flex-1 min-w-[200px]">
@@ -801,20 +894,34 @@ const MisEvaluaciones: React.FC = () => {
               {evaluacionesParaMostrar.map((evaluacion) => (
                 <div
                   key={evaluacion.id}
-                  className="flex items-center gap-4 p-4 border rounded-lg hover:bg-muted/50 transition-colors"
+                  onClick={() => navigate(`/mis-evaluaciones/${evaluacion.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      navigate(`/mis-evaluaciones/${evaluacion.id}`);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  className="flex items-center gap-4 p-4 border rounded-lg hover:bg-muted/50 transition-colors cursor-pointer"
                 >
-                  <Checkbox
-                    checked={selectedIds.has(evaluacion.id)}
-                    onCheckedChange={(checked) => {
-                      const newSet = new Set(selectedIds);
-                      if (checked) {
-                        newSet.add(evaluacion.id);
-                      } else {
-                        newSet.delete(evaluacion.id);
-                      }
-                      setSelectedIds(newSet);
-                    }}
-                  />
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
+                    <Checkbox
+                      checked={selectedIds.has(evaluacion.id)}
+                      onCheckedChange={(checked) => {
+                        const newSet = new Set(selectedIds);
+                        if (checked) {
+                          newSet.add(evaluacion.id);
+                        } else {
+                          newSet.delete(evaluacion.id);
+                        }
+                        setSelectedIds(newSet);
+                      }}
+                    />
+                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <h4 className="font-semibold truncate">
@@ -851,19 +958,6 @@ const MisEvaluaciones: React.FC = () => {
                       })()}
                     </div>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      // TODO: Navigate to evaluation detail/edit page
-                      toast({
-                        title: "Funcionalidad pendiente",
-                        description: "La vista de detalle de evaluación estará disponible pronto"
-                      });
-                    }}
-                  >
-                    Ver detalles
-                  </Button>
                 </div>
               ))}
             </div>
@@ -899,8 +993,16 @@ const MisEvaluaciones: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
-  );
-};
+        </>
+      )}
+      </div>
+    </ErrorBoundary>
+    );
+  };
 
 export default MisEvaluaciones;
+
+
+
+
+

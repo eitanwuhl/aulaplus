@@ -15,6 +15,7 @@ import { Planificacion, SesionClase, DistribucionModalidades, ConfiguracionHorar
 import { supabase } from '@/integrations/supabase/client';
 import { parsePlan, buildPlanHtml } from '@/lib/planParser';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 export default function PlanificacionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -84,24 +85,37 @@ export default function PlanificacionWorkspace() {
         }
         
         // Convertir tipos JSON a TypeScript tipos
+        // Defensive: Ensure unidades_didacticas is always an array to prevent forEach crashes
+        let unidadesDidacticasSafe: any[] = [];
+        if (data.unidades_didacticas) {
+          if (Array.isArray(data.unidades_didacticas)) {
+            unidadesDidacticasSafe = data.unidades_didacticas;
+          } else {
+            // If it's not an array (null, object, string, etc.), default to empty array
+            if (import.meta.env.DEV) {
+              console.warn('[PlanificacionWorkspace] unidades_didacticas is not an array, defaulting to []', typeof data.unidades_didacticas);
+            }
+            unidadesDidacticasSafe = [];
+          }
+        }
+        
         const planificacionConverted = {
           ...data,
           distribucion_modalidades: data.distribucion_modalidades as unknown as DistribucionModalidades,
-          unidades_didacticas: (data.unidades_didacticas as any) || [],
+          unidades_didacticas: unidadesDidacticasSafe,
           configuracion_horario: data.configuracion_horario as unknown as ConfiguracionHorario[],
           fecha_inicio: data.fecha_inicio || undefined,
           fecha_fin: data.fecha_fin || undefined
         };
         
         // Calcular competencias del per?odo desde unidades did?cticas
+        // unidades_didacticas is now guaranteed to be an array, safe to iterate
         const competenciasUnicas = new Set<string>();
-        if (planificacionConverted.unidades_didacticas && Array.isArray(planificacionConverted.unidades_didacticas)) {
-          planificacionConverted.unidades_didacticas.forEach((unidad: any) => {
-            if (unidad.competencias_ids && Array.isArray(unidad.competencias_ids)) {
-              unidad.competencias_ids.forEach((comp: string) => competenciasUnicas.add(comp));
-            }
-          });
-        }
+        unidadesDidacticasSafe.forEach((unidad: any) => {
+          if (unidad && unidad.competencias_ids && Array.isArray(unidad.competencias_ids)) {
+            unidad.competencias_ids.forEach((comp: string) => competenciasUnicas.add(comp));
+          }
+        });
         setCompetenciasDelPeriodo(Array.from(competenciasUnicas));
         
         setPlanificacion(planificacionConverted as unknown as Planificacion);
@@ -312,7 +326,29 @@ export default function PlanificacionWorkspace() {
 
   // Handler to save planification explicitly
   const handleSavePlanificacion = async () => {
-    if (!planificacion || !customNombre.trim()) return;
+    // Pre-save validation
+    if (!planificacion) {
+      toast({
+        title: "Error",
+        description: "No hay planificación para guardar",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (!customNombre.trim()) {
+      toast({
+        title: "Error",
+        description: "Ingresá un nombre",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Prevent double-submit
+    if (isSaving) {
+      return;
+    }
 
     setIsSaving(true);
     try {
@@ -357,11 +393,36 @@ export default function PlanificacionWorkspace() {
         description: `"${customNombre.trim()}" se agreg? a Mis Planificaciones`,
       });
 
-    } catch (error) {
-      console.error('Error saving planification:', error);
+    } catch (error: any) {
+      // Detailed error logging in DEV
+      if (import.meta.env.DEV) {
+        console.error('[SAVE PLANIFICACION] Error guardando planificación:', {
+          error,
+          message: error?.message,
+          code: error?.code,
+          details: error?.details,
+          hint: error?.hint
+        });
+      }
+
+      // User-friendly error message (avoid technical codes)
+      let errorMessage = "No se pudo guardar la planificación. Por favor, intentá nuevamente.";
+      
+      if (error?.message) {
+        if (error.message.includes('permission denied') || error.message.includes('policy')) {
+          errorMessage = "No tenés permisos para guardar. Contactá al administrador.";
+        } else if (error.message.includes('null value') || error.message.includes('violates not-null')) {
+          errorMessage = "Faltan datos requeridos. Revisá que todos los campos estén completos.";
+        } else if (error.message.includes('relation') || error.message.includes('does not exist')) {
+          errorMessage = "Error de configuración. Contactá al administrador.";
+        } else if (error.message.includes('network') || error.message.includes('fetch')) {
+          errorMessage = "Error de conexión. Revisá tu conexión a internet e intentá nuevamente.";
+        }
+      }
+      
       toast({
-        title: "Error",
-        description: "No se pudo guardar la planificaci?n",
+        title: "Error al guardar",
+        description: errorMessage,
         variant: "destructive"
       });
     } finally {
@@ -513,28 +574,30 @@ export default function PlanificacionWorkspace() {
   // Error screen for plan generation failures
   if (planGenerationError) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-center space-y-4 max-w-lg mx-auto">
-          <h2 className="text-2xl font-bold text-red-600">Error al generar los planes</h2>
-          <p className="text-muted-foreground">
-            {planGenerationError}
-          </p>
-          <div className="flex justify-center gap-2">
-            <Button onClick={handleRetryGeneration}>
-              Reintentar generaci?n
-            </Button>
-            <Button variant="outline" onClick={() => {
-              if (shouldBlockExit) {
-                handleNavigate('/planificacion');
-              } else {
-                navigate('/planificacion');
-              }
-            }}>
-              Volver a planificaciones
-            </Button>
+      <ErrorBoundary>
+        <div className="flex items-center justify-center h-screen">
+          <div className="text-center space-y-4 max-w-lg mx-auto">
+            <h2 className="text-2xl font-bold text-red-600">Error al generar los planes</h2>
+            <p className="text-muted-foreground">
+              {planGenerationError}
+            </p>
+            <div className="flex justify-center gap-2">
+              <Button onClick={handleRetryGeneration}>
+                Reintentar generaci?n
+              </Button>
+              <Button variant="outline" onClick={() => {
+                if (shouldBlockExit) {
+                  handleNavigate('/planificacion');
+                } else {
+                  navigate('/planificacion');
+                }
+              }}>
+                Volver a planificaciones
+              </Button>
           </div>
         </div>
       </div>
+      </ErrorBoundary>
     );
   }
 
@@ -548,22 +611,25 @@ export default function PlanificacionWorkspace() {
       : 'Cargando planificaci?n...';
 
     return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-center space-y-4">
-          <Loader2 className="h-12 w-12 animate-spin mx-auto text-primary" />
-          <p className="text-muted-foreground">{message}</p>
+      <ErrorBoundary>
+        <div className="flex items-center justify-center h-screen">
+          <div className="text-center space-y-4">
+            <Loader2 className="h-12 w-12 animate-spin mx-auto text-primary" />
+            <p className="text-muted-foreground">{message}</p>
+          </div>
         </div>
-      </div>
+      </ErrorBoundary>
     );
   }
 
   if (!planificacion) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-red-600 mb-4">Error</h2>
-          <p className="text-muted-foreground mb-4">No se pudo cargar la planificaci?n</p>
-          <Button onClick={() => {
+      <ErrorBoundary>
+        <div className="flex items-center justify-center h-screen">
+          <div className="text-center">
+            <h2 className="text-2xl font-bold text-red-600 mb-4">Error</h2>
+            <p className="text-muted-foreground mb-4">No se pudo cargar la planificaci?n</p>
+            <Button onClick={() => {
             if (shouldBlockExit) {
               handleNavigate('/planificacion');
             } else {
@@ -574,6 +640,7 @@ export default function PlanificacionWorkspace() {
           </Button>
         </div>
       </div>
+      </ErrorBoundary>
     );
   }
 
@@ -600,8 +667,8 @@ export default function PlanificacionWorkspace() {
     </AlertDialog>
   );
 
-  try {
-    return (
+  return (
+    <ErrorBoundary>
       <div className="min-h-screen bg-background">
         
         {/* Header */}
@@ -756,7 +823,7 @@ export default function PlanificacionWorkspace() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-2">
                             <h4 className="text-sm font-medium truncate">
-                              {sesion.titulo || `Sesi?n ${sesion.orden}`}
+                              {sesion.session_brief || sesion.titulo || `Sesión ${sesion.orden}`}
                             </h4>
                             <span className="text-xs text-muted-foreground whitespace-nowrap">
                               {sesion.duracion_minutos} min
@@ -764,7 +831,7 @@ export default function PlanificacionWorkspace() {
                           </div>
                           {sesion.contenidos_anep?.length ? (
                             <p className="text-xs text-muted-foreground truncate mt-1">
-                              {sesion.contenidos_anep[0]}
+                              {sesion.session_brief ? `Contenido ANEP: ${sesion.contenidos_anep[0]}` : sesion.contenidos_anep[0]}
                             </p>
                           ) : null}
                           {sesion.competencias_anep?.length ? (
@@ -848,21 +915,6 @@ export default function PlanificacionWorkspace() {
         {/* Exit confirmation guard dialog */}
         {exitConfirmDialog}
       </div>
-    );
-  } catch (error) {
-    console.error('Error renderizando PlanificacionWorkspace:', error);
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-red-600 mb-4">Error de Renderizado</h2>
-          <p className="text-muted-foreground mb-4">
-            Ocurri? un error al mostrar la planificaci?n: {error instanceof Error ? error.message : 'Error desconocido'}
-          </p>
-          <Button onClick={() => navigate('/planificacion')}>
-            Volver a Planificaciones
-          </Button>
-        </div>
-      </div>
-    );
-  }
+    </ErrorBoundary>
+  );
 }

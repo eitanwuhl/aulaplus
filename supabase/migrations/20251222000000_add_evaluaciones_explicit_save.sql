@@ -112,3 +112,20 @@ COMMENT ON COLUMN evaluaciones.is_saved IS 'Explicit save flag - only saved eval
 COMMENT ON COLUMN evaluaciones.saved_at IS 'Timestamp when evaluation was explicitly saved';
 COMMENT ON COLUMN evaluaciones.deleted_at IS 'Soft delete timestamp - null means not deleted';
 COMMENT ON COLUMN evaluaciones.competencias_anep IS 'Array of competency IDs used in this evaluation';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

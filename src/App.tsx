@@ -16,6 +16,7 @@ import NotFound from "./pages/NotFound";
 import EvaluacionesGrupo from "./pages/EvaluacionesGrupo";
 import EvaluacionesChoice from "./pages/EvaluacionesChoice";
 import MisEvaluaciones from "./pages/MisEvaluaciones";
+import EvaluacionDetalle from "./pages/EvaluacionDetalle";
 import PlanificacionClase from "./pages/PlanificacionClase";
 import PlanificacionWizard from "./pages/PlanificacionWizard";
 import PlanificacionWorkspace from "./pages/PlanificacionWorkspace";
@@ -93,6 +94,11 @@ const AppRoutes = () => {
       <Route path="/mis-evaluaciones" element={
         <ProtectedTeacherRoute>
           <MisEvaluaciones />
+        </ProtectedTeacherRoute>
+      } />
+      <Route path="/mis-evaluaciones/:id" element={
+        <ProtectedTeacherRoute>
+          <EvaluacionDetalle />
         </ProtectedTeacherRoute>
       } />
       <Route path="/planificacion" element={

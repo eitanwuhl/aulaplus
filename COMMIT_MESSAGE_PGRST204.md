@@ -48,3 +48,23 @@ npx supabase db push
 Ver `MIGRATION_GUIDE_is_saved.md` para instrucciones detalladas.
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

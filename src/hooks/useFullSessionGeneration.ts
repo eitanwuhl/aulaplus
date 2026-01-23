@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { SesionClase, Planificacion, DistribucionModalidades } from '@/types/planificacion';
+import { SesionClase, Planificacion, DistribucionModalidades, UnidadDidactica, UnitAssignmentMetadata } from '@/types/planificacion';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
+import { loadGroupContext } from '@/utils/groupContext';
 
 interface SessionGenerationContext {
   planificacion: Planificacion;
@@ -24,19 +25,43 @@ export const useFullSessionGeneration = () => {
       const modalidadesDistribuidas = createModalidadDistribution(fechasSesiones.length, distribucion);
       
       // Convertir unidades didácticas del JSON
-      const unidadesDidacticas = ((planificacion as any).unidades_didacticas) || [];
+      const unidadesDidacticas: UnidadDidactica[] = ((planificacion as any).unidades_didacticas) || [];
+      
+      // PHASE 1: Expandir unidades según clases_estimadas y mapear a sesiones
+      const expandedPlan = expandUnitsToSessionPlan(unidadesDidacticas);
+      const sessionAssignments = mapSessionsToUnits(fechasSesiones.length, expandedPlan);
+      
+      // DEV-only: Log resumen de asignaciones
+      if (import.meta.env.DEV) {
+        const DEBUG = false; // Cambiar a true para logs detallados por sesión
+        const summary = {
+          totalUnidades: unidadesDidacticas.length,
+          totalClasesEstimadas: unidadesDidacticas.reduce((sum, u) => sum + (u.clases_estimadas || 1), 0),
+          totalExpanded: expandedPlan.length,
+          totalSesiones: fechasSesiones.length,
+          primerosAsignamientos: sessionAssignments.slice(0, 5).map(a => ({
+            unidad: a.contenido_texto.substring(0, 30),
+            claseEnUnidad: a.claseEnUnidad,
+            totalClases: a.totalClasesUnidad,
+            isExtra: a.isExtraSlot
+          }))
+        };
+        console.log('[PHASE1] Mapeo unidades→sesiones:', summary);
+        if (DEBUG) {
+          sessionAssignments.forEach((assignment, idx) => {
+            console.log(`[PHASE1-DEBUG] Sesión ${idx + 1}:`, assignment);
+          });
+        }
+      }
       
       // Extraer todas las competencias de las unidades didácticas
       const competenciasAll: string[] = Array.from(new Set(
-        unidadesDidacticas.flatMap((u: any) => ((u.competencias_ids || []) as string[]))
+        unidadesDidacticas.flatMap((u) => (u.competencias_ids || []))
       ));
       
       const sessionPromises = fechasSesiones.map(async (fecha, index) => {
-        // Rotar unidades didácticas
-        const unidadIndex = unidadesDidacticas.length > 0 
-          ? Math.floor(index / Math.ceil(fechasSesiones.length / unidadesDidacticas.length))
-          : 0;
-        const unidad = unidadesDidacticas[unidadIndex] || { contenido_texto: 'Contenido general', competencias_ids: [] };
+        // PHASE 1: Usar asignación determinística en lugar de rotación
+        const assignment = sessionAssignments[index];
         
         // Calcular duración real basada en configuración horaria
         const duracionReal = calculateSessionDuration(fecha, planificacion.configuracion_horario);
@@ -44,27 +69,35 @@ export const useFullSessionGeneration = () => {
         // Generar plan de desarrollo con IA
         const planDesarrollo = await generateAIPlan({
           materia: planificacion.materia,
-          contenido: unidad?.contenido_texto || 'Contenido general',
+          contenido: assignment.contenido_texto,
           competencias: competenciasAll,
           modalidad: modalidadesDistribuidas[index],
           duracionMinutos: duracionReal,
           diferenciacion: planificacion.estrategias_diferenciacion,
           grupoId: planificacion.grupo_id,
           sesionNumero: index + 1,
-          totalSesiones: fechasSesiones.length
+          totalSesiones: fechasSesiones.length,
+          // PHASE 2: Pasar metadata para generación progresiva
+          unitAssignment: assignment,
+          requerimientosDocente: planificacion.requerimientos_docente
         });
 
         // Generar recursos automáticamente basados en contenido
-        const recursos = generateResources(unidad?.contenido_texto || '', planificacion.materia);
+        const recursos = generateResources(assignment.contenido_texto, planificacion.materia);
+        
+        // Usar competencias de la unidad asignada si están disponibles, sino todas
+        const competenciasSesion = assignment.competencias_ids.length > 0
+          ? assignment.competencias_ids
+          : competenciasAll;
         
         return {
           id: crypto.randomUUID(),
           planificacion_id: planificacion.id,
           fecha: fecha.toISOString().split('T')[0],
           duracion_minutos: duracionReal,
-          competencias_anep: normalizeArrayField(competenciasAll.slice(0, 3)),
-          contenidos_anep: normalizeArrayField([unidad?.contenido_texto || 'Contenido general']),
-          criterios_logro_anep: normalizeArrayField(generateCriteriosLogro(competenciasAll)),
+          competencias_anep: normalizeArrayField(competenciasSesion.slice(0, 3)),
+          contenidos_anep: normalizeArrayField([assignment.contenido_texto]),
+          criterios_logro_anep: normalizeArrayField(generateCriteriosLogro(competenciasSesion)),
           plan_desarrollo: planDesarrollo,
           diferenciacion: planificacion.estrategias_diferenciacion || '',
           evaluacion: {
@@ -104,6 +137,75 @@ export const useFullSessionGeneration = () => {
   };
 };
 
+// PHASE 1: Expandir unidades didácticas según clases_estimadas
+function expandUnitsToSessionPlan(
+  unidades: UnidadDidactica[]
+): UnitAssignmentMetadata[] {
+  const expanded: UnitAssignmentMetadata[] = [];
+  
+  for (let i = 0; i < unidades.length; i++) {
+    const unidad = unidades[i];
+    // Validar clases_estimadas: si es <= 0 o NaN, usar 1 como default
+    const totalClases = (unidad.clases_estimadas && unidad.clases_estimadas > 0 && !isNaN(unidad.clases_estimadas))
+      ? unidad.clases_estimadas
+      : 1;
+    
+    for (let claseNum = 1; claseNum <= totalClases; claseNum++) {
+      expanded.push({
+        unidadIndex: i,
+        unidadId: unidad.id,
+        contenido_texto: unidad.contenido_texto,
+        competencias_ids: unidad.competencias_ids || [],
+        claseEnUnidad: claseNum,
+        totalClasesUnidad: totalClases,
+        isExtraSlot: false
+      });
+    }
+  }
+  
+  return expanded;
+}
+
+// PHASE 1: Mapear sesiones a unidades expandidas
+function mapSessionsToUnits(
+  totalSlots: number,
+  expandedPlan: UnitAssignmentMetadata[]
+): UnitAssignmentMetadata[] {
+  if (expandedPlan.length === 0) {
+    // Fallback: crear sesiones con contenido genérico
+    return Array.from({ length: totalSlots }, () => ({
+      unidadIndex: -1,
+      unidadId: '',
+      contenido_texto: 'Contenido general',
+      competencias_ids: [],
+      claseEnUnidad: 1,
+      totalClasesUnidad: 1,
+      isExtraSlot: false
+    }));
+  }
+  
+  if (totalSlots <= expandedPlan.length) {
+    // Caso normal o truncado: usar las primeras totalSlots
+    return expandedPlan.slice(0, totalSlots);
+  }
+  
+  // Caso: más sesiones que clases estimadas
+  // Repetir última unidad para sesiones adicionales
+  const remaining = totalSlots - expandedPlan.length;
+  const lastUnit = expandedPlan[expandedPlan.length - 1];
+  
+  const additionalSessions: UnitAssignmentMetadata[] = [];
+  for (let i = 1; i <= remaining; i++) {
+    additionalSessions.push({
+      ...lastUnit,
+      claseEnUnidad: lastUnit.totalClasesUnidad + i,
+      isExtraSlot: true
+    });
+  }
+  
+  return [...expandedPlan, ...additionalSessions];
+}
+
 // Helper para crear distribución proporcional de modalidades
 function createModalidadDistribution(totalSesiones: number, distribucion: DistribucionModalidades): string[] {
   const modalidades: string[] = [];
@@ -142,33 +244,88 @@ async function generateAIPlan(params: {
   grupoId: string;
   sesionNumero: number;
   totalSesiones: number;
+  // PHASE 2: Metadata de asignación para generación progresiva
+  unitAssignment?: UnitAssignmentMetadata;
+  requerimientosDocente?: string;
+  // PHASE 3: Optional per-session focus override
+  sessionBrief?: string;
 }) {
   try {
+    // PHASE 2: Construir unitContext si unitAssignment está disponible
+    const unitContext = params.unitAssignment ? {
+      unidadId: params.unitAssignment.unidadId,
+      contenido: params.unitAssignment.contenido_texto,
+      claseEnUnidad: params.unitAssignment.claseEnUnidad,
+      totalClasesUnidad: params.unitAssignment.totalClasesUnidad,
+      ...(params.unitAssignment.isExtraSlot && { isExtraSlot: true })
+    } : undefined;
+
+    // PHASE 4: Load group context from Supabase + mockGroups
+    const groupContextData = await loadGroupContext(params.grupoId);
+    
+    if (groupContextData.perfilGrupo) {
+      console.log('[PHASE4-useFullSessionGen] Using group profile:', {
+        dominante: groupContextData.perfilGrupo.dominante,
+        estudiantesConAjustes: groupContextData.estudiantes?.length || 0,
+        teacherSugerenciasPresent: !!groupContextData.teacherSugerencias
+      });
+    }
+    
+    // Build enriched additionalContext with teacher suggestions if available
+    let additionalContext = `Modalidad: ${params.modalidad}, Sesión ${params.sesionNumero}/${params.totalSesiones}`;
+    
+    if (groupContextData.teacherSugerencias) {
+      const suggestions = [];
+      if (groupContextData.teacherSugerencias.aula) {
+        suggestions.push(`Teacher suggestions for classroom: ${groupContextData.teacherSugerencias.aula}`);
+      }
+      if (groupContextData.teacherSugerencias.evaluaciones) {
+        suggestions.push(`Teacher suggestions for evaluations: ${groupContextData.teacherSugerencias.evaluaciones}`);
+      }
+      if (groupContextData.teacherSugerencias.otras) {
+        suggestions.push(`Other important notes: ${groupContextData.teacherSugerencias.otras}`);
+      }
+      if (suggestions.length > 0) {
+        additionalContext += `\n\n` + suggestions.join('\n');
+      }
+    }
+
     const { data, error } = await supabase.functions.invoke('modify-evaluation', {
       body: {
         type: 'planning',
-        modification: `Genera un plan de clase estructurado para la sesión ${params.sesionNumero} de ${params.totalSesiones}:
+        // PHASE 2.2.2: Language alignment - modification string in English, parser-critical tokens in Spanish
+        // The edge function modify-evaluation constructs sequence context from unitContext
+        modification: `Generate a structured lesson plan for session ${params.sesionNumero} of ${params.totalSesiones}:
 
-MATERIA: ${params.materia}
-CONTENIDO: ${params.contenido}
-MODALIDAD PRINCIPAL: ${params.modalidad}
-DURACIÓN: ${params.duracionMinutos} minutos
+SUBJECT: ${params.materia}
+CONTENT: ${params.contenido}
+PRIMARY MODALITY: ${params.modalidad}
+DURATION: ${params.duracionMinutos} minutes
 
-Estructura necesaria:
-- INICIO (15 min): Actividad de apertura motivadora
-- DESARROLLO (40 min): Actividades principales adaptadas a modalidad ${params.modalidad}
-- CIERRE (5 min): Síntesis y reflexión
+Required structure:
+- INICIO (15 min): Motivational opening activity
+- DESARROLLO (40 min): Main activities adapted to ${params.modalidad} modality
+- CIERRE (5 min): Synthesis and reflection
 
-${params.diferenciacion ? `DIFERENCIACIÓN REQUERIDA: ${params.diferenciacion}` : ''}
+${params.diferenciacion ? `DIFFERENTIATION REQUIRED: ${params.diferenciacion}` : ''}
+${params.requerimientosDocente ? `\nTEACHER INSTRUCTIONS:\n${params.requerimientosDocente}\n\nThese instructions may:\n- Apply to the entire planning\n- Apply only to some classes\n- Indicate specific topics for a particular class\n\nExplicitly respect these indications if present.\nDo not invent a different sequence if the teacher has already defined it.` : ''}
 
-Incluye diferenciación específica integrada en cada sección, recursos concretos y actividades detalladas.`,
+Include specific differentiation integrated into each section, concrete resources, and detailed activities.
+Use these exact labels in the output: 'Actividad:' and 'Recursos:'.`,
         groupContext: {
           subject: params.materia,
           content: [params.contenido],
           competencies: params.competencias,
           groupName: params.grupoId,
-          additionalContext: `Modalidad: ${params.modalidad}, Sesión ${params.sesionNumero}/${params.totalSesiones}`
-        }
+          additionalContext,
+          // PHASE 4: Include anonymized students and dominant profile
+          ...(groupContextData.estudiantes && { students: groupContextData.estudiantes }),
+          ...(groupContextData.perfilGrupo && { dominantProfile: groupContextData.perfilGrupo.dominante })
+        },
+        // PHASE 2: Incluir unitContext en payload (opcional para backward compatibility)
+        ...(unitContext && { unitContext }),
+        // PHASE 3: Include sessionBrief if provided (non-empty, trimmed)
+        ...(params.sessionBrief?.trim() && { sessionBrief: params.sessionBrief.trim() })
       }
     });
 
@@ -209,10 +366,15 @@ function parseAIResponseToPlan(contenido: string, duracionTotal: number) {
 }
 
 function cleanSection(section: string): string {
+  // PHASE 2.2: Sanitización defensiva para HTML/Markdown accidental
   return section
-    .replace(/^(INICIO|DESARROLLO|CIERRE)[\s:]*\n?/i, '')
-    .replace(/\*\*/g, '')
-    .replace(/\n+/g, ' ')
+    .replace(/^(INICIO|DESARROLLO|CIERRE)[\s:]*\n?/i, '')  // Remover encabezado de sección
+    .replace(/<[^>]+>/g, '')  // Remover tags HTML
+    .replace(/\*\*/g, '')  // Remover markdown bold
+    .replace(/#{1,6}\s*/g, '')  // Remover markdown headers
+    .replace(/-{3,}/g, '')  // Remover markdown horizontal rules
+    .replace(/\n+/g, ' ')  // Colapsar saltos de línea
+    .replace(/\s+/g, ' ')  // Colapsar espacios múltiples
     .trim();
 }
 

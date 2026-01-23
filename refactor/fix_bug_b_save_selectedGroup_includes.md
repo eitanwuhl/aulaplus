@@ -291,3 +291,20 @@ npm run build
 **Status**: ✅ Fix implemented and ready for testing  
 **Branch**: `Aulaplus-by-eitan-2`  
 **Next**: Manual test execution + commit
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

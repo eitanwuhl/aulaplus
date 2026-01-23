@@ -83,6 +83,8 @@ export interface SesionClase {
   argumento_competencias?: string;
   titulo?: string;
   evaluacion_docente?: string;
+  // PHASE 3.2: Optional teacher-provided topic/focus for this session
+  session_brief?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -94,6 +96,17 @@ export interface UnidadDidactica {
   competencias_ids: string[];
   clases_estimadas: number;
   orden: number;
+}
+
+// Metadata de asignación de unidad a sesión (Phase 1 - en memoria)
+export interface UnitAssignmentMetadata {
+  unidadIndex: number;        // Índice en array original de unidades
+  unidadId: string;           // ID de la unidad
+  contenido_texto: string;
+  competencias_ids: string[];
+  claseEnUnidad: number;      // 1..N (número de clase dentro de esta unidad)
+  totalClasesUnidad: number;  // N (total de clases estimadas para esta unidad)
+  isExtraSlot?: boolean;      // true si es sesión adicional (slots > expanded)
 }
 
 export interface WizardData {
@@ -121,6 +134,8 @@ export interface WizardData {
     distribucion_modalidades: DistribucionModalidades;
     estrategias_diferenciacion: string;
     objetivos_unidad?: string;
+    // PHASE 3.1: Optional per-session focus/title overrides
+    sessionBriefs?: (string | undefined)[];
   };
 }
 

@@ -25,6 +25,8 @@ export interface InformeTecnico {
   objetivosPriorizados: string[];
   modalidadCursado: string;
   ajustesProgramaticos: { materia: string; ajustes: string[] }[];
+  requiereAdecuacionAcceso?: boolean;  // Explicit flag: student requires access accommodations (time, format, supports), but NOT content changes
+  requiereAdecuacionContenido?: boolean;  // Explicit flag: student has formally declared content adaptation
 }
 
 export interface Student {
@@ -45,13 +47,20 @@ export interface Student {
   informeTecnico?: InformeTecnico;
 }
 
+export interface TeacherSugerencias {
+  aula?: string;
+  evaluaciones?: string;
+  otras?: string;
+}
+
 export interface Group {
-  id: number;
+  id: string;  // Changed from number to string for consistency with UI selectors and URL params
   name: string;
   studentCount: number;
   year: string;
   section: string;
   students: Student[];
+  teacher_sugerencias?: TeacherSugerencias;
 }
 
 // Template system types
@@ -537,7 +546,7 @@ export const mockStudents: Student[] = [
 
 export const mockGroups: Group[] = [
   {
-    id: 1,
+    id: "1",  // Changed to string for type consistency
     name: "9no 1",
     studentCount: 10,
     year: "9º Año",
@@ -545,7 +554,7 @@ export const mockGroups: Group[] = [
     students: mockStudents,
   },
   {
-    id: 2,
+    id: "2",  // Changed to string for type consistency
     name: "9no 2",
     studentCount: 25,
     year: "9º Año",
@@ -553,7 +562,7 @@ export const mockGroups: Group[] = [
     students: [],
   },
   {
-    id: 3,
+    id: "3",  // Changed to string for type consistency
     name: "9no 3",
     studentCount: 22,
     year: "9º Año",

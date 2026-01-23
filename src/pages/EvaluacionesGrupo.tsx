@@ -24,6 +24,7 @@ import { getCompetenciasEspecificasLiteratura, getCriteriosLogroPorCompetenciasL
 import { getCompetenciasEspecificasCiudadania, getCriteriosLogroPorCompetenciasCiudadania } from "@/data/competenciasCiudadania";
 import { RubricaIntegrada } from "@/components/RubricaIntegrada";
 import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 interface ResultadoEvaluacion {
   grupo: string;
@@ -58,6 +59,54 @@ function getPersistedContemplaciones(studentId: number): string[] {
     if (raw) return JSON.parse(raw);
   } catch {}
   return [];
+}
+
+// Helper function to check if student requires content adaptation (explicit flag only)
+function studentRequiresContentAdaptation(student: any): boolean {
+  // Check localStorage first (user-controlled values)
+  try {
+    const contenidoKey = `adecuacionContenido:${student.id}`;
+    const contenidoFromStorage = localStorage.getItem(contenidoKey);
+    
+    if (contenidoFromStorage !== null) {
+      const contenidoValue = JSON.parse(contenidoFromStorage);
+      if (contenidoValue === true) return true;
+    }
+  } catch (error) {
+    // If localStorage read fails, fall through to fallback
+  }
+  
+  // Fallback: check student.informeTecnico (if present in mock data)
+  if (student.informeTecnico?.requiereAdecuacionContenido === true) {
+    return true;
+  }
+  
+  // Default: no content adaptation required
+  return false;
+}
+
+// Helper function to check if student requires access accommodations (explicit flag only)
+function studentRequiresAccessAccommodations(student: any): boolean {
+  // Check localStorage first (user-controlled values)
+  try {
+    const accesoKey = `adecuacionAcceso:${student.id}`;
+    const accesoFromStorage = localStorage.getItem(accesoKey);
+    
+    if (accesoFromStorage !== null) {
+      const accesoValue = JSON.parse(accesoFromStorage);
+      if (accesoValue === true) return true;
+    }
+  } catch (error) {
+    // If localStorage read fails, fall through to fallback
+  }
+  
+  // Fallback: check student.informeTecnico (if present in mock data)
+  if (student.informeTecnico?.requiereAdecuacionAcceso === true) {
+    return true;
+  }
+  
+  // Default: no access accommodations required
+  return false;
 }
 
 function criteriosLogroBox(competenciasIds: string[], materiasSeleccionadas: Materia[] = []) {
@@ -339,16 +388,53 @@ const EvaluacionesGrupo = () => {
   const { toast } = useToast();
 
   const selectedGroup: Group | undefined = useMemo(
-    () => mockGroups.find(g => String(g.id) === selectedGroupId),
+    () => mockGroups.find(g => g.id === selectedGroupId),
     [selectedGroupId]
   );
 
   // Handle save evaluation
   const handleSaveEvaluation = async () => {
+    // Pre-save validation (client-side)
+    if (!selectedGroupId) {
+      toast({
+        title: "Error",
+        description: "Seleccioná un grupo",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (!esInterdisciplinaria && !materia) {
+      toast({
+        title: "Error",
+        description: "Seleccioná una materia",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (esInterdisciplinaria && materiasSeleccionadas.length === 0) {
+      toast({
+        title: "Error",
+        description: "Seleccioná una materia",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (selectedCompetenciasIds.length === 0) {
+      toast({
+        title: "Error",
+        description: "Seleccioná al menos una competencia",
+        variant: "destructive"
+      });
+      return;
+    }
+
     if (!nombreEvaluacion.trim()) {
       toast({
         title: "Error",
-        description: "Debes ingresar un nombre para la evaluación",
+        description: "Ingresá un nombre",
         variant: "destructive"
       });
       return;
@@ -360,6 +446,11 @@ const EvaluacionesGrupo = () => {
         description: "No hay evaluaciones generadas para guardar",
         variant: "destructive"
       });
+      return;
+    }
+
+    // Prevent double-submit
+    if (isSaving) {
       return;
     }
 
@@ -375,25 +466,37 @@ const EvaluacionesGrupo = () => {
       // Extract competency IDs from selected competencias
       const competenciasIds = normalizeArrayField(selectedCompetenciasIds);
       
-      // Derive nivel from selectedGroup.year (type-safe)
+      // Derive nivel from selectedGroup.year (type-safe and robust)
       // year format: "9º Año" or "8º Año" -> extract number and convert to "9no" or "8vo"
       const getNivelFromGroup = (group: Group | undefined): string => {
+        // Defensive: handle undefined/null group
         if (!group?.year) {
+          if (import.meta.env.DEV) {
+            console.warn('[EVALUACIONES] getNivelFromGroup: group or year is missing, defaulting to 8vo');
+          }
           return '8vo'; // Default fallback
         }
         
-        // Extract year number from "9º Año" or "8º Año"
+        // Extract year number from "9º Año" or "8º Año" using regex
         const yearMatch = group.year.match(/(\d+)/);
         if (yearMatch && yearMatch[1]) {
           const yearNum = parseInt(yearMatch[1], 10);
-          return yearNum === 9 ? '9no' : '8vo';
+          // Validate parsed number
+          if (!isNaN(yearNum) && isFinite(yearNum)) {
+            return yearNum === 9 ? '9no' : '8vo';
+          }
         }
         
-        // Fallback: check if year string contains "9" or "8"
-        if (group.year.includes('9')) return '9no';
-        if (group.year.includes('8')) return '8vo';
+        // Fallback: check if year string contains "9" or "8" (case-insensitive)
+        const yearLower = group.year.toLowerCase();
+        if (yearLower.includes('9')) return '9no';
+        if (yearLower.includes('8')) return '8vo';
         
-        return '8vo'; // Default fallback
+        // Final fallback: default to 8vo
+        if (import.meta.env.DEV) {
+          console.warn('[EVALUACIONES] getNivelFromGroup: could not determine nivel from year:', group.year, 'defaulting to 8vo');
+        }
+        return '8vo';
       };
       
       const evaluacionData = {
@@ -456,20 +559,29 @@ const EvaluacionesGrupo = () => {
       }, 1500);
 
     } catch (error: any) {
-      console.error('[SAVE EVALUATION] Error guardando evaluación:', error);
+      // Detailed error logging in DEV
+      if (import.meta.env.DEV) {
+        console.error('[SAVE EVALUATION] Error guardando evaluación:', {
+          error,
+          message: error?.message,
+          code: error?.code,
+          details: error?.details,
+          hint: error?.hint
+        });
+      }
       
-      // Provide detailed error message
-      let errorMessage = "No se pudo guardar la evaluación.";
+      // User-friendly error message (avoid technical codes)
+      let errorMessage = "No se pudo guardar la evaluación. Por favor, intentá nuevamente.";
       
       if (error?.message) {
         if (error.message.includes('permission denied') || error.message.includes('policy')) {
-          errorMessage = "Error de permisos. Verifica que la migración RLS se haya aplicado correctamente.";
+          errorMessage = "No tenés permisos para guardar. Contactá al administrador.";
         } else if (error.message.includes('null value') || error.message.includes('violates not-null')) {
-          errorMessage = "Faltan datos requeridos. Asegúrate de completar todos los campos.";
+          errorMessage = "Faltan datos requeridos. Revisá que todos los campos estén completos.";
         } else if (error.message.includes('relation') || error.message.includes('does not exist')) {
-          errorMessage = "La tabla 'evaluaciones' no existe. Aplica las migraciones de base de datos.";
-        } else {
-          errorMessage = `Error: ${error.message}`;
+          errorMessage = "Error de configuración. Contactá al administrador.";
+        } else if (error.message.includes('network') || error.message.includes('fetch')) {
+          errorMessage = "Error de conexión. Revisá tu conexión a internet e intentá nuevamente.";
         }
       }
       
@@ -526,45 +638,34 @@ const EvaluacionesGrupo = () => {
     return materia ? contenidosPorMateria(materia as Materia) : [];
   }, [materia, materiasSeleccionadas, esInterdisciplinaria]);
 
-  // Función para obtener datos de versión
+  // Función para obtener datos de versión (using explicit flags as source of truth)
   const getVersionData = useCallback(() => {
     if (!selectedGroup) return null;
 
     const alumnos = selectedGroup.students;
     
-    // Clasificar alumnos por tipo de contemplaciones y necesidades (lógica existente)
-    const conAdaptacionesAltas = alumnos.filter(a => {
-      const contemplaciones = getPersistedContemplaciones(a.id).length ? getPersistedContemplaciones(a.id) : a.contemplaciones;
-      return contemplaciones.length >= 3;
-    });
+    // NEW RULE: Classify students using explicit flags only (no inference)
+    // V3 (Content-adapted): Only students with requiereAdecuacionContenido === true
+    const conAdecuacionContenido = alumnos.filter(a => 
+      studentRequiresContentAdaptation(a)
+    );
     
-    const conAdaptacionesMedias = alumnos.filter(a => {
-      const contemplaciones = getPersistedContemplaciones(a.id).length ? getPersistedContemplaciones(a.id) : a.contemplaciones;
-      return contemplaciones.length === 1 || contemplaciones.length === 2;
-    });
+    // V2 (Moderate support): Students with requiereAdecuacionAcceso === true (but NOT content adaptation)
+    const conAdecuacionAcceso = alumnos.filter(a => 
+      studentRequiresAccessAccommodations(a) && !studentRequiresContentAdaptation(a)
+    );
     
-    const conAdecuacionesContenido = alumnos.filter(a => {
-      return a.informeTecnico && 
-             a.informeTecnico.modalidadCursado.toLowerCase().includes('adecuaciones curriculares') &&
-             (a.informeTecnico.modalidadCursado.toLowerCase().includes('significativas') || 
-              a.informeTecnico.modalidadCursado.toLowerCase().includes('contenido'));
-    });
-    
-    const sinAdaptaciones = alumnos.filter(a => {
-      const contemplaciones = getPersistedContemplaciones(a.id).length ? getPersistedContemplaciones(a.id) : a.contemplaciones;
-      return contemplaciones.length === 0 && !conAdecuacionesContenido.includes(a);
-    });
+    // V1 (Standard): All remaining students (no explicit flags, or only other accommodations)
+    const sinAdecuacionesExplicitas = alumnos.filter(a => 
+      !studentRequiresContentAdaptation(a) && !studentRequiresAccessAccommodations(a)
+    );
 
-    const v1 = sinAdaptaciones.length ? sinAdaptaciones : alumnos.slice(0, Math.ceil(alumnos.length / 3));
-    const v2 = conAdaptacionesMedias.length ? conAdaptacionesMedias : alumnos.slice(Math.ceil(alumnos.length / 3), Math.ceil(2 * alumnos.length / 3));
-    const v3 = conAdecuacionesContenido.length ? [...conAdecuacionesContenido, ...conAdaptacionesAltas] : conAdaptacionesAltas.length ? conAdaptacionesAltas : alumnos.slice(Math.ceil(2 * alumnos.length / 3));
+    // Assign students to versions
+    const v1 = sinAdecuacionesExplicitas;
+    const v2 = conAdecuacionAcceso;
+    const v3 = conAdecuacionContenido; // Only students with content adaptation
 
-    const asignados = [...v1, ...v2, ...v3];
-    const noAsignados = alumnos.filter(a => !asignados.includes(a));
-    if (noAsignados.length > 0) {
-      v3.push(...noAsignados);
-    }
-
+    // Helper to create student details (preserve contemplaciones for display)
     const detalles = (arr: typeof alumnos) =>
       arr.map(a => {
         const persisted = getPersistedContemplaciones(a.id);
@@ -576,6 +677,7 @@ const EvaluacionesGrupo = () => {
       v1: detalles(v1),
       v2: detalles(v2),
       v3: detalles(v3),
+      hasContentAdaptation: conAdecuacionContenido.length > 0  // Flag to determine if V3 should be generated
     };
   }, [selectedGroup]);
 
@@ -673,30 +775,36 @@ const EvaluacionesGrupo = () => {
         students: selectedGroup.students
       };
 
-      // Generar evaluaciones usando IA para cada nivel de adaptación
-      const evaluationPromises = [
+      // Generate evaluations using explicit flags as source of truth
+      // V3 (highly adapted) is ONLY generated if there are students with content adaptation
+      const hasContentAdaptation = versionStudentData?.hasContentAdaptation ?? false;
+      
+      const evaluationConfigs = [
         {
           id: '1',
           title: 'Versión Estándar',
-          adaptationLevel: 'standard',
+          adaptationLevel: 'standard' as const,
           adaptations: ['Formato estándar', 'Tiempo regular (80 min)', 'Instrucciones claras'],
           assignedStudents: versionStudentData?.v1.map(s => s.nombre) || []
         },
         {
           id: '2', 
           title: 'Versión con Apoyos Moderados',
-          adaptationLevel: 'moderate',
+          adaptationLevel: 'moderate' as const,
           adaptations: ['Tiempo extendido 50%', 'Apoyo visual', 'Estructura guiada', 'Lectura de enunciados'],
           assignedStudents: versionStudentData?.v2.map(s => s.nombre) || []
         },
-        {
+        // V3 only generated if there are students with content adaptation
+        ...(hasContentAdaptation ? [{
           id: '3',
           title: 'Versión Altamente Adaptada', 
-          adaptationLevel: 'high',
+          adaptationLevel: 'high' as const,
           adaptations: ['Evaluación oral', 'Materiales concretos', 'Tiempo flexible', 'Acompañamiento 1:1'],
           assignedStudents: versionStudentData?.v3.map(s => s.nombre) || []
-        }
-      ].map(async (evalConfig) => {
+        }] : [])
+      ];
+
+      const evaluationPromises = evaluationConfigs.map(async (evalConfig) => {
         const { data, error } = await supabase.functions.invoke('modify-evaluation', {
           body: {
             originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, parseInt(evalConfig.id)),
@@ -738,7 +846,9 @@ const EvaluacionesGrupo = () => {
       setActiveTab('results');
     } catch (error) {
       console.error('Error generating evaluations:', error);
-      // Fallback to local generation if AI fails
+      // Fallback to local generation if AI fails (using explicit flags)
+      const hasContentAdaptation = versionStudentData?.hasContentAdaptation ?? false;
+      
       const evaluations: GeneratedEvaluation[] = [
         {
           id: '1',
@@ -756,14 +866,15 @@ const EvaluacionesGrupo = () => {
           adaptations: ['Tiempo extendido 50%', 'Apoyo visual', 'Estructura guiada', 'Lectura de enunciados'],
           assignedStudents: versionStudentData?.v2.map(s => s.nombre) || []
         },
-        {
+        // V3 only generated if there are students with content adaptation
+        ...(hasContentAdaptation ? [{
           id: '3',
           version: 3,
           title: 'Versión Altamente Adaptada',
           content: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 3),
           adaptations: ['Evaluación oral', 'Materiales concretos', 'Tiempo flexible', 'Acompañamiento 1:1'],
           assignedStudents: versionStudentData?.v3.map(s => s.nombre) || []
-        }
+        }] : [])
       ];
       setGeneratedEvaluations(evaluations);
       setActiveTab('results');
@@ -980,7 +1091,8 @@ const EvaluacionesGrupo = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-yellow-50 p-4">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-yellow-50 p-4">
       <div className="max-w-6xl mx-auto">
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-6">
           <Button variant="outline" onClick={() => navigate(-1)} className="mb-4">Volver</Button>
@@ -999,7 +1111,7 @@ const EvaluacionesGrupo = () => {
                   <SelectTrigger className="bg-white"><SelectValue placeholder="Seleccioná el grupo" /></SelectTrigger>
                   <SelectContent className="bg-white">
                     {mockGroups.map(g => (
-                      <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>
+                      <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -1464,7 +1576,7 @@ const EvaluacionesGrupo = () => {
                 )}
               </Button>
               <p className="text-xs text-muted-foreground text-center">
-                Se generarán 3 versiones automáticamente adaptadas según las contemplaciones de tus estudiantes
+                Se generarán versiones automáticamente adaptadas según las adecuaciones declaradas de tus estudiantes
               </p>
             </div>
           </CardContent>
@@ -1591,8 +1703,9 @@ const EvaluacionesGrupo = () => {
             </div>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
-    </div>
+    </ErrorBoundary>
   );
 };
 

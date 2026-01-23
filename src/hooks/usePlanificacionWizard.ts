@@ -258,7 +258,10 @@ export const usePlanificacionWizard = () => {
       case 3: {
         // Validación final: recursiva de todos los pasos
         const paso0 = validarPaso(0);
-        const paso1 = validarPaso(1);
+        // Validar paso 1 solo si NO es "sin_periodo" (en ese flujo se salta el paso 1)
+        const paso1 = wizardData.tipo_planificacion === 'sin_periodo'
+          ? { valid: true, errors: [] as FieldError[], firstInvalidField: undefined }
+          : validarPaso(1);
         const paso2 = validarPaso(2);
 
         errors.push(...paso0.errors, ...paso1.errors, ...paso2.errors);

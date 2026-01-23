@@ -1,10 +1,11 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { motion } from "framer-motion";
-import { ArrowLeft, Users, BarChart3, BookOpen, Eye, Headphones, Hand, PenTool } from "lucide-react";
+import { ArrowLeft, Users, BarChart3, BookOpen, Eye, Headphones, Hand, PenTool, Edit2, Save, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { StudentCard } from "@/components/ui/enhanced-card";
 import { ProgressiveDisclosure, StudentSectionDisclosure } from "@/components/ui/progressive-disclosure";
@@ -12,6 +13,9 @@ import { LoadingState, StudentCardSkeleton } from "@/components/ui/loading-state
 import RecursosPedagogicos from "./RecursosPedagogicos";
 import AnalisisGrupalAvanzado from "./AnalisisGrupalAvanzado";
 import ReporteGrupal from "./ReporteGrupal";
+import { supabase } from "@/integrations/supabase/client";
+import { useToast } from "@/hooks/use-toast";
+import type { TeacherSugerencias } from "@/data/mockData";
 
 interface Student {
   id: number;
@@ -23,12 +27,13 @@ interface Student {
 }
 
 interface Group {
-  id: number;
+  id: string;  // Changed to string for consistency with mockData.Group
   name: string;
   studentCount: number;
   year: string;
   section: string;
   students: Student[];
+  teacher_sugerencias?: TeacherSugerencias;
 }
 
 interface GroupProfileProps {
@@ -40,7 +45,18 @@ interface GroupProfileProps {
 const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
   console.log("[DEBUG] GroupProfile component starting to render");
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
+  const [teacherSugerencias, setTeacherSugerencias] = useState<TeacherSugerencias | null>(
+    group.teacher_sugerencias || null
+  );
+  const [editingSection, setEditingSection] = useState<'aula' | 'evaluaciones' | 'otras' | null>(null);
+  const [editValues, setEditValues] = useState<TeacherSugerencias>({
+    aula: '',
+    evaluaciones: '',
+    otras: ''
+  });
+  const [isSaving, setIsSaving] = useState(false);
   // Calcular estadísticas de estilos de aprendizaje
   const getLearningstyleStats = () => {
     const styles = {
@@ -113,6 +129,174 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
 
   // Calcular diversidad del grupo
   const diversidadGrupo = Object.values(learningStyles).filter(count => count > 0).length;
+
+  // Función para obtener sugerencias por defecto según perfil dominante
+  const getDefaultSugerenciasAula = (): string => {
+    switch (perfilDominante) {
+      case "Visual":
+        return "• Si vas a trabajar una temática que implique procesos complejos de abstracción, utiliza un disparador videográfico.\n• Para temáticas con varios subtemas, realizar evaluaciones intermedias para corroborar comprensión.\n• Ir desarrollando un mapa conceptual grupal para visualizar la complejidad del tema.\n• Sumar instancias de debate una vez introducidos los temas para beneficiar a perfiles auditivos.\n• Considerar propuestas con desplazamiento físico orientado, para favorecer a perfiles kinestésicos.";
+      case "Auditivo":
+        return "• Incorporar explicaciones verbales detalladas y debates estructurados.\n• Utilizar música o sonidos ambientales para crear contexto de aprendizaje.\n• Alternar momentos de discusión grupal con síntesis individual.\n• Incluir apoyo visual para estudiantes con perfil visual minoritario.\n• Permitir movimiento controlado para estudiantes kinestésicos.";
+      case "Kinestésico":
+        return "• Incorporar actividades que requieran manipulación de materiales concretos.\n• Permitir desplazamiento y cambios de posición durante las clases.\n• Utilizar experimentos y demostraciones prácticas.\n• Complementar con apoyos visuales para estudiantes con ese perfil.\n• Incluir momentos de verbalización para perfil auditivo.";
+      case "Lector/escritor":
+        return "• Proporcionar textos de apoyo y material escrito detallado.\n• Implementar actividades de análisis y síntesis de documentos.\n• Fomentar la toma de notas y reflexión escrita.\n• Complementar con recursos visuales como esquemas y mapas conceptuales.\n• Incluir instancias de presentación oral para perfil auditivo.";
+      default:
+        return "";
+    }
+  };
+
+  const getDefaultSugerenciasEvaluaciones = (): string => {
+    switch (perfilDominante) {
+      case "Visual":
+        return "• Presentar consignas con recuadros, palabras clave en negrita y subrayados.\n• Agregar imágenes que apoyen la comprensión de la consigna.\n• Utilizar una consigna a la vez, evitando concatenaciones.";
+      case "Auditivo":
+        return "• Permitir lectura oral de las consignas por parte del docente.\n• Incluir la opción de evaluación oral como alternativa.\n• Presentar instrucciones claras y secuenciales verbalmente.";
+      case "Kinestésico":
+        return "• Permitir pausas y cambios de posición durante la evaluación.\n• Incluir ejercicios que requieran manipulación cuando sea posible.\n• Dividir la evaluación en segmentos más cortos.";
+      case "Lector/escritor":
+        return "• Proporcionar consignas escritas detalladas y precisas.\n• Permitir tiempo adicional para lectura y análisis.\n• Incluir ejercicios de desarrollo y análisis textual.";
+      default:
+        return "";
+    }
+  };
+
+  // Obtener texto a mostrar (override del docente o default)
+  const getDisplayText = (section: 'aula' | 'evaluaciones' | 'otras'): string => {
+    if (teacherSugerencias?.[section]) {
+      return teacherSugerencias[section] || '';
+    }
+    if (section === 'aula') return getDefaultSugerenciasAula();
+    if (section === 'evaluaciones') return getDefaultSugerenciasEvaluaciones();
+    return '';
+  };
+
+  // Cargar sugerencias del docente desde Supabase
+  useEffect(() => {
+    const loadTeacherSugerencias = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+
+        const { data, error } = await supabase
+          .from('grupos')
+          .select('teacher_sugerencias')
+          .eq('id', group.id)
+          .eq('user_id', user.id)
+          .single();
+
+        if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+          console.error('Error loading teacher_sugerencias:', error);
+          return;
+        }
+
+        if (data?.teacher_sugerencias) {
+          setTeacherSugerencias(data.teacher_sugerencias as TeacherSugerencias);
+        }
+      } catch (error) {
+        console.error('Error loading teacher_sugerencias:', error);
+      }
+    };
+
+    loadTeacherSugerencias();
+  }, [group.id]);
+
+  // Guardar sugerencias del docente en Supabase
+  const saveTeacherSugerencias = async (section: 'aula' | 'evaluaciones' | 'otras', value: string) => {
+    setIsSaving(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        toast({
+          title: "Error",
+          description: "No estás autenticado. Por favor, inicia sesión.",
+          variant: "destructive"
+        });
+        setIsSaving(false);
+        return;
+      }
+
+      const trimmedValue = value.trim();
+      const updatedSugerencias: TeacherSugerencias = {
+        ...teacherSugerencias,
+        [section]: trimmedValue || undefined
+      };
+
+      // Eliminar campos vacíos
+      if (!updatedSugerencias.aula) delete updatedSugerencias.aula;
+      if (!updatedSugerencias.evaluaciones) delete updatedSugerencias.evaluaciones;
+      if (!updatedSugerencias.otras) delete updatedSugerencias.otras;
+
+      // Verificar si el grupo existe
+      const { data: existingGroup } = await supabase
+        .from('grupos')
+        .select('id')
+        .eq('id', group.id)
+        .eq('user_id', user.id)
+        .single();
+
+      if (existingGroup) {
+        // Actualizar grupo existente
+        const { error } = await supabase
+          .from('grupos')
+          .update({ teacher_sugerencias: updatedSugerencias })
+          .eq('id', group.id)
+          .eq('user_id', user.id);
+
+        if (error) throw error;
+      } else {
+        // Crear nuevo grupo
+        const { error } = await supabase
+          .from('grupos')
+          .insert({
+            id: group.id,
+            name: group.name,
+            year: group.year,
+            section: group.section,
+            user_id: user.id,
+            teacher_sugerencias: updatedSugerencias
+          });
+
+        if (error) throw error;
+      }
+
+      setTeacherSugerencias(updatedSugerencias);
+      setEditingSection(null);
+      toast({
+        title: "Guardado",
+        description: "Las sugerencias se guardaron correctamente.",
+      });
+    } catch (error: any) {
+      console.error('Error saving teacher_sugerencias:', error);
+      toast({
+        title: "Error",
+        description: error.message || "No se pudieron guardar las sugerencias. Intenta nuevamente.",
+        variant: "destructive"
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Iniciar edición
+  const startEditing = (section: 'aula' | 'evaluaciones' | 'otras') => {
+    setEditValues({
+      aula: teacherSugerencias?.aula || getDefaultSugerenciasAula(),
+      evaluaciones: teacherSugerencias?.evaluaciones || getDefaultSugerenciasEvaluaciones(),
+      otras: teacherSugerencias?.otras || ''
+    });
+    setEditingSection(section);
+  };
+
+  // Cancelar edición
+  const cancelEditing = () => {
+    setEditingSection(null);
+  };
+
+  // Guardar cambios
+  const handleSave = (section: 'aula' | 'evaluaciones' | 'otras') => {
+    saveTeacherSugerencias(section, editValues[section] || '');
+  };
 
   const getStyleIcon = (style: string) => {
     switch (style) {
@@ -285,80 +469,179 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
             <div className="space-y-6">
               {/* Sugerencias para el aula */}
               <div className="bg-blue-50 p-4 rounded-lg border-l-4 border-blue-400">
-                <h4 className="font-semibold text-blue-800 mb-3">Sugerencias para el aula</h4>
-                <div className="space-y-2">
-                  {perfilDominante === "Visual" && (
-                    <>
-                      <p className="text-sm text-gray-700">• Si vas a trabajar una temática que implique procesos complejos de abstracción, utiliza un disparador videográfico.</p>
-                      <p className="text-sm text-gray-700">• Para temáticas con varios subtemas, realizar evaluaciones intermedias para corroborar comprensión.</p>
-                      <p className="text-sm text-gray-700">• Ir desarrollando un mapa conceptual grupal para visualizar la complejidad del tema.</p>
-                      <p className="text-sm text-gray-700">• Sumar instancias de debate una vez introducidos los temas para beneficiar a perfiles auditivos.</p>
-                      <p className="text-sm text-gray-700">• Considerar propuestas con desplazamiento físico orientado, para favorecer a perfiles kinestésicos.</p>
-                    </>
-                  )}
-                  {perfilDominante === "Auditivo" && (
-                    <>
-                      <p className="text-sm text-gray-700">• Incorporar explicaciones verbales detalladas y debates estructurados.</p>
-                      <p className="text-sm text-gray-700">• Utilizar música o sonidos ambientales para crear contexto de aprendizaje.</p>
-                      <p className="text-sm text-gray-700">• Alternar momentos de discusión grupal con síntesis individual.</p>
-                      <p className="text-sm text-gray-700">• Incluir apoyo visual para estudiantes con perfil visual minoritario.</p>
-                      <p className="text-sm text-gray-700">• Permitir movimiento controlado para estudiantes kinestésicos.</p>
-                    </>
-                  )}
-                  {perfilDominante === "Kinestésico" && (
-                    <>
-                      <p className="text-sm text-gray-700">• Incorporar actividades que requieran manipulación de materiales concretos.</p>
-                      <p className="text-sm text-gray-700">• Permitir desplazamiento y cambios de posición durante las clases.</p>
-                      <p className="text-sm text-gray-700">• Utilizar experimentos y demostraciones prácticas.</p>
-                      <p className="text-sm text-gray-700">• Complementar con apoyos visuales para estudiantes con ese perfil.</p>
-                      <p className="text-sm text-gray-700">• Incluir momentos de verbalización para perfil auditivo.</p>
-                    </>
-                  )}
-                  {perfilDominante === "Lector/escritor" && (
-                    <>
-                      <p className="text-sm text-gray-700">• Proporcionar textos de apoyo y material escrito detallado.</p>
-                      <p className="text-sm text-gray-700">• Implementar actividades de análisis y síntesis de documentos.</p>
-                      <p className="text-sm text-gray-700">• Fomentar la toma de notas y reflexión escrita.</p>
-                      <p className="text-sm text-gray-700">• Complementar con recursos visuales como esquemas y mapas conceptuales.</p>
-                      <p className="text-sm text-gray-700">• Incluir instancias de presentación oral para perfil auditivo.</p>
-                    </>
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-semibold text-blue-800">Sugerencias para el aula</h4>
+                  {editingSection !== 'aula' && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => startEditing('aula')}
+                      className="h-8 px-2"
+                    >
+                      <Edit2 className="w-4 h-4 mr-1" />
+                      Editar
+                    </Button>
                   )}
                 </div>
+                {editingSection === 'aula' ? (
+                  <div className="space-y-3">
+                    <Textarea
+                      value={editValues.aula}
+                      onChange={(e) => setEditValues({ ...editValues, aula: e.target.value })}
+                      className="min-h-[150px] text-sm"
+                      placeholder="Escribe tus sugerencias para el aula..."
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={cancelEditing}
+                        disabled={isSaving}
+                      >
+                        <X className="w-4 h-4 mr-1" />
+                        Cancelar
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => handleSave('aula')}
+                        disabled={isSaving}
+                      >
+                        <Save className="w-4 h-4 mr-1" />
+                        {isSaving ? 'Guardando...' : 'Guardar'}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {getDisplayText('aula') ? (
+                      <div className="text-sm text-gray-700 whitespace-pre-line">
+                        {getDisplayText('aula').split('\n').map((line, idx) => (
+                          <p key={idx}>{line}</p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-500 italic">No hay sugerencias personalizadas. Haz clic en "Editar" para agregar sugerencias.</p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Sugerencias para las evaluaciones */}
               <div className="bg-green-50 p-4 rounded-lg border-l-4 border-green-400">
-                <h4 className="font-semibold text-green-800 mb-3">Sugerencias para las evaluaciones</h4>
-                <div className="space-y-2">
-                  {perfilDominante === "Visual" && (
-                    <>
-                      <p className="text-sm text-gray-700">• Presentar consignas con recuadros, palabras clave en negrita y subrayados.</p>
-                      <p className="text-sm text-gray-700">• Agregar imágenes que apoyen la comprensión de la consigna.</p>
-                      <p className="text-sm text-gray-700">• Utilizar una consigna a la vez, evitando concatenaciones.</p>
-                    </>
-                  )}
-                  {perfilDominante === "Auditivo" && (
-                    <>
-                      <p className="text-sm text-gray-700">• Permitir lectura oral de las consignas por parte del docente.</p>
-                      <p className="text-sm text-gray-700">• Incluir la opción de evaluación oral como alternativa.</p>
-                      <p className="text-sm text-gray-700">• Presentar instrucciones claras y secuenciales verbalmente.</p>
-                    </>
-                  )}
-                  {perfilDominante === "Kinestésico" && (
-                    <>
-                      <p className="text-sm text-gray-700">• Permitir pausas y cambios de posición durante la evaluación.</p>
-                      <p className="text-sm text-gray-700">• Incluir ejercicios que requieran manipulación cuando sea posible.</p>
-                      <p className="text-sm text-gray-700">• Dividir la evaluación en segmentos más cortos.</p>
-                    </>
-                  )}
-                  {perfilDominante === "Lector/escritor" && (
-                    <>
-                      <p className="text-sm text-gray-700">• Proporcionar consignas escritas detalladas y precisas.</p>
-                      <p className="text-sm text-gray-700">• Permitir tiempo adicional para lectura y análisis.</p>
-                      <p className="text-sm text-gray-700">• Incluir ejercicios de desarrollo y análisis textual.</p>
-                    </>
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-semibold text-green-800">Sugerencias para las evaluaciones</h4>
+                  {editingSection !== 'evaluaciones' && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => startEditing('evaluaciones')}
+                      className="h-8 px-2"
+                    >
+                      <Edit2 className="w-4 h-4 mr-1" />
+                      Editar
+                    </Button>
                   )}
                 </div>
+                {editingSection === 'evaluaciones' ? (
+                  <div className="space-y-3">
+                    <Textarea
+                      value={editValues.evaluaciones}
+                      onChange={(e) => setEditValues({ ...editValues, evaluaciones: e.target.value })}
+                      className="min-h-[150px] text-sm"
+                      placeholder="Escribe tus sugerencias para las evaluaciones..."
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={cancelEditing}
+                        disabled={isSaving}
+                      >
+                        <X className="w-4 h-4 mr-1" />
+                        Cancelar
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => handleSave('evaluaciones')}
+                        disabled={isSaving}
+                      >
+                        <Save className="w-4 h-4 mr-1" />
+                        {isSaving ? 'Guardando...' : 'Guardar'}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {getDisplayText('evaluaciones') ? (
+                      <div className="text-sm text-gray-700 whitespace-pre-line">
+                        {getDisplayText('evaluaciones').split('\n').map((line, idx) => (
+                          <p key={idx}>{line}</p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-500 italic">No hay sugerencias personalizadas. Haz clic en "Editar" para agregar sugerencias.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Otras sugerencias importantes */}
+              <div className="bg-purple-50 p-4 rounded-lg border-l-4 border-purple-400">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-semibold text-purple-800">Otras sugerencias importantes</h4>
+                  {editingSection !== 'otras' && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => startEditing('otras')}
+                      className="h-8 px-2"
+                    >
+                      <Edit2 className="w-4 h-4 mr-1" />
+                      Editar
+                    </Button>
+                  )}
+                </div>
+                {editingSection === 'otras' ? (
+                  <div className="space-y-3">
+                    <Textarea
+                      value={editValues.otras}
+                      onChange={(e) => setEditValues({ ...editValues, otras: e.target.value })}
+                      className="min-h-[150px] text-sm"
+                      placeholder="Escribe otras sugerencias importantes para este grupo..."
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={cancelEditing}
+                        disabled={isSaving}
+                      >
+                        <X className="w-4 h-4 mr-1" />
+                        Cancelar
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => handleSave('otras')}
+                        disabled={isSaving}
+                      >
+                        <Save className="w-4 h-4 mr-1" />
+                        {isSaving ? 'Guardando...' : 'Guardar'}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {getDisplayText('otras') ? (
+                      <div className="text-sm text-gray-700 whitespace-pre-line">
+                        {getDisplayText('otras').split('\n').map((line, idx) => (
+                          <p key={idx}>{line}</p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-500 italic">No hay sugerencias personalizadas. Haz clic en "Editar" para agregar sugerencias.</p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </StudentSectionDisclosure>

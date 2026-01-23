@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { motion } from "framer-motion";
 import { ArrowLeft, Edit2, Save, X, Plus, FileText, BookOpen, TrendingUp, Activity, AlertTriangle, Calendar, User } from 'lucide-react';
 import { ProgressiveDisclosure } from "@/components/ui/progressive-disclosure";
@@ -49,6 +51,8 @@ interface StudentProfileProps {
         materia: string;
         ajustes: string[];
       }[];
+      requiereAdecuacionAcceso?: boolean;
+      requiereAdecuacionContenido?: boolean;
     };
   };
   onBack: () => void;
@@ -91,6 +95,27 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
       return stored ? JSON.parse(stored) : student.contemplaciones;
     } catch {
       return student.contemplaciones;
+    }
+  });
+
+  // State for adaptation flags (explicit checkboxes, no inference)
+  const [requiereAdecuacionAcceso, setRequiereAdecuacionAcceso] = useState<boolean>(() => {
+    const key = `adecuacionAcceso:${student.id}`;
+    try {
+      const stored = localStorage.getItem(key);
+      return stored ? JSON.parse(stored) : (student.informeTecnico?.requiereAdecuacionAcceso ?? false);
+    } catch {
+      return student.informeTecnico?.requiereAdecuacionAcceso ?? false;
+    }
+  });
+
+  const [requiereAdecuacionContenido, setRequiereAdecuacionContenido] = useState<boolean>(() => {
+    const key = `adecuacionContenido:${student.id}`;
+    try {
+      const stored = localStorage.getItem(key);
+      return stored ? JSON.parse(stored) : (student.informeTecnico?.requiereAdecuacionContenido ?? false);
+    } catch {
+      return student.informeTecnico?.requiereAdecuacionContenido ?? false;
     }
   });
 
@@ -434,6 +459,57 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                           </ul>
                         </div>
                       ))}
+                    </div>
+                  </div>
+
+                  {/* Explicit adaptation flags - user-controlled, no inference */}
+                  <div className="bg-green-50 p-4 rounded-lg border-l-4 border-green-400">
+                    <h4 className="font-semibold text-gray-800 mb-3">Declaración de adecuaciones</h4>
+                    <p className="text-sm text-gray-600 mb-4">
+                      Marca explícitamente las adecuaciones requeridas para este estudiante. Estas opciones son controladas manualmente y no se infieren automáticamente.
+                    </p>
+                    <div className="space-y-3">
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id={`adecuacion-acceso-${student.id}`}
+                          checked={requiereAdecuacionAcceso}
+                          onCheckedChange={(checked) => {
+                            const value = checked === true;
+                            setRequiereAdecuacionAcceso(value);
+                            localStorage.setItem(`adecuacionAcceso:${student.id}`, JSON.stringify(value));
+                          }}
+                        />
+                        <Label
+                          htmlFor={`adecuacion-acceso-${student.id}`}
+                          className="text-sm font-medium text-gray-800 cursor-pointer"
+                        >
+                          Requiere adecuación de acceso
+                        </Label>
+                      </div>
+                      <p className="text-xs text-gray-600 ml-6">
+                        El estudiante requiere adaptaciones de acceso (tiempo, formato, apoyos), pero NO cambios en el contenido.
+                      </p>
+
+                      <div className="flex items-center space-x-2 mt-4">
+                        <Checkbox
+                          id={`adecuacion-contenido-${student.id}`}
+                          checked={requiereAdecuacionContenido}
+                          onCheckedChange={(checked) => {
+                            const value = checked === true;
+                            setRequiereAdecuacionContenido(value);
+                            localStorage.setItem(`adecuacionContenido:${student.id}`, JSON.stringify(value));
+                          }}
+                        />
+                        <Label
+                          htmlFor={`adecuacion-contenido-${student.id}`}
+                          className="text-sm font-medium text-gray-800 cursor-pointer"
+                        >
+                          Requiere adecuación de contenido
+                        </Label>
+                      </div>
+                      <p className="text-xs text-gray-600 ml-6">
+                        El estudiante tiene una adecuación curricular formalmente declarada. Esta será la única condición permitida para generar evaluaciones con adaptación de contenido (Versión 3).
+                      </p>
                     </div>
                   </div>
                 </div>

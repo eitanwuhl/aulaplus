@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { ArrowLeft, Search, BarChart3, Calendar, FileText, Download, Folder, Plus, AlertTriangle, TrendingUp, Share2, Clock, Trash2 } from 'lucide-react';
+import { ArrowLeft, Search, BarChart3, Calendar, FileText, Download, Folder, Plus, AlertTriangle, TrendingUp, Share2, Clock, Trash2, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Planificacion, SesionClase } from '@/types/planificacion';
@@ -22,6 +22,7 @@ import { COMPETENCIAS_CIUDADANIA } from '@/data/competenciasCiudadania';
 import { COMPETENCIAS_LITERATURA } from '@/data/competenciasLiteratura';
 import { normalizeSubjectName } from '@/lib/subjectNormalizer';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 interface CompetenciaCount {
   id: string;           // ID de la competencia
@@ -51,6 +52,7 @@ const MisPlanificaciones: React.FC = () => {
   const [filtroCarpeta, setFiltroCarpeta] = useState<string>('');
   const [fechaRange, setFechaRange] = useState<DateRange | undefined>();
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
   const [carpetaModal, setCarpetaModal] = useState<{ open: boolean; planificacion: Planificacion | null }>({
     open: false,
     planificacion: null
@@ -143,59 +145,88 @@ const MisPlanificaciones: React.FC = () => {
   };
 
   // Cargar planificaciones y sesiones
-  useEffect(() => {
-    const cargarDatos = async () => {
-      setIsLoading(true);
-      try {
-        // Cargar planificaciones (solo guardadas explícitamente y no eliminadas)
-        const { data: planData, error: planError } = await supabase
-          .from('planificaciones')
-          .select('*')
-          .eq('is_saved', true)
-          .is('deleted_at', null)
-          .order('saved_at', { ascending: false });
+  const cargarDatos = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      // Cargar planificaciones (solo guardadas explícitamente y no eliminadas)
+      const { data: planData, error: planError } = await supabase
+        .from('planificaciones')
+        .select('*')
+        .eq('is_saved', true)
+        .is('deleted_at', null)
+        .order('saved_at', { ascending: false });
 
-        if (planError) {
-          // GUARDRAIL: Si la columna is_saved no existe (PGRST204), mostrar error claro
-          if (planError.code === 'PGRST204' || planError.message.includes('is_saved')) {
-            console.error('❌ MIGRACIÓN FALTANTE: La columna is_saved no existe en planificaciones');
-            toast({
-              title: "Error de Base de Datos",
-              description: "Falta aplicar migración de planificaciones. Contacta al administrador o ejecuta: supabase db push",
-              variant: "destructive"
-            });
-            setIsLoading(false);
-            return;
-          }
-          throw planError;
+      if (planError) {
+        // GUARDRAIL: Si la columna is_saved no existe (PGRST204), mostrar error claro
+        if (planError.code === 'PGRST204' || planError.message.includes('is_saved')) {
+          console.error('❌ MIGRACIÓN FALTANTE: La columna is_saved no existe en planificaciones');
+          const errorObj = new Error('Falta aplicar migración de planificaciones. Contacta al administrador o ejecuta: supabase db push');
+          setError(errorObj);
+          toast({
+            title: "Error de Base de Datos",
+            description: "Falta aplicar migración de planificaciones. Contacta al administrador o ejecuta: supabase db push",
+            variant: "destructive"
+          });
+          setIsLoading(false);
+          return;
         }
-
-        // Cargar sesiones
-        const { data: sesionData, error: sesionError } = await supabase
-          .from('sesiones_clase')
-          .select('*')
-          .order('fecha', { ascending: false });
-
-        if (sesionError) throw sesionError;
-
-        // Normalize competencias_anep to ensure it's always a string[] array
-        // Supabase may return this field as null, string, or non-array, which breaks iteration
-        const sesionesNormalizadas = (sesionData || []).map((sesion) => ({
-          ...sesion,
-          competencias_anep: normalizeArrayField(sesion.competencias_anep),
-        }));
-
-        setPlanificaciones((planData || []) as unknown as Planificacion[]);
-        setSesiones(sesionesNormalizadas as unknown as SesionClase[]);
-      } catch (error) {
-        console.error('Error cargando datos:', error);
-      } finally {
-        setIsLoading(false);
+        throw planError;
       }
-    };
 
+      // Cargar sesiones
+      const { data: sesionData, error: sesionError } = await supabase
+        .from('sesiones_clase')
+        .select('*')
+        .order('fecha', { ascending: false });
+
+      if (sesionError) throw sesionError;
+
+      // Normalize data at load time to ensure consistent types
+      // Supabase may return array fields as null, string, or non-array, which breaks iteration
+      const sesionesNormalizadas = (sesionData || []).map((sesion) => {
+        // Normalize competencias_anep: always ensure it's a string[]
+        const competenciasNormalizadas = normalizeArrayField(sesion.competencias_anep);
+        
+        // Normalize fecha: convert empty string to null, validate format
+        let fechaNormalizada: string | null = null;
+        if (sesion.fecha) {
+          const fechaStr = String(sesion.fecha).trim();
+          if (fechaStr) {
+            // Validate date format (YYYY-MM-DD or similar)
+            const dateObj = new Date(fechaStr);
+            if (!isNaN(dateObj.getTime())) {
+              fechaNormalizada = fechaStr;
+            }
+          }
+        }
+        
+        return {
+          ...sesion,
+          competencias_anep: competenciasNormalizadas,
+          fecha: fechaNormalizada,
+        };
+      });
+
+      setPlanificaciones((planData || []) as unknown as Planificacion[]);
+      setSesiones(sesionesNormalizadas as unknown as SesionClase[]);
+    } catch (error) {
+      console.error('Error cargando datos:', error);
+      const errorObj = error instanceof Error ? error : new Error('Error desconocido al cargar planificaciones');
+      setError(errorObj);
+      toast({
+        title: "Error",
+        description: "No se pudieron cargar las planificaciones. Por favor, intentá nuevamente.",
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
     cargarDatos();
-  }, []);
+  }, [toast]);
 
   // Memoized: Get competencies catalog for selected subject
   const competenciasCatalog = useMemo(() => {
@@ -239,20 +270,37 @@ const MisPlanificaciones: React.FC = () => {
       afterEstado++;
 
       // Must have at least one competency assigned (competencias_anep is already normalized at load time)
-      if (!sesion.competencias_anep || sesion.competencias_anep.length === 0) {
+      // Defensive guard: ensure it's an array (should never fail after normalization, but safety first)
+      if (!Array.isArray(sesion.competencias_anep) || sesion.competencias_anep.length === 0) {
         return false;
       }
       afterCompetencias++;
 
-      // Date range filter
+      // Date range filter - safe date parsing
       if (fechaRange?.from || fechaRange?.to) {
         if (!sesion.fecha) {
           return false;
         }
-        // Parse date more reliably: handle both string and Date objects
-        const fechaSesion = sesion.fecha instanceof Date 
-          ? sesion.fecha 
-          : new Date(sesion.fecha + 'T00:00:00'); // Add time to avoid timezone issues
+        // Parse date safely: validate before creating Date object
+        let fechaSesion: Date;
+        try {
+          if (sesion.fecha instanceof Date) {
+            fechaSesion = sesion.fecha;
+          } else {
+            const fechaStr = String(sesion.fecha).trim();
+            if (!fechaStr) {
+              return false;
+            }
+            fechaSesion = new Date(fechaStr + 'T00:00:00'); // Add time to avoid timezone issues
+            // Validate date
+            if (isNaN(fechaSesion.getTime())) {
+              return false;
+            }
+          }
+        } catch (e) {
+          // Invalid date format
+          return false;
+        }
         
         if (fechaRange.from) {
           const startDate = new Date(fechaRange.from);
@@ -378,10 +426,13 @@ const MisPlanificaciones: React.FC = () => {
     // sesionesFiltradas already contains only sessions with competencias_anep.length > 0
     sesionesFiltradas.forEach(sesion => {
       // competencias_anep is already normalized and guaranteed to have length > 0 by filter
-      sesion.competencias_anep.forEach(compId => {
-        competenciasCountMap.set(compId, (competenciasCountMap.get(compId) || 0) + 1);
-        totalCompetencias++;
-      });
+      // Defensive guard: ensure it's an array before forEach (should never fail, but safety first)
+      if (Array.isArray(sesion.competencias_anep) && sesion.competencias_anep.length > 0) {
+        sesion.competencias_anep.forEach(compId => {
+          competenciasCountMap.set(compId, (competenciasCountMap.get(compId) || 0) + 1);
+          totalCompetencias++;
+        });
+      }
     });
 
     // DIAGNOSTIC: Log counting results
@@ -481,7 +532,7 @@ const MisPlanificaciones: React.FC = () => {
       // Exclude only 'omitida', all other states count
       const sesionesNoOmitidas = sesiones.filter(s => s.estado !== 'omitida');
       const sesionesConCompetencias = sesionesNoOmitidas.filter(s => 
-        s.competencias_anep && s.competencias_anep.length > 0
+        Array.isArray(s.competencias_anep) && s.competencias_anep.length > 0
       );
       
       const sesionesConMateria = sesionesConCompetencias.filter(s => {
@@ -502,18 +553,25 @@ const MisPlanificaciones: React.FC = () => {
       const sesionesConFecha = fechaRange?.from || fechaRange?.to
         ? sesionesConGrupo.filter(s => {
             if (!s.fecha) return false;
-            const fechaSesion = s.fecha instanceof Date 
-              ? s.fecha 
-              : new Date(s.fecha + 'T00:00:00');
-            if (fechaRange.from) {
-              const startDate = new Date(fechaRange.from);
-              startDate.setHours(0, 0, 0, 0);
-              if (fechaSesion < startDate) return false;
-            }
-            if (fechaRange.to) {
-              const endDate = new Date(fechaRange.to);
-              endDate.setHours(23, 59, 59, 999);
-              if (fechaSesion > endDate) return false;
+            if (!s.fecha) return false;
+            try {
+              const fechaStr = String(s.fecha).trim();
+              if (!fechaStr) return false;
+              const fechaSesion = new Date(fechaStr + 'T00:00:00');
+              if (isNaN(fechaSesion.getTime())) return false;
+              
+              if (fechaRange.from) {
+                const startDate = new Date(fechaRange.from);
+                startDate.setHours(0, 0, 0, 0);
+                if (fechaSesion < startDate) return false;
+              }
+              if (fechaRange.to) {
+                const endDate = new Date(fechaRange.to);
+                endDate.setHours(23, 59, 59, 999);
+                if (fechaSesion > endDate) return false;
+              }
+            } catch (e) {
+              return false;
             }
             return true;
           })
@@ -561,10 +619,20 @@ const MisPlanificaciones: React.FC = () => {
       if (sesionesPlan.length === 0) return false;
       
       const hayEnRango = sesionesPlan.some(sesion => {
-        const fechaSesion = new Date(sesion.fecha);
-        if (fechaRange.from && fechaSesion < fechaRange.from) return false;
-        if (fechaRange.to && fechaSesion > fechaRange.to) return false;
-        return true;
+        if (!sesion.fecha) return false;
+        // Safe date parsing
+        try {
+          const fechaStr = String(sesion.fecha).trim();
+          if (!fechaStr) return false;
+          const fechaSesion = new Date(fechaStr);
+          if (isNaN(fechaSesion.getTime())) return false;
+          
+          if (fechaRange.from && fechaSesion < fechaRange.from) return false;
+          if (fechaRange.to && fechaSesion > fechaRange.to) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
       });
       
       if (!hayEnRango) return false;
@@ -902,19 +970,87 @@ const MisPlanificaciones: React.FC = () => {
     }
   };
 
+  // Render loading state
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4 text-muted-foreground">Cargando planificaciones...</p>
+      <ErrorBoundary>
+        <div className="container space-y-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-4">
+              <Button
+                variant="outline"
+                onClick={() => navigate('/planificacion')}
+                className="flex items-center gap-2"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Volver
+              </Button>
+              <div>
+                <h1 className="text-3xl font-bold">Mis Planificaciones</h1>
+                <p className="text-muted-foreground">
+                  Gestiona tus planificaciones guardadas y visualiza el balance de competencias
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center justify-center min-h-[400px]">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+              <p className="text-muted-foreground">Cargando planificaciones...</p>
+            </div>
+          </div>
         </div>
-      </div>
+      </ErrorBoundary>
     );
   }
 
+  // Render error state
+  if (error) {
+    return (
+      <ErrorBoundary>
+        <div className="container space-y-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-4">
+              <Button
+                variant="outline"
+                onClick={() => navigate('/planificacion')}
+                className="flex items-center gap-2"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Volver
+              </Button>
+              <div>
+                <h1 className="text-3xl font-bold">Mis Planificaciones</h1>
+                <p className="text-muted-foreground">
+                  Gestiona tus planificaciones guardadas y visualiza el balance de competencias
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center justify-center min-h-[400px]">
+            <div className="text-center max-w-md">
+              <AlertTriangle className="w-16 h-16 mx-auto mb-4 text-destructive" />
+              <h3 className="text-lg font-semibold mb-2">Error al cargar planificaciones</h3>
+              <p className="text-muted-foreground mb-6">
+                No se pudieron cargar las planificaciones. Por favor, intentá nuevamente.
+              </p>
+              <Button onClick={cargarDatos}>
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Reintentar
+              </Button>
+            </div>
+          </div>
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
+  // Render empty state (when no data at all, not just filtered out)
+  const hasNoData = planificaciones.length === 0;
+
   return (
-    <div className="space-y-6 p-6">
+    <ErrorBoundary>
+      <div className="space-y-6 p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -946,6 +1082,23 @@ const MisPlanificaciones: React.FC = () => {
         </div>
       </div>
 
+      {/* Empty State - No data at all */}
+      {hasNoData ? (
+        <div className="flex items-center justify-center min-h-[500px]">
+          <div className="text-center max-w-md">
+            <Folder className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+            <h3 className="text-lg font-semibold mb-2">Aún no has guardado planificaciones</h3>
+            <p className="text-muted-foreground mb-6">
+              Crea una planificación y guárdala para verla aquí y visualizar el balance de competencias.
+            </p>
+            <Button onClick={() => navigate('/planificacion/nuevo')}>
+              <Plus className="h-4 w-4 mr-2" />
+              Crear planificación
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <>
       {/* Filtros Avanzados */}
       <Card>
         <CardContent className="p-6">
@@ -1035,11 +1188,22 @@ const MisPlanificaciones: React.FC = () => {
               <p className="text-sm text-muted-foreground">
                 Uso de competencias en sesiones guardadas
                 {filtroMateria && filtroMateria !== 'all' && ` (${filtroMateria}${filtroGrupo && filtroGrupo !== 'all' ? ` - ${filtroGrupo}` : ''})`}
-                {fechaRange?.from && fechaRange?.to && (
-                  <span className="block mt-1">
-                    {fechaRange.from.toLocaleDateString('es-ES')} - {fechaRange.to.toLocaleDateString('es-ES')}
-                  </span>
-                )}
+                {fechaRange?.from && fechaRange?.to && (() => {
+                  try {
+                    const from = new Date(fechaRange.from);
+                    const to = new Date(fechaRange.to);
+                    if (!isNaN(from.getTime()) && !isNaN(to.getTime())) {
+                      return (
+                        <span className="block mt-1">
+                          {from.toLocaleDateString('es-ES')} - {to.toLocaleDateString('es-ES')}
+                        </span>
+                      );
+                    }
+                  } catch (e) {
+                    console.warn('[PLANIFICACIONES] Error formatting date range:', e);
+                  }
+                  return null;
+                })()}
               </p>
             </CardHeader>
             <CardContent>
@@ -1278,8 +1442,20 @@ const MisPlanificaciones: React.FC = () => {
                           </h3>
                           <div className="flex items-center gap-4 text-sm text-muted-foreground">
                             <span>
-                              {new Date(plan.fecha_inicio).toLocaleDateString('es-ES')} - {' '}
-                              {new Date(plan.fecha_fin).toLocaleDateString('es-ES')}
+                              {(() => {
+                                try {
+                                  if (plan.fecha_inicio && plan.fecha_fin) {
+                                    const inicio = new Date(plan.fecha_inicio);
+                                    const fin = new Date(plan.fecha_fin);
+                                    if (!isNaN(inicio.getTime()) && !isNaN(fin.getTime())) {
+                                      return `${inicio.toLocaleDateString('es-ES')} - ${fin.toLocaleDateString('es-ES')}`;
+                                    }
+                                  }
+                                } catch (e) {
+                                  console.warn('[PLANIFICACIONES] Error formatting dates:', e);
+                                }
+                                return 'Fechas no disponibles';
+                              })()}
                             </span>
                             <span>{plan.horas_semanales} horas semanales</span>
                           </div>
@@ -1479,7 +1655,10 @@ const MisPlanificaciones: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+        </>
+      )}
+      </div>
+    </ErrorBoundary>
   );
 };
 

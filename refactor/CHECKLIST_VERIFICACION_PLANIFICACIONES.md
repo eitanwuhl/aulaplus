@@ -501,3 +501,23 @@ WHERE id = 'PLANIFICACION_ID';
 **Última actualización**: 2025-12-19  
 **Versión**: 2.0 (Corrección de inconsistencias documentales)
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
