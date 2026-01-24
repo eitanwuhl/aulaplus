@@ -182,9 +182,15 @@ export function parsePlan(input: string, fallbackResources?: string[]): ParsedPl
  * Ensures resources remain separated and only class narrative is present.
  * 
  * @param parsed - Parsed plan with sections
- * @param additionalDiferenciacion - Optional additional diferenciacion content to append (e.g., from contemplaciones)
+ * @param additionalDiferenciacion - Optional additional diferenciacion content to append or replace (e.g., from contemplaciones)
+ * @param options - Optional build options
+ * @param options.replaceDiferenciacion - If true, replaces parsed.diferenciacion with additionalDiferenciacion instead of merging (default: false)
  */
-export function buildPlanHtml(parsed: ParsedPlan, additionalDiferenciacion?: string): string {
+export function buildPlanHtml(
+  parsed: ParsedPlan, 
+  additionalDiferenciacion?: string,
+  options?: { replaceDiferenciacion?: boolean }
+): string {
   const sections: Array<{ label: string; key: 'inicio' | 'desarrollo' | 'cierre' }> = [
     { label: 'Inicio', key: 'inicio' },
     { label: 'Desarrollo', key: 'desarrollo' },
@@ -208,16 +214,28 @@ export function buildPlanHtml(parsed: ParsedPlan, additionalDiferenciacion?: str
     lines.push(content);
   });
 
-  // Merge diferenciacion from parser with additional content
-  let diferenciacionContent = (parsed.diferenciacion || '').trim();
+  // Merge or replace diferenciacion based on options
+  const parsedContent = (parsed.diferenciacion || '').trim();
   const additionalContent = (additionalDiferenciacion || '').trim();
+  const shouldReplace = options?.replaceDiferenciacion === true;
   
-  if (diferenciacionContent && additionalContent) {
-    // Both exist: append additional with separator
-    diferenciacionContent = `${diferenciacionContent}\n\n${additionalContent}`;
-  } else if (additionalContent) {
-    // Only additional exists
+  let diferenciacionContent = '';
+  
+  if (shouldReplace && additionalContent) {
+    // Replace mode: use ONLY additional content (ignore parsed content)
     diferenciacionContent = additionalContent;
+  } else {
+    // Merge mode (default, backward compatible):
+    if (parsedContent && additionalContent) {
+      // Both exist: append additional with separator
+      diferenciacionContent = `${parsedContent}\n\n${additionalContent}`;
+    } else if (additionalContent) {
+      // Only additional exists
+      diferenciacionContent = additionalContent;
+    } else {
+      // Only parsed content exists (or both empty)
+      diferenciacionContent = parsedContent;
+    }
   }
   
   if (diferenciacionContent) {
@@ -593,10 +611,13 @@ function cleanHtml(html: string): string {
 /**
  * Builds plan HTML with deterministic contemplaciones reminders injected into Diferenciación/Adaptaciones
  * 
+ * When deterministic reminders exist, they REPLACE (not merge) the AI-generated diferenciacion content
+ * to avoid generic/duplicated bullets and keep the section fully personalized with student names.
+ * 
  * @param parsed - Parsed plan with sections
  * @param students - List of students with IDs and names (for contemplaciones lookup)
  * @param lessonContent - Optional lesson content for detecting written instructions
- * @returns HTML string with reminders injected
+ * @returns HTML string with reminders injected or replaced
  */
 export function buildPlanHtmlWithReminders(
   parsed: ParsedPlan,
@@ -615,6 +636,12 @@ export function buildPlanHtmlWithReminders(
   }
   
   // Build plan with injected reminders
-  return buildPlanHtml(parsed, remindersHtml);
+  if (remindersHtml) {
+    // Replace mode: use ONLY deterministic reminders (ignore AI-generated generic diferenciacion)
+    return buildPlanHtml(parsed, remindersHtml, { replaceDiferenciacion: true });
+  } else {
+    // No reminders: keep original parsed diferenciacion (backward compatible)
+    return buildPlanHtml(parsed);
+  }
 }
 
