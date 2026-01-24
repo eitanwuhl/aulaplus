@@ -186,7 +186,7 @@ Diferenciación/Adaptaciones
 import { enforceForLessonPlan, type Student } from './contemplaciones/enforcement';
 ```
 
-#### 1.2 Extender `buildPlanHtml()` con parámetro opcional
+#### 1.2 Extender `buildPlanHtml()` con parámetros opcionales
 
 **Antes:**
 ```typescript
@@ -204,18 +204,34 @@ export function buildPlanHtml(parsed: ParsedPlan): string {
 
 **Después:**
 ```typescript
-export function buildPlanHtml(parsed: ParsedPlan, additionalDiferenciacion?: string): string {
+export function buildPlanHtml(
+  parsed: ParsedPlan, 
+  additionalDiferenciacion?: string,
+  options?: { replaceDiferenciacion?: boolean }  // ← Nueva opción para modo replace
+): string {
   // ...
-  // Merge diferenciacion from parser with additional content
-  let diferenciacionContent = (parsed.diferenciacion || '').trim();
+  // Merge o replace diferenciacion según options
+  const parsedContent = (parsed.diferenciacion || '').trim();
   const additionalContent = (additionalDiferenciacion || '').trim();
+  const shouldReplace = options?.replaceDiferenciacion === true;
   
-  if (diferenciacionContent && additionalContent) {
-    // Both exist: append additional with separator
-    diferenciacionContent = `${diferenciacionContent}\n\n${additionalContent}`;
-  } else if (additionalContent) {
-    // Only additional exists
+  let diferenciacionContent = '';
+  
+  if (shouldReplace && additionalContent) {
+    // Replace mode: usar SOLO additional content (ignora parsedContent)
     diferenciacionContent = additionalContent;
+  } else {
+    // Merge mode (default, backward compatible):
+    if (parsedContent && additionalContent) {
+      // Both exist: append additional with separator
+      diferenciacionContent = `${parsedContent}\n\n${additionalContent}`;
+    } else if (additionalContent) {
+      // Only additional exists
+      diferenciacionContent = additionalContent;
+    } else {
+      // Only parsed content exists (or both empty)
+      diferenciacionContent = parsedContent;
+    }
   }
   
   if (diferenciacionContent) {
@@ -228,8 +244,9 @@ export function buildPlanHtml(parsed: ParsedPlan, additionalDiferenciacion?: str
 ```
 
 **Beneficios:**
-- ✅ Backward compatible: parámetro opcional
-- ✅ Merge inteligente: preserva diferenciación existente + agrega recordatorios
+- ✅ Backward compatible: ambos parámetros opcionales, default = merge mode
+- ✅ Replace mode: cuando hay reminders determinísticos, reemplaza contenido genérico de IA
+- ✅ Merge mode: fallback para casos sin reminders o llamadas antiguas
 - ✅ No duplica encabezado
 
 #### 1.3 Nueva función `buildPlanHtmlWithReminders()`
@@ -238,10 +255,13 @@ export function buildPlanHtml(parsed: ParsedPlan, additionalDiferenciacion?: str
 /**
  * Builds plan HTML with deterministic contemplaciones reminders injected into Diferenciación/Adaptaciones
  * 
+ * When deterministic reminders exist, they REPLACE (not merge) the AI-generated diferenciacion content
+ * to avoid generic/duplicated bullets and keep the section fully personalized with student names.
+ * 
  * @param parsed - Parsed plan with sections
  * @param students - List of students with IDs and names (for contemplaciones lookup)
  * @param lessonContent - Optional lesson content for detecting written instructions
- * @returns HTML string with reminders injected
+ * @returns HTML string with reminders injected or replaced
  */
 export function buildPlanHtmlWithReminders(
   parsed: ParsedPlan,
@@ -260,13 +280,21 @@ export function buildPlanHtmlWithReminders(
   }
   
   // Build plan with injected reminders
-  return buildPlanHtml(parsed, remindersHtml);
+  if (remindersHtml) {
+    // Replace mode: usar SOLO recordatorios determinísticos (ignora diferenciacion genérica de IA)
+    return buildPlanHtml(parsed, remindersHtml, { replaceDiferenciacion: true });
+  } else {
+    // No reminders: mantener diferenciacion original (backward compatible)
+    return buildPlanHtml(parsed);
+  }
 }
 ```
 
 **Responsabilidades:**
 1. Llama `enforceForLessonPlan()` para generar recordatorios
 2. Convierte líneas de texto a HTML `<ul><li>...</li></ul>`
+3. **REEMPLAZA** contenido genérico de IA cuando existen reminders determinísticos
+4. Mantiene contenido original cuando NO hay reminders (backward compatible)
 3. Llama `buildPlanHtml()` con recordatorios como parámetro adicional
 
 ---
