@@ -15,6 +15,7 @@ import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupContext';
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
+import { resolveMockGroup } from '@/utils/resolveMockGroup';
 
 interface EditorSesionNuevoProps {
   sesion: SesionClase | null;
@@ -463,13 +464,22 @@ export function EditorSesionNuevo({
       let sanitizedHtml: string;
       try {
         if (grupoId) {
-          const mockGroup = mockGroups.find(g => g.id === grupoId);
+          const resolveResult = resolveMockGroup(grupoId, false);
+          const mockGroup = resolveResult.group;
+          
           if (mockGroup && mockGroup.students && mockGroup.students.length > 0) {
             // Map students to enforcement format
             const students: EnforcementStudent[] = mockGroup.students.map(s => ({
               id: s.id,
               name: s.name
             }));
+            
+            console.log('[EditorSesion] Resolved group for reminders:', {
+              grupoIdRaw: grupoId,
+              matchType: resolveResult.matchType,
+              resolvedGroupId: mockGroup.id,
+              studentsCount: students.length
+            });
             
             // Build with reminders
             const fullPlanContent = data.plan_html; // Use full content for consignas detection

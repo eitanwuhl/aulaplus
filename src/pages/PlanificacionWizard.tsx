@@ -20,6 +20,7 @@ import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders } from '@/lib/plan
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
+import { resolveMockGroup } from '@/utils/resolveMockGroup';
 
 // PHASE 1: Helper para expandir unidades según clases_estimadas (reutilizable)
 function expandUnitsToSessionPlan(
@@ -467,18 +468,17 @@ const generarPlanesAutomaticamente = async (
             const fallbackRecursos = normalizeArrayField(data.recursos);
             const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
             
-            // Helper: Normalize grupoId for consistent matching (same as groupContext.ts)
-            const norm = (v: any) => String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
-            
-            // Load students for reminder injection
+            // Load students for reminder injection using robust resolver
             if (grupoId) {
-              const normalizedGrupoId = norm(grupoId);
-              const mockGroup = mockGroups.find(g => norm(g.id) === normalizedGrupoId);
+              const resolveResult = resolveMockGroup(grupoId, false);
+              const mockGroup = resolveResult.group;
               
               console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Student loading:`, {
                 grupoIdRaw: grupoId,
-                grupoIdNormalized: normalizedGrupoId,
+                matchType: resolveResult.matchType,
                 mockGroupFound: !!mockGroup,
+                resolvedGroupId: mockGroup?.id,
+                resolvedGroupName: mockGroup?.name,
                 studentsCount: mockGroup?.students?.length || 0,
                 first3Students: mockGroup?.students?.slice(0, 3).map(s => ({ id: s.id, name: s.name })) || []
               });
@@ -514,12 +514,12 @@ const generarPlanesAutomaticamente = async (
                 // No students found - use buildPlanHtml without reminders
                 finalHtml = buildPlanHtml(parsedPlan);
                 
-                const availableGroupIds = mockGroups.slice(0, 10).map(g => g.id);
                 console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No students found`, {
                   grupoIdRaw: grupoId,
-                  grupoIdNormalized: normalizedGrupoId,
+                  matchType: resolveResult.matchType,
                   mockGroupFound: !!mockGroup,
-                  availableMockGroupIds: availableGroupIds,
+                  availableMockGroupIds: mockGroups.slice(0, 10).map(g => g.id),
+                  availableMockGroupNames: mockGroups.slice(0, 10).map(g => g.name),
                   totalMockGroups: mockGroups.length
                 });
               }
