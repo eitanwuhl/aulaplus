@@ -71,9 +71,9 @@ Esta feature inyecta recordatorios determinísticos basados en contemplaciones d
 │ 4. INYECCIÓN (planParser.ts)                                     │
 │    - buildPlanHtmlWithReminders(parsed, students, content)       │
 │    - Convierte diferenciacionBlock a HTML <ul><li>...</li></ul>  │
-│    - Llama buildPlanHtml(parsed, remindersHtml)                  │
-│    - Merge: diferenciacion existente + recordatorios             │
-│    - Retorna: HTML completo con recordatorios inyectados         │
+│    - Si hay reminders: REEMPLAZA diferenciacion (no merge)       │
+│    - Si NO hay reminders: mantiene diferenciacion original       │
+│    - Retorna: HTML completo con recordatorios personalizados     │
 └──────────────────────┬──────────────────────────────────────────┘
                        │
                        ▼
@@ -90,6 +90,88 @@ Esta feature inyecta recordatorios determinísticos basados en contemplaciones d
 │    - Diferenciación/Adaptaciones al final con recordatorios      │
 │    - Cada recordatorio muestra nombres de estudiantes            │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Regla de Reemplazo (Replacement Rule)
+
+### Comportamiento
+
+**Cuando existen recordatorios determinísticos de contemplaciones:**
+- La sección "Diferenciación/Adaptaciones" contiene **SOLO** los recordatorios personalizados con nombres de estudiantes
+- Se **REEMPLAZA** (no merge) cualquier contenido genérico generado por la IA
+- Esto evita duplicaciones y mantiene la sección completamente personalizada
+
+**Cuando NO existen recordatorios determinísticos:**
+- Se mantiene el contenido original de "Diferenciación/Adaptaciones" generado por la IA
+- Comportamiento backward-compatible: planes sin contemplaciones seleccionadas siguen funcionando igual
+
+### Rationale (Justificación)
+
+1. **Evitar contenido genérico/duplicado**: Las sugerencias genéricas de la IA ("considerar perfil visual", "adaptar para perfil auditivo") carecen de valor cuando tenemos datos específicos de cada estudiante.
+
+2. **Personalización completa**: Los recordatorios determinísticos incluyen nombres de estudiantes y contemplaciones específicas seleccionadas por el docente, lo que los hace mucho más útiles y accionables.
+
+3. **Claridad**: Una sección con SOLO recordatorios personalizados es más fácil de leer y aplicar que una mezcla de bullets genéricos y específicos.
+
+### Implementación Técnica
+
+```typescript
+// En buildPlanHtmlWithReminders():
+if (remindersHtml) {
+  // Replace mode: usar SOLO recordatorios determinísticos
+  return buildPlanHtml(parsed, remindersHtml, { replaceDiferenciacion: true });
+} else {
+  // No reminders: mantener diferenciacion original
+  return buildPlanHtml(parsed);
+}
+
+// En buildPlanHtml():
+if (shouldReplace && additionalContent) {
+  // Ignorar parsed.diferenciacion, usar SOLO additionalContent
+  diferenciacionContent = additionalContent;
+} else {
+  // Merge mode (backward compatible)
+  // ...
+}
+```
+
+### Verificación Manual
+
+Para confirmar que el reemplazo funciona correctamente:
+
+1. **Generar un plan con contemplaciones**:
+   - Usar un grupo donde al menos un estudiante tiene `contemplacionesClase` seleccionadas
+   - Crear una planificación nueva usando el Asistente de Planificación Inteligente
+
+2. **Verificar la sección "Diferenciación/Adaptaciones"**:
+   - ✅ Solo debe contener recordatorios con nombres de estudiantes
+   - ✅ NO debe contener bullets genéricos como "considerar perfil visual" o "adaptar para estudiantes con..."
+   - ✅ Cada recordatorio debe incluir nombre(s) de estudiante(s) específico(s)
+
+3. **Generar un plan sin contemplaciones**:
+   - Usar un grupo sin contemplaciones seleccionadas
+   - Verificar que la sección "Diferenciación/Adaptaciones" sigue mostrando contenido de la IA (si lo genera)
+   - Confirmar backward compatibility
+
+### Ejemplo Comparativo
+
+**ANTES (merge - contenido mixto):**
+```
+Diferenciación/Adaptaciones
+• Considerar que algunos estudiantes tienen perfil visual predominante
+• Adaptar las explicaciones para estudiantes con diferentes ritmos de aprendizaje
+• Mateo López: Lectura oral de consignas (si hay consignas escritas puntuales)
+• Ana García, Juan Pérez: Explicaciones con soporte visual explícito
+```
+
+**DESPUÉS (replace - solo recordatorios personalizados):**
+```
+Diferenciación/Adaptaciones
+• Mateo López: Lectura oral de consignas (si hay consignas escritas puntuales)
+• Ana García, Juan Pérez: Explicaciones con soporte visual explícito
+• Sofia Rodríguez: Adaptar recursos de lectura según nivel de comprensión
 ```
 
 ---
