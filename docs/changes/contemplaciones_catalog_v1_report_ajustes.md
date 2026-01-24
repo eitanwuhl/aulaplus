@@ -73,3 +73,4 @@ Ajustes al reporte inicial para corregir información sobre el commit y clarific
 
 **Nota:** Estos cambios solo afectan la documentación del reporte. No modifican código ni comportamiento.
 
+

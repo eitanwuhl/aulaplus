@@ -297,6 +297,92 @@ export function buildPlanHtmlWithReminders(
 4. Mantiene contenido original cuando NO hay reminders (backward compatible)
 5. Llama `buildPlanHtml()` con recordatorios como parámetro adicional y opción `replaceDiferenciacion: true`
 
+#### 1.4 Helper Centralizado `buildSanitizedLessonPlanHtml()` (NUEVO - 2026-01-24)
+
+**Motivación:** 
+Antes de esta mejora, la lógica de post-procesamiento (parsear → cargar estudiantes → inyectar reminders) estaba **duplicada** en múltiples componentes, y el flujo de **regeneración** ("Aplicar cambios") NO inyectaba reminders determinísticos.
+
+**Solución:**
+Helper centralizado que encapsula el pipeline completo:
+
+```typescript
+/**
+ * Centralized helper to build sanitized lesson plan HTML with deterministic reminders.
+ * Use this for BOTH initial generation AND regeneration flows to ensure consistency.
+ * 
+ * @param rawPlanHtml - Raw HTML from AI edge function
+ * @param fallbackRecursos - Optional resources array from AI response
+ * @param grupoId - Group ID to load students from (for reminder injection)
+ * @param logTag - Tag for diagnostic logs (e.g., '[INITIAL-GEN]', '[REGENERATE]')
+ * @returns Sanitized HTML with reminders injected (or without if no students/contemplaciones)
+ */
+export function buildSanitizedLessonPlanHtml(
+  rawPlanHtml: string,
+  fallbackRecursos?: string[],
+  grupoId?: string,
+  logTag: string = '[PLAN-BUILD]'
+): string {
+  // STEP 1: Parse raw HTML
+  const parsedPlan = parsePlan(rawPlanHtml, fallbackRecursos);
+  
+  // STEP 2: Load students (if grupoId provided)
+  if (!grupoId) {
+    return buildPlanHtml(parsedPlan);
+  }
+  
+  const resolveResult = resolveMockGroup(grupoId, false);
+  const mockGroup = resolveResult.group;
+  
+  if (!mockGroup || !mockGroup.students || mockGroup.students.length === 0) {
+    return buildPlanHtml(parsedPlan);
+  }
+  
+  // STEP 3: Map students to enforcement format
+  const students = mockGroup.students.map(s => ({ id: s.id, name: s.name }));
+  
+  // STEP 4: Generate enforcement and log diagnostics
+  const enforcement = enforceForLessonPlan(students, rawPlanHtml);
+  const hasReminders = enforcement.diferenciacionBlock.length > 0;
+  
+  console.log(`${logTag} Building plan:`, {
+    grupoIdRaw: grupoId,
+    matchType: resolveResult.matchType,
+    studentsCount: students.length,
+    enforcementBlockLength: enforcement.diferenciacionBlock.length,
+    replaceModeUsed: hasReminders
+  });
+  
+  // STEP 5: Build with REPLACE mode if reminders exist
+  if (hasReminders) {
+    const remindersHtml = '<ul>\\n' + 
+      enforcement.diferenciacionBlock.map(line => `  <li>${line}</li>`).join('\\n') + 
+      '\\n</ul>';
+    return buildPlanHtml(parsedPlan, remindersHtml, { replaceDiferenciacion: true });
+  } else {
+    return buildPlanHtml(parsedPlan); // Backward compatible
+  }
+}
+```
+
+**Responsabilidades:**
+1. **Parsea** el HTML crudo de la IA
+2. **Resuelve** el grupo y carga estudiantes usando `resolveMockGroup()`
+3. **Genera** reminders determinísticos con `enforceForLessonPlan()`
+4. **Inyecta** en modo REPLACE cuando hay reminders
+5. **Logs diagnósticos** para cada invocación (con tag personalizado)
+6. **Fallback graceful** si no hay grupo/estudiantes/contemplaciones
+
+**Ventajas:**
+- ✅ **Consistencia**: Mismo comportamiento en inicial + regeneración + wizard
+- ✅ **Mantenibilidad**: Cambios en una sola función
+- ✅ **Diagnóstico**: Logs integrados con tags identificables
+- ✅ **Simplicidad**: Reduce ~50 líneas de código por componente
+
+**Usado en:**
+- `EditorSesionNuevo.tsx` (generación inicial Y regeneración "Aplicar cambios")
+- `PlanificacionWorkspace.tsx` (regeneración desde workspace)
+- `PlanificacionWizard.tsx` (generación batch en wizard)
+
 ---
 
 ### 2. Integración en `PlanificacionWorkspace.tsx`
@@ -362,18 +448,84 @@ try {
 
 ### 3. Integración en `EditorSesionNuevo.tsx`
 
+**IMPORTANTE (2026-01-24):** Este componente tiene DOS flujos que deben inyectar reminders:
+1. **Generación inicial**: `handleGenerarPlanInicial()` - ✅ Ya implementado
+2. **Regeneración** ("Aplicar cambios"): `handleSolicitarModificacion()` - ✅ **FIXED** - Ahora usa `buildSanitizedLessonPlanHtml()`
+
+**Problema detectado y resuelto:**
+- ❌ Antes: Regeneración NO inyectaba reminders → mostraba solo bullets genéricos
+- ✅ Ahora: Ambos flujos usan el helper centralizado → comportamiento consistente
+
 #### 3.1 Importar funciones necesarias
 
 ```typescript
-import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, ParsedPlan } from '@/lib/planParser';
-import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupContext';
-import { mockGroups } from '@/data/mockData';
+import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml, ParsedPlan } from '@/lib/planParser';
+import { getGrupoIdFromPlanificacion } from '@/utils/groupContext';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 ```
 
-#### 3.2 Modificar `handleGenerarPlanInicial()`
+#### 3.2 Modificar `handleGenerarPlanInicial()` (generación inicial)
 
-**Implementación idéntica a `PlanificacionWorkspace.tsx`:**
+**Ahora usa el helper centralizado:**
+
+```typescript
+const handleGenerarPlanInicial = async () => {
+  // ... llamada a AI edge function ...
+  
+  // Load grupoId
+  const grupoId = await getGrupoIdFromPlanificacion(planificacionId);
+  
+  // Parse and sanitize with centralized helper
+  const fallbackRecursos = normalizeArrayField(data.recursos);
+  const sanitizedHtml = buildSanitizedLessonPlanHtml(
+    data.plan_html,
+    fallbackRecursos,
+    grupoId,
+    '[INITIAL-GEN-CONTEMPLACIONES]'
+  );
+  
+  // ... persistir en DB ...
+};
+```
+
+#### 3.3 Modificar `handleSolicitarModificacion()` (regeneración/apply changes) **[NUEVO]**
+
+**Implementación idéntica a generación inicial (usa mismo helper):**
+
+```typescript
+const handleSolicitarModificacion = async () => {
+  // ... construcción de payload y llamada a AI edge function ...
+  
+  // Load grupoId (MISMO que en generación inicial)
+  const grupoId = await getGrupoIdFromPlanificacion(planificacionId);
+  
+  // Parse and sanitize with centralized helper (MISMA lógica)
+  const fallbackRecursos = normalizeArrayField(data.recursos);
+  const sanitizedHtml = buildSanitizedLessonPlanHtml(
+    data.plan_html,
+    fallbackRecursos,
+    grupoId,
+    '[REGENERATE-CONTEMPLACIONES]'  // ← Tag diferente para logs
+  );
+  
+  // Parse again for resource extraction
+  const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
+  
+  // ... merge recursos y actualizar estados ...
+};
+```
+
+**Resultado:**
+- ✅ "Aplicar cambios" ahora TAMBIÉN inyecta reminders determinísticos en modo REPLACE
+- ✅ Logs con tag `[REGENERATE-CONTEMPLACIONES]` para facilitar debugging
+- ✅ Comportamiento idéntico a generación inicial
+
+---
+
+#### 3.4 Snippet antiguo (solo `handleGenerarPlanInicial` - OBSOLETO)
+
+<details>
+<summary>Ver implementación anterior (antes del helper centralizado)</summary>
 
 ```typescript
 const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
@@ -642,8 +794,13 @@ WHERE id = '<sesion_id>';
   - Genera reminders con `enforceForLessonPlan()`
   - Si hay reminders: llama `buildPlanHtml()` con `{ replaceDiferenciacion: true }`
   - Si NO hay reminders: llama `buildPlanHtml()` sin opciones (mantiene diferenciación original)
+- ✅ **NUEVO (2026-01-24)**: Helper centralizado `buildSanitizedLessonPlanHtml()`:
+  - Encapsula pipeline completo: parsear → cargar estudiantes → inyectar reminders
+  - Logs diagnósticos integrados con tag personalizado
+  - Usado en TODOS los flujos (inicial, regeneración, wizard) para consistencia
+  - Elimina duplicación de código (~50 líneas por componente)
 
-**Líneas modificadas:** ~60 líneas agregadas/modificadas
+**Líneas modificadas:** ~120 líneas agregadas/modificadas (incluye helper centralizado)
 
 ### 2. `src/pages/PlanificacionWorkspace.tsx`
 
@@ -659,13 +816,16 @@ WHERE id = '<sesion_id>';
 ### 3. `src/components/planificacion/EditorSesionNuevo.tsx`
 
 **Cambios:**
-- ✅ Importar `buildPlanHtmlWithReminders`, `resolveMockGroup`, `EnforcementStudent`
-- ✅ Modificar `handleGenerarPlanInicial()` para inyectar recordatorios:
-  - Obtiene `grupoId` de planificación
-  - Carga estudiantes usando `resolveMockGroup(grupoId)`
-  - Llama `buildPlanHtmlWithReminders()` si hay estudiantes
+- ✅ Importar `buildSanitizedLessonPlanHtml` (helper centralizado)
+- ✅ Modificar `handleGenerarPlanInicial()` (generación inicial):
+  - Usa `buildSanitizedLessonPlanHtml()` con tag `[INITIAL-GEN-CONTEMPLACIONES]`
+  - Reemplaza lógica manual (~35 líneas) con 1 llamada al helper
+- ✅ **NUEVO (2026-01-24)**: Modificar `handleSolicitarModificacion()` (regeneración/"Aplicar cambios"):
+  - **FIX**: Antes NO inyectaba reminders → ahora SÍ
+  - Usa `buildSanitizedLessonPlanHtml()` con tag `[REGENERATE-CONTEMPLACIONES]`
+  - Comportamiento idéntico a generación inicial
 
-**Líneas modificadas:** ~40 líneas agregadas/modificadas
+**Líneas modificadas:** ~60 líneas agregadas/modificadas (incluye fix de regeneración)
 
 ### 4. `src/pages/PlanificacionWizard.tsx`
 
