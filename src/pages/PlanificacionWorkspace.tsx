@@ -19,6 +19,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupContext';
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
+import { resolveMockGroup } from '@/utils/resolveMockGroup';
 
 export default function PlanificacionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -201,7 +202,9 @@ export default function PlanificacionWorkspace() {
       try {
         const grupoId = planificacion.grupo_id;
         if (grupoId) {
-          const mockGroup = mockGroups.find(g => g.id === grupoId);
+          const resolveResult = resolveMockGroup(grupoId, false);
+          const mockGroup = resolveResult.group;
+          
           if (mockGroup && mockGroup.students && mockGroup.students.length > 0) {
             // Map students to enforcement format
             const students: EnforcementStudent[] = mockGroup.students.map(s => ({
@@ -209,11 +212,24 @@ export default function PlanificacionWorkspace() {
               name: s.name
             }));
             
+            console.log('[generatePlanForSession] Resolved group for reminders:', {
+              grupoIdRaw: grupoId,
+              matchType: resolveResult.matchType,
+              resolvedGroupId: mockGroup.id,
+              resolvedGroupName: mockGroup.name,
+              studentsCount: students.length
+            });
+            
             // Build with reminders
             const fullPlanContent = data.plan_html; // Use full content for consignas detection
             sanitizedHtml = buildPlanHtmlWithReminders(parsedPlan, students, fullPlanContent);
           } else {
             // No students found, build without reminders
+            console.log('[generatePlanForSession] No students found:', {
+              grupoIdRaw: grupoId,
+              matchType: resolveResult.matchType,
+              mockGroupFound: !!mockGroup
+            });
             sanitizedHtml = buildPlanHtml(parsedPlan);
           }
         } else {
