@@ -295,7 +295,7 @@ export function buildPlanHtmlWithReminders(
 2. Convierte líneas de texto a HTML `<ul><li>...</li></ul>`
 3. **REEMPLAZA** contenido genérico de IA cuando existen reminders determinísticos
 4. Mantiene contenido original cuando NO hay reminders (backward compatible)
-3. Llama `buildPlanHtml()` con recordatorios como parámetro adicional
+5. Llama `buildPlanHtml()` con recordatorios como parámetro adicional y opción `replaceDiferenciacion: true`
 
 ---
 
@@ -613,16 +613,16 @@ WHERE id = '<sesion_id>';
 - `loadGroupContext()` ya tiene estructura para migrar a Supabase en futuro
 - Solo requiere cambiar implementación de helper, no consumidores
 
-### 3. No en `PlanificacionWizard`
+### 3. Inyección en Wizard (RESUELTO)
 
-**Limitación:** Wizard de creación inicial NO inyecta recordatorios (genera planes en batch rápido).
+**Estado:** ✅ **IMPLEMENTADO** - El wizard ahora SÍ inyecta recordatorios determinísticos durante la creación inicial.
 
-**Justificación:**
-- Wizard prioriza velocidad (genera 10-20 planes en batch)
-- Planes se pueden regenerar después con recordatorios desde workspace
-- Evita complejidad adicional en flujo de creación
+**Cambios realizados:**
+- `PlanificacionWizard.tsx` modificado para cargar estudiantes usando `resolveMockGroup()`
+- Reminders se inyectan usando `buildPlanHtmlWithReminders()` antes de persistir `html_completo`
+- Se agregaron logs de diagnóstico para verificar la inyección: `[WIZARD-CONTEMPLACIONES]`
 
-**Mitigación:** Documentar que recordatorios aparecen después de regenerar planes individuales.
+**Limitación menor:** Si el `grupoId` no coincide con ningún mock group, el wizard genera el plan sin reminders (fallback graceful).
 
 ---
 
@@ -632,30 +632,93 @@ WHERE id = '<sesion_id>';
 
 **Cambios:**
 - ✅ Importar `enforceForLessonPlan` y `Student` de `enforcement.ts`
-- ✅ Extender `buildPlanHtml()` con parámetro opcional `additionalDiferenciacion`
-- ✅ Nueva función `buildPlanHtmlWithReminders()`
+- ✅ Extender `buildPlanHtml()` con parámetros opcionales:
+  - `additionalDiferenciacion?: string` - contenido adicional para diferenciación
+  - `options?: { replaceDiferenciacion?: boolean }` - **NUEVO**: modo replace vs merge
+- ✅ Lógica condicional en `buildPlanHtml()`:
+  - Si `options.replaceDiferenciacion === true` y hay `additionalContent`: **REEMPLAZA** (ignora `parsed.diferenciacion`)
+  - Si `false` o no especificado: **MERGE** (comportamiento original, backward compatible)
+- ✅ Nueva función `buildPlanHtmlWithReminders()`:
+  - Genera reminders con `enforceForLessonPlan()`
+  - Si hay reminders: llama `buildPlanHtml()` con `{ replaceDiferenciacion: true }`
+  - Si NO hay reminders: llama `buildPlanHtml()` sin opciones (mantiene diferenciación original)
 
-**Líneas modificadas:** ~40 líneas agregadas
+**Líneas modificadas:** ~60 líneas agregadas/modificadas
 
 ### 2. `src/pages/PlanificacionWorkspace.tsx`
 
 **Cambios:**
-- ✅ Importar `buildPlanHtmlWithReminders`, `mockGroups`, `EnforcementStudent`
-- ✅ Modificar `generatePlanForSession()` para inyectar recordatorios
+- ✅ Importar `buildPlanHtmlWithReminders`, `resolveMockGroup`, `EnforcementStudent`
+- ✅ Modificar `generatePlanForSession()` para inyectar recordatorios:
+  - Carga estudiantes usando `resolveMockGroup(planificacion.grupo_id)`
+  - Llama `buildPlanHtmlWithReminders()` si hay estudiantes
+  - Fallback graceful a `buildPlanHtml()` si no hay estudiantes o error
 
-**Líneas modificadas:** ~35 líneas agregadas/modificadas
+**Líneas modificadas:** ~40 líneas agregadas/modificadas
 
 ### 3. `src/components/planificacion/EditorSesionNuevo.tsx`
 
 **Cambios:**
-- ✅ Importar `buildPlanHtmlWithReminders`, `mockGroups`, `EnforcementStudent`
-- ✅ Modificar `handleGenerarPlanInicial()` para inyectar recordatorios
+- ✅ Importar `buildPlanHtmlWithReminders`, `resolveMockGroup`, `EnforcementStudent`
+- ✅ Modificar `handleGenerarPlanInicial()` para inyectar recordatorios:
+  - Obtiene `grupoId` de planificación
+  - Carga estudiantes usando `resolveMockGroup(grupoId)`
+  - Llama `buildPlanHtmlWithReminders()` si hay estudiantes
 
-**Líneas modificadas:** ~35 líneas agregadas/modificadas
+**Líneas modificadas:** ~40 líneas agregadas/modificadas
 
-### 4. `docs/LESSON_DIFFERENCIACION_REMINDERS.md` (NUEVO)
+### 4. `src/pages/PlanificacionWizard.tsx`
+
+**Cambios:**
+- ✅ Importar `buildPlanHtmlWithReminders`, `resolveMockGroup`, `enforceForLessonPlan`
+- ✅ Modificar `generarPlanesAutomaticamente()` para inyectar recordatorios:
+  - Carga estudiantes usando `resolveMockGroup(grupoId)` por cada sesión
+  - Llama `buildPlanHtmlWithReminders()` antes de persistir `html_completo`
+  - Logs de diagnóstico: `[WIZARD-CONTEMPLACIONES]` para verificar inyección
+  - Fallback graceful a `buildPlanHtml()` si no hay grupo o estudiantes
+
+**Líneas modificadas:** ~50 líneas agregadas/modificadas
+
+### 5. `src/utils/resolveMockGroup.ts` (NUEVO)
+
+**Contenido:**
+- ✅ Función `resolveMockGroup(grupoIdRaw)`: resolver grupo mock con múltiples estrategias
+  - Estrategia 1: Match directo por ID normalizado
+  - Estrategia 2: Match por nombre normalizado
+  - Estrategia 3: Match por alias mapping (e.g., "9no 1" → "1")
+- ✅ Helper `norm()`: normalización de strings para matching consistente
+- ✅ `ALIAS_MAP`: mapeo de nombres human-readable a IDs de mock
+
+**Líneas:** ~50 líneas
+
+### 6. `src/utils/groupContext.ts`
+
+**Cambios:**
+- ✅ Importar `resolveMockGroup` en lugar de búsqueda directa en `mockGroups`
+- ✅ Modificar `loadGroupContext()` para usar `resolveMockGroup(grupoId)`
+- ✅ Logs de diagnóstico para rastrear resolución de grupo
+
+**Líneas modificadas:** ~10 líneas
+
+### 7. `src/main.tsx`
+
+**Cambios:**
+- ✅ Exponer `mockGroups` globalmente en DEV: `window.__mockGroups`
+- ✅ Log de DEV para facilitar debugging en consola del navegador
+
+**Líneas modificadas:** ~5 líneas
+
+### 8. `docs/LESSON_DIFFERENCIACION_REMINDERS.md` (NUEVO)
 
 **Contenido:** Documentación completa de la feature (este archivo).
+
+**Líneas:** ~670 líneas
+
+### 9. `docs/CHANGELOG_PROMPT6_REPLACEMENT.md` (NUEVO)
+
+**Contenido:** Changelog detallado del cambio de merge a replace behavior.
+
+**Líneas:** ~370 líneas
 
 ---
 
