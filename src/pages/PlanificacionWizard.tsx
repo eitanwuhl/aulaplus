@@ -19,6 +19,7 @@ import { loadGroupContext } from '@/utils/groupContext';
 import { parsePlan, buildPlanHtmlWithReminders } from '@/lib/planParser';
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
+import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
 
 // PHASE 1: Helper para expandir unidades según clases_estimadas (reutilizable)
 function expandUnitsToSessionPlan(
@@ -466,9 +467,23 @@ const generarPlanesAutomaticamente = async (
             const fallbackRecursos = normalizeArrayField(data.recursos);
             const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
             
+            // Helper: Normalize grupoId for consistent matching
+            const normalizeGrupoId = (id: any) => String(id ?? '').trim();
+            
             // Load students for reminder injection
             if (grupoId) {
-              const mockGroup = mockGroups.find(g => g.id === grupoId);
+              const normalizedGrupoId = normalizeGrupoId(grupoId);
+              const mockGroup = mockGroups.find(g => normalizeGrupoId(g.id) === normalizedGrupoId);
+              
+              if (DIAG) {
+                console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Student loading:`, {
+                  grupoId,
+                  normalizedGrupoId,
+                  mockGroupFound: !!mockGroup,
+                  studentsCount: mockGroup?.students?.length || 0,
+                  first3Students: mockGroup?.students?.slice(0, 3).map(s => ({ id: s.id, name: s.name })) || []
+                });
+              }
               
               if (mockGroup && mockGroup.students && mockGroup.students.length > 0) {
                 // Map students to enforcement format
@@ -477,16 +492,16 @@ const generarPlanesAutomaticamente = async (
                   name: s.name
                 }));
                 
+                // Build with reminders
+                const enforcementResult = enforceForLessonPlan(students, data.plan_html);
+                
                 if (DIAG) {
-                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}:`, {
-                    grupoId,
-                    studentsCount: students.length,
-                    firstFiveStudents: students.slice(0, 5).map(s => ({ id: s.id, name: s.name })),
-                    hasParsedDiferenciacion: !!parsedPlan.diferenciacion
+                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Enforcement output:`, {
+                    diferenciacionBlockLength: enforcementResult.diferenciacionBlock.length,
+                    diferenciacionBlockPreview: enforcementResult.diferenciacionBlock.slice(0, 2)
                   });
                 }
                 
-                // Build with reminders
                 finalHtml = buildPlanHtmlWithReminders(parsedPlan, students, data.plan_html);
                 
                 if (DIAG) {
@@ -499,10 +514,16 @@ const generarPlanesAutomaticamente = async (
                   });
                 }
               } else {
-                // No students found
+                // No students found - log available mockGroups for debugging
                 finalHtml = data.plan_html;
                 if (DIAG) {
-                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No students found for grupoId=${grupoId}`);
+                  const availableGroupIds = mockGroups.slice(0, 10).map(g => g.id);
+                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No students found`, {
+                    searchedGrupoId: normalizedGrupoId,
+                    mockGroupFound: !!mockGroup,
+                    availableMockGroupIds: availableGroupIds,
+                    totalMockGroups: mockGroups.length
+                  });
                 }
               }
             } else {
