@@ -16,7 +16,7 @@ import {
 } from '@/lib/competencyExtractor';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext } from '@/utils/groupContext';
-import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders } from '@/lib/planParser';
+import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
@@ -459,82 +459,14 @@ const generarPlanesAutomaticamente = async (
             throw new Error(`Respuesta inválida para sesión ${sesion.orden}`);
           }
 
-          // CONTEMPLACIONES: Parse and inject deterministic reminders into Diferenciación/Adaptaciones
-          const DIAG = (window as any).__CONTEMPLACIONES_DEBUG__ === true;
-          let finalHtml: string;
-          
-          try {
-            // Parse AI-generated HTML
-            const fallbackRecursos = normalizeArrayField(data.recursos);
-            const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
-            
-            // Load students for reminder injection using robust resolver
-            if (grupoId) {
-              const resolveResult = resolveMockGroup(grupoId, false);
-              const mockGroup = resolveResult.group;
-              
-              console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Student loading:`, {
-                grupoIdRaw: grupoId,
-                matchType: resolveResult.matchType,
-                mockGroupFound: !!mockGroup,
-                resolvedGroupId: mockGroup?.id,
-                resolvedGroupName: mockGroup?.name,
-                studentsCount: mockGroup?.students?.length || 0,
-                first3Students: mockGroup?.students?.slice(0, 3).map(s => ({ id: s.id, name: s.name })) || []
-              });
-              
-              if (mockGroup && mockGroup.students && mockGroup.students.length > 0) {
-                // Map students to enforcement format
-                const students: EnforcementStudent[] = mockGroup.students.map(s => ({
-                  id: s.id,
-                  name: s.name
-                }));
-                
-                // Build with reminders
-                const enforcementResult = enforceForLessonPlan(students, data.plan_html);
-                
-                console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Enforcement output:`, {
-                  diferenciacionBlockLength: enforcementResult.diferenciacionBlock.length,
-                  diferenciacionBlockPreview: enforcementResult.diferenciacionBlock.slice(0, 2)
-                });
-                
-                // IMPORTANT: Use buildPlanHtmlWithReminders to inject reminders
-                finalHtml = buildPlanHtmlWithReminders(parsedPlan, students, data.plan_html);
-                
-                if (DIAG) {
-                  // Check if any student name appears in the final HTML (marker for successful injection)
-                  const hasInjectedNames = students.some(s => finalHtml.includes(s.name));
-                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Injection result:`, {
-                    hasInjectedNames,
-                    finalHtmlLength: finalHtml.length,
-                    containsDiferenciacionHeader: finalHtml.includes('Diferenciación/Adaptaciones')
-                  });
-                }
-              } else {
-                // No students found - use buildPlanHtml without reminders
-                finalHtml = buildPlanHtml(parsedPlan);
-                
-                console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No students found`, {
-                  grupoIdRaw: grupoId,
-                  matchType: resolveResult.matchType,
-                  mockGroupFound: !!mockGroup,
-                  availableMockGroupIds: mockGroups.slice(0, 10).map(g => g.id),
-                  availableMockGroupNames: mockGroups.slice(0, 10).map(g => g.name),
-                  totalMockGroups: mockGroups.length
-                });
-              }
-            } else {
-              // No grupoId - use buildPlanHtml without reminders
-              finalHtml = buildPlanHtml(parsedPlan);
-              console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No grupoId provided`);
-            }
-          } catch (reminderError) {
-            // Fail gracefully: if reminder injection fails, use buildPlanHtml without reminders
-            console.warn(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: Failed to inject reminders:`, reminderError);
-            const fallbackRecursos = normalizeArrayField(data.recursos);
-            const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
-            finalHtml = buildPlanHtml(parsedPlan);
-          }
+          // CONTEMPLACIONES: Use centralized helper to inject deterministic reminders in REPLACE mode
+          const fallbackRecursos = normalizeArrayField(data.recursos);
+          const finalHtml = buildSanitizedLessonPlanHtml(
+            data.plan_html,
+            fallbackRecursos,
+            grupoId,
+            `[WIZARD-CONTEMPLACIONES-S${sesion.orden}]`
+          );
 
           // Actualizar la sesión con el plan generado
           console.log(`Guardando para sesión ${sesion.orden}:`, {

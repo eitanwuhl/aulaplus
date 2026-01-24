@@ -21,6 +21,7 @@ import SectionOrderManager from './SectionOrderManager';
 import { 
   getAllContemplaciones, 
   getContemplacionesForContext,
+  normalizeContemplacionId,
   type Contemplacion 
 } from '@/lib/contemplaciones/catalog';
 import {
@@ -119,6 +120,78 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
   // Get suggested contemplaciones IDs from student.contemplaciones (legacy format)
   // These are the IDs that should show "Sugerido" badge
   const suggestedIds = new Set(student.contemplaciones || []);
+
+  // Helper function to normalize labels for matching (trim, lowercase, remove diacritics, collapse whitespace)
+  const normalizeLabel = (label: string): string => {
+    return label
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // Remove diacritics
+      .replace(/\s+/g, ' '); // Collapse whitespace
+  };
+
+  // Helper function to map legacy contemplaciones to catalog IDs
+  const mapLegacyToCatalogIds = (legacyItems: string[], category: ContemplacionCategoryStorage): string[] => {
+    const allContemplaciones = getAllContemplaciones();
+    const catalogIds: string[] = [];
+
+    for (const legacyItem of legacyItems) {
+      const trimmed = legacyItem.trim();
+      if (!trimmed) continue;
+
+      // Try direct ID match (normalized)
+      const normalizedId = normalizeContemplacionId(trimmed);
+      const byId = allContemplaciones.find(c => c.id === normalizedId);
+      if (byId) {
+        // Check if this contemplation applies to the category
+        if (byId.category === category || byId.category === 'ambas') {
+          catalogIds.push(normalizedId);
+        }
+        continue;
+      }
+
+      // Try label match (normalized)
+      const normalizedLegacy = normalizeLabel(trimmed);
+      const byLabel = allContemplaciones.find(c => {
+        const normalizedCatalogLabel = normalizeLabel(c.label);
+        return normalizedCatalogLabel === normalizedLegacy;
+      });
+
+      if (byLabel) {
+        // Check if this contemplation applies to the category
+        if (byLabel.category === category || byLabel.category === 'ambas') {
+          catalogIds.push(byLabel.id);
+        }
+      }
+    }
+
+    // Deduplicate
+    return Array.from(new Set(catalogIds));
+  };
+
+  // Auto-preselect suggested contemplaciones on initial load (only if no existing selection)
+  useEffect(() => {
+    // Check clase
+    const existingClase = readSelected(student.id, 'clase');
+    if (existingClase.length === 0 && student.contemplaciones && student.contemplaciones.length > 0) {
+      const suggestedClase = mapLegacyToCatalogIds(student.contemplaciones, 'clase');
+      if (suggestedClase.length > 0) {
+        writeSelected(student.id, 'clase', suggestedClase);
+        setSelectedClase(suggestedClase);
+      }
+    }
+
+    // Check evaluaciones
+    const existingEval = readSelected(student.id, 'evaluaciones');
+    if (existingEval.length === 0 && student.contemplaciones && student.contemplaciones.length > 0) {
+      const suggestedEval = mapLegacyToCatalogIds(student.contemplaciones, 'evaluaciones');
+      if (suggestedEval.length > 0) {
+        writeSelected(student.id, 'evaluaciones', suggestedEval);
+        setSelectedEval(suggestedEval);
+      }
+    }
+  }, [student.id, student.contemplaciones]); // Only run on mount or if student changes
 
   // State for adaptation flags (explicit checkboxes, no inference)
   const [requiereAdecuacionAcceso, setRequiereAdecuacionAcceso] = useState<boolean>(() => {

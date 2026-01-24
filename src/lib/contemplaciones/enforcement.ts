@@ -22,6 +22,7 @@ import {
   type CustomContemplacion,
   type ContemplacionCategoryStorage
 } from './storage';
+import { normalizeStudentId } from './utils';
 
 export interface Student {
   id: string | number;
@@ -30,7 +31,7 @@ export interface Student {
 
 export interface EvaluationEnforcementOutput {
   versionDesignRules: Set<string>; // Reglas de diseño para cuadernillo/materiales
-  perStudentReminders: Map<string | number, string[]>; // studentId -> reminders para tarjeta
+  perStudentReminders: Map<string, string[]>; // normalizedStudentId -> reminders para tarjeta
 }
 
 export interface LessonPlanEnforcementOutput {
@@ -153,21 +154,53 @@ function groupStudentsByContemplacion(
  */
 export function enforceForEvaluation(students: Student[]): EvaluationEnforcementOutput {
   const versionDesignRules = new Set<string>();
-  const perStudentReminders = new Map<string | number, string[]>();
+  // CRITICAL: Use normalized string keys for consistent lookup
+  const perStudentReminders = new Map<string, string[]>();
+
+  // DIAGNOSTIC MODE (NOT gated by import.meta.env.DEV)
+  const DIAGNOSTIC_MODE = (window as any).__CONTEMPLACIONES_DEBUG__ === true;
+  
+  if (DIAGNOSTIC_MODE) {
+    console.log('[ENFORCEMENT_DIAG] start', { 
+      students: students.map(s => ({ id: s.id, name: s.name }))
+    });
+  }
 
   // Obtener todas las contemplaciones del catálogo
   const allContemplaciones = getAllContemplaciones();
 
   // Leer selecciones y custom items para cada estudiante
-  const selectedIdsByStudent = new Map<string | number, string[]>();
-  const customItemsByStudent = new Map<string | number, CustomContemplacion[]>();
+  // Use normalized IDs as keys for consistent matching
+  const selectedIdsByStudent = new Map<string, string[]>();
+  const customItemsByStudent = new Map<string, CustomContemplacion[]>();
 
   for (const student of students) {
+    // CRITICAL: Normalize student ID for consistent storage lookup and Map keys
+    const normalizedId = normalizeStudentId(student.id);
+    
+    // Read from storage using raw student.id (storage expects raw ID for key composition)
+    const storageKey = `contemplacionesEval:${student.id}`;
     const selected = readSelected(student.id, 'evaluaciones');
-    selectedIdsByStudent.set(student.id, selected);
+    selectedIdsByStudent.set(normalizedId, selected);
     
     const custom = readCustom(student.id, 'evaluaciones').filter(item => item.selected);
-    customItemsByStudent.set(student.id, custom);
+    customItemsByStudent.set(normalizedId, custom);
+
+    // DIAGNOSTIC: Log storage read for each student
+    if (DIAGNOSTIC_MODE) {
+      const localStorageValue = (typeof localStorage !== 'undefined') 
+        ? localStorage.getItem(storageKey) 
+        : null;
+      
+      console.log('[ENFORCEMENT_DIAG] student', {
+        rawId: student.id,
+        normalizedId,
+        storageKey,
+        localStorageValue,
+        parsedSelectedIds: selected,
+        remindersGenerated: [] // Will be populated later
+      });
+    }
   }
 
   // Procesar contemplaciones del catálogo
@@ -178,11 +211,12 @@ export function enforceForEvaluation(students: Student[]): EvaluationEnforcement
     }
 
     // Encontrar estudiantes que tienen esta contemplación seleccionada
-    const studentsWithThis = groupStudentsByContemplacion(
-      students,
-      selectedIdsByStudent,
-      contemplacion.id
-    );
+    // Use normalized IDs for matching
+    const studentsWithThis = students.filter(student => {
+      const normalizedId = normalizeStudentId(student.id);
+      const selected = selectedIdsByStudent.get(normalizedId) || [];
+      return selected.includes(contemplacion.id);
+    });
 
     if (studentsWithThis.length === 0) {
       continue;
@@ -203,9 +237,23 @@ export function enforceForEvaluation(students: Student[]): EvaluationEnforcement
         const reminder = EVALUATION_REMINDER_TEMPLATES[contemplacion.id] || materializacion.descripcion;
         
         for (const student of studentsWithThis) {
-          const existing = perStudentReminders.get(student.id) || [];
+          // CRITICAL: Use normalized ID as Map key for consistent lookup
+          const normalizedId = normalizeStudentId(student.id);
+          const existing = perStudentReminders.get(normalizedId) || [];
           if (!existing.includes(reminder)) {
-            perStudentReminders.set(student.id, [...existing, reminder]);
+            // CRITICAL: Clone array to avoid shared references between students
+            perStudentReminders.set(normalizedId, [...existing, reminder]);
+            
+            // DEV-ONLY: Diagnostic logging
+            if (DIAGNOSTIC_MODE) {
+              console.log('[ENFORCEMENT] Added reminder:', {
+                contemplacionId: contemplacion.id,
+                studentRawId: student.id,
+                normalizedId,
+                reminder,
+                totalRemindersForStudent: perStudentReminders.get(normalizedId)?.length || 0
+              });
+            }
           }
         }
       } else if (materializacion.tipo === 'regla_correccion') {
@@ -213,9 +261,22 @@ export function enforceForEvaluation(students: Student[]): EvaluationEnforcement
         if (contemplacion.id === 'contemplacion-9-22') {
           const reminder = EVALUATION_REMINDER_TEMPLATES['contemplacion-9-22'];
           for (const student of studentsWithThis) {
-            const existing = perStudentReminders.get(student.id) || [];
+            // CRITICAL: Use normalized ID as Map key for consistent lookup
+            const normalizedId = normalizeStudentId(student.id);
+            const existing = perStudentReminders.get(normalizedId) || [];
             if (!existing.includes(reminder)) {
-              perStudentReminders.set(student.id, [...existing, reminder]);
+              // CRITICAL: Clone array to avoid shared references
+              perStudentReminders.set(normalizedId, [...existing, reminder]);
+              
+              // DEV-ONLY: Diagnostic logging
+              if (DIAGNOSTIC_MODE) {
+                console.log('[ENFORCEMENT] Added correction rule reminder:', {
+                  contemplacionId: contemplacion.id,
+                  studentRawId: student.id,
+                  normalizedId,
+                  reminder
+                });
+              }
             }
           }
         }
@@ -225,7 +286,9 @@ export function enforceForEvaluation(students: Student[]): EvaluationEnforcement
 
   // Procesar contemplaciones custom
   for (const student of students) {
-    const customItems = customItemsByStudent.get(student.id) || [];
+    // CRITICAL: Use normalized ID for lookup
+    const normalizedId = normalizeStudentId(student.id);
+    const customItems = customItemsByStudent.get(normalizedId) || [];
     
     for (const customItem of customItems) {
       // La regla oculta se aplica exactamente como el docente la escribió
@@ -238,15 +301,36 @@ export function enforceForEvaluation(students: Student[]): EvaluationEnforcement
           ruleLower.includes('reminder') ||
           (!ruleLower.includes('diseño') && !ruleLower.includes('formato'))) {
         // Va a reminders del estudiante
-        const existing = perStudentReminders.get(student.id) || [];
+        // CRITICAL: Use normalized ID as Map key
+        const existing = perStudentReminders.get(normalizedId) || [];
         if (!existing.includes(customItem.rule)) {
-          perStudentReminders.set(student.id, [...existing, customItem.rule]);
+          // CRITICAL: Clone array to avoid shared references
+          perStudentReminders.set(normalizedId, [...existing, customItem.rule]);
+          
+          // DEV-ONLY: Diagnostic logging
+          if (DIAGNOSTIC_MODE) {
+            console.log('[ENFORCEMENT] Added custom reminder:', {
+              studentRawId: student.id,
+              normalizedId,
+              customTitle: customItem.title,
+              customRule: customItem.rule
+            });
+          }
         }
       } else {
         // Va a design rules
         versionDesignRules.add(customItem.rule);
       }
     }
+  }
+
+  // DIAGNOSTIC: Final summary
+  if (DIAGNOSTIC_MODE) {
+    console.log('[ENFORCEMENT_DIAG] end', {
+      mapKeys: Array.from(perStudentReminders.keys()),
+      mapEntriesCount: perStudentReminders.size,
+      entries: Object.fromEntries(perStudentReminders)
+    });
   }
 
   return {
@@ -392,7 +476,8 @@ export function enforceForLessonPlan(
 export function getStudentRemindersForEvaluation(studentId: string | number): string[] {
   const students: Student[] = [{ id: studentId, name: '' }]; // Name no necesario para reminders
   const output = enforceForEvaluation(students);
-  return output.perStudentReminders.get(studentId) || [];
+  const normalizedId = normalizeStudentId(studentId);
+  return output.perStudentReminders.get(normalizedId) || [];
 }
 
 /**

@@ -357,3 +357,4 @@ El problema se resolvió exitosamente eliminando la altura fija del logo (`h-[80
 
 
 
+

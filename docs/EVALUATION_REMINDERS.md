@@ -420,3 +420,4 @@ Actualmente, `enforcementOutput.versionDesignRules` se calcula pero **NO se usa*
 
 **Última actualización:** 2026-01-23
 
+

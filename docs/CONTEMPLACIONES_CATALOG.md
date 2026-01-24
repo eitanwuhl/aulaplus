@@ -473,3 +473,4 @@ Obtiene contemplaciones aplicables para un contexto específico:
 
 **Última actualización:** 2026-01-23
 
+

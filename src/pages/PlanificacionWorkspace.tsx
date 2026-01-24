@@ -13,7 +13,7 @@ import { EditorSesionNuevo } from '@/components/planificacion/EditorSesionNuevo'
 import { useCalendarioSesiones } from '@/hooks/useCalendarioSesiones';
 import { Planificacion, SesionClase, DistribucionModalidades, ConfiguracionHorario } from '@/types/planificacion';
 import { supabase } from '@/integrations/supabase/client';
-import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders } from '@/lib/planParser';
+import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupContext';
@@ -194,53 +194,17 @@ export default function PlanificacionWorkspace() {
       // This extracts sections (Inicio/Desarrollo/Cierre), removes resource blocks from narrative,
       // and normalizes resources into a clean array.
       const fallbackRecursos = normalizeArrayField(data?.recursos);
-      const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
       
-      // CONTEMPLACIONES: Inject deterministic reminders into Diferenciación/Adaptaciones
-      // Load students from group context and generate reminders
-      let sanitizedHtml: string;
-      try {
-        const grupoId = planificacion.grupo_id;
-        if (grupoId) {
-          const resolveResult = resolveMockGroup(grupoId, false);
-          const mockGroup = resolveResult.group;
-          
-          if (mockGroup && mockGroup.students && mockGroup.students.length > 0) {
-            // Map students to enforcement format
-            const students: EnforcementStudent[] = mockGroup.students.map(s => ({
-              id: s.id,
-              name: s.name
-            }));
-            
-            console.log('[generatePlanForSession] Resolved group for reminders:', {
-              grupoIdRaw: grupoId,
-              matchType: resolveResult.matchType,
-              resolvedGroupId: mockGroup.id,
-              resolvedGroupName: mockGroup.name,
-              studentsCount: students.length
-            });
-            
-            // Build with reminders
-            const fullPlanContent = data.plan_html; // Use full content for consignas detection
-            sanitizedHtml = buildPlanHtmlWithReminders(parsedPlan, students, fullPlanContent);
-          } else {
-            // No students found, build without reminders
-            console.log('[generatePlanForSession] No students found:', {
-              grupoIdRaw: grupoId,
-              matchType: resolveResult.matchType,
-              mockGroupFound: !!mockGroup
-            });
-            sanitizedHtml = buildPlanHtml(parsedPlan);
-          }
-        } else {
-          // No grupo_id, build without reminders
-          sanitizedHtml = buildPlanHtml(parsedPlan);
-        }
-      } catch (reminderError) {
-        // Fail gracefully: if reminder injection fails, use plan without reminders
-        console.warn('[generatePlanForSession] Failed to inject reminders:', reminderError);
-        sanitizedHtml = buildPlanHtml(parsedPlan);
-      }
+      // CONTEMPLACIONES: Use centralized helper to inject deterministic reminders in REPLACE mode
+      const sanitizedHtml = buildSanitizedLessonPlanHtml(
+        data.plan_html,
+        fallbackRecursos,
+        planificacion.grupo_id,
+        '[WORKSPACE-CONTEMPLACIONES]'
+      );
+      
+      // Parse again for resource extraction
+      const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
       
       // PHASE 4: Preserve existing manual resources when auto-generating
       // Auto-detected resources from new plan

@@ -8,6 +8,7 @@ import { COMPETENCIAS_LITERATURA } from '@/data/competenciasLiteratura';
 import { COMPETENCIAS_CIUDADANIA } from '@/data/competenciasCiudadania';
 import { mockStudents } from '@/data/mockData';
 import { enforceForEvaluation, type Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
+import { normalizeStudentId } from '@/lib/contemplaciones/utils';
 
 interface RubricItem {
   codigo: string;
@@ -19,6 +20,7 @@ interface RubricItem {
 }
 
 interface StudentAssignment {
+  id: string | number;  // CRITICAL: Student ID for reminder lookup
   nombre: string;
   justificacion: string;
 }
@@ -28,7 +30,8 @@ interface SimplifiedSmartRubricProps {
   criteriosLogro?: string[];
   version?: string;
   students?: any[];
-  assignedStudents?: string[];  // Student names assigned to this version (source of truth)
+  assignedStudents?: string[];  // Legacy: Student names (for backward compatibility)
+  assignedStudentIds?: (string | number)[];  // NEW: Student IDs assigned to this version (source of truth)
   duracionMinutos?: number;
 }
 
@@ -38,6 +41,7 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
   version = "1",
   students = [],
   assignedStudents = [],
+  assignedStudentIds = [],
   duracionMinutos = 90
 }) => {
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
@@ -116,7 +120,10 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
     };
   };
 
+  // Use shared normalizeStudentId from utils (imported above)
+
   // Normalize student name for comparison (handles accents, whitespace, casing)
+  // DEPRECATED: Only used for backward compatibility with legacy assignedStudents
   const normalizeStudentName = (name: string): string => {
     if (!name) return '';
     return name
@@ -128,9 +135,36 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
   };
 
   // ESTUDIANTES CONTEMPLADOS - Integrado en la rúbrica global
-  // Uses assignedStudents as source of truth when available
+  // Uses assignedStudentIds as source of truth (ID-based matching)
   const generateStudentAssignments = (): StudentAssignment[] => {
-    // If assignedStudents is provided, use it to filter students by name (with normalization)
+    // PRIORITY 1: Use assignedStudentIds if provided (ID-based, stable)
+    if (assignedStudentIds && assignedStudentIds.length > 0 && students && students.length > 0) {
+      // Build Set of normalized assigned student IDs
+      const assignedIdsSet = new Set(
+        assignedStudentIds.map(id => normalizeStudentId(id))
+      );
+      
+      // Filter students by ID membership
+      const filteredStudents = students.filter(student => {
+        const normalizedId = normalizeStudentId(student.id);
+        return assignedIdsSet.has(normalizedId);
+      });
+      
+      // If assignedStudentIds was provided but no matches found, return empty (don't fallback)
+      if (filteredStudents.length === 0) {
+        return []; // Empty list - assignedStudentIds exists but no matches found
+      }
+      
+      // Return matched students with IDs for reminder lookup
+      return filteredStudents.map(student => ({
+        id: student.id,  // CRITICAL: Include ID for reminder lookup
+        nombre: student.name || `Estudiante ${student.id}`,
+        justificacion: generateContextualJustification(student, evaluationContent)
+      }));
+    }
+
+    // PRIORITY 2: Legacy name-based matching (for backward compatibility)
+    // Only used if assignedStudentIds is not provided
     if (assignedStudents && assignedStudents.length > 0 && students && students.length > 0) {
       // Normalize assigned student names for comparison
       const assignedStudentNamesNormalized = new Set(
@@ -149,29 +183,28 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
         return []; // Empty list - assignedStudents exists but no matches found
       }
       
-      // Return matched students
+      // Return matched students with IDs for reminder lookup
       return filteredStudents.map(student => ({
+        id: student.id,  // CRITICAL: Include ID for reminder lookup
         nombre: student.name || `Estudiante ${student.id}`,
         justificacion: generateContextualJustification(student, evaluationContent)
       }));
     }
 
-    // Fallback: Only use legacy logic when assignedStudents is NOT provided (undefined/empty)
+    // PRIORITY 3: Fallback only when NO assigned data exists (truly no saved data)
+    // Gate this fallback so it never overrides real saved payload
     if (!students || students.length === 0) {
-      // Usar estudiantes mock si no se proporcionan
+      // Only use mock students if there's truly no data
       const selectedStudents = mockStudents.slice(0, Math.min(4, mockStudents.length));
       return selectedStudents.map(student => ({
+        id: student.id,  // CRITICAL: Include ID for reminder lookup
         nombre: student.name,
         justificacion: generateContextualJustification(student, evaluationContent)
       }));
     }
 
-    // Distribución equilibrada evitando repeticiones (fallback only when assignedStudents not provided)
-    const selectedStudents = students.slice(0, Math.min(4, students.length));
-    return selectedStudents.map(student => ({
-      nombre: student.name || `Estudiante ${student.id}`,
-      justificacion: generateContextualJustification(student, evaluationContent)
-    }));
+    // If students exist but no assigned data, return empty (don't show random students)
+    return [];
   };
 
   // JUSTIFICACIONES CONTEXTUALES: Perfil del estudiante + concordancia con ESTA evaluación
@@ -219,22 +252,49 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
   const studentAssignments = generateStudentAssignments();
 
   // Obtener recordatorios determinísticos usando el motor de enforcement
+  // CRITICAL: Use same ID normalization everywhere for consistent lookup
   const perStudentReminders = useMemo(() => {
+    // DIAGNOSTIC MODE (NOT gated by import.meta.env.DEV)
+    const DIAGNOSTIC_MODE = (window as any).__CONTEMPLACIONES_DEBUG__ === true;
+    
+    if (DIAGNOSTIC_MODE) {
+      console.log('[RUBRIC_DIAG] inputs', {
+        students: students?.map(s => ({ id: s.id, name: s.name })),
+        assignedStudentIds,
+        assignedStudents
+      });
+    }
+    
+    // Filter students to only those assigned (if assignedStudentIds provided)
+    let studentsToProcess = students || [];
+    
+    if (assignedStudentIds && assignedStudentIds.length > 0) {
+      const assignedIdsSet = new Set(
+        assignedStudentIds.map(id => normalizeStudentId(id))
+      );
+      studentsToProcess = studentsToProcess.filter(s => 
+        assignedIdsSet.has(normalizeStudentId(s.id))
+      );
+    }
+
     // Convertir estudiantes al formato esperado por el enforcement engine
-    const enforcementStudents: EnforcementStudent[] = (students || []).map(s => ({
+    const enforcementStudents: EnforcementStudent[] = studentsToProcess.map(s => ({
       id: s.id,
       name: s.name || `Estudiante ${s.id}`
     }));
 
     // Si no hay estudiantes, retornar Map vacío
     if (enforcementStudents.length === 0) {
-      return new Map<string | number, string[]>();
+      return new Map<string, string[]>();
     }
 
     // Obtener recordatorios usando el motor de enforcement
+    // The enforcement engine now returns Map<string, string[]> with normalized keys
     const enforcementOutput = enforceForEvaluation(enforcementStudents);
+    
+    // The Map already has normalized keys, return as-is
     return enforcementOutput.perStudentReminders;
-  }, [students]);
+  }, [students, assignedStudentIds]);
 
   const toggleExpanded = (codigo: string) => {
     setExpandedItems(prev => ({
@@ -322,25 +382,38 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {studentAssignments.length === 0 && assignedStudents && assignedStudents.length > 0 ? (
+            {studentAssignments.length === 0 && (assignedStudentIds?.length > 0 || assignedStudents?.length > 0) ? (
               <div className="p-4 border border-amber-200 bg-amber-50/50 rounded-lg text-center">
                 <p className="text-sm text-amber-800">
-                  No se encontraron estudiantes que coincidan con los nombres asignados a esta versión.
+                  No se encontraron estudiantes que coincidan con los asignados a esta versión.
                 </p>
                 <p className="text-xs text-amber-700 mt-2">
-                  Verifica que los nombres en el grupo coincidan con los estudiantes asignados.
+                  Verifica que los estudiantes del grupo coincidan con los asignados.
                 </p>
               </div>
             ) : (
               studentAssignments.map((assignment, index) => {
-                // Encontrar el estudiante para obtener su ID y recordatorios
-                const student = students?.find(s => {
-                  const studentName = s.name || `Estudiante ${s.id}`;
-                  return normalizeStudentName(studentName) === normalizeStudentName(assignment.nombre);
-                });
+                // CRITICAL: Use assignment.id directly for reminder lookup (no search needed)
+                // The assignment already has the correct student ID from generateStudentAssignments
+                const normalizedId = normalizeStudentId(assignment.id);
+                
+                // DIAGNOSTIC MODE (NOT gated by import.meta.env.DEV)
+                const DIAGNOSTIC_MODE = (window as any).__CONTEMPLACIONES_DEBUG__ === true;
 
                 // Obtener recordatorios para este estudiante
-                const reminders = student ? (perStudentReminders.get(student.id) || []) : [];
+                // CRITICAL: Use normalized ID for lookup (same normalization as Map keys)
+                const reminders = perStudentReminders.get(normalizedId) || [];
+                const hasKey = perStudentReminders.has(normalizedId);
+                
+                if (DIAGNOSTIC_MODE) {
+                  console.log('[RUBRIC_DIAG] card', {
+                    assignmentName: assignment.nombre,
+                    assignmentId: assignment.id,
+                    normalizedId,
+                    hasKey,
+                    reminders
+                  });
+                }
 
                 return (
                   <div key={index} className="p-4 border border-border rounded-lg">

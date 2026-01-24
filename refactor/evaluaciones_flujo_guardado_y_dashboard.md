@@ -556,3 +556,4 @@ pendientes = catálogo.filter(comp => !usadas.has(comp.id))
 
 
 
+

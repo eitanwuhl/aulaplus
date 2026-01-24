@@ -6,6 +6,7 @@
  */
 
 import { enforceForLessonPlan, type Student } from './contemplaciones/enforcement';
+import { resolveMockGroup } from '@/utils/resolveMockGroup';
 
 export interface ParsedPlan {
   inicio: string;       // Clean HTML/markdown for Start section (no resources)
@@ -642,6 +643,83 @@ export function buildPlanHtmlWithReminders(
   } else {
     // No reminders: keep original parsed diferenciacion (backward compatible)
     return buildPlanHtml(parsed);
+  }
+}
+
+/**
+ * Centralized helper to build sanitized lesson plan HTML with deterministic reminders.
+ * This function encapsulates the complete post-processing pipeline:
+ * 1. Parse raw AI-generated HTML
+ * 2. Resolve group and load students
+ * 3. Inject deterministic reminders in REPLACE mode when available
+ * 4. Return sanitized HTML
+ * 
+ * Use this for BOTH initial generation AND regeneration flows to ensure consistency.
+ * 
+ * @param rawPlanHtml - Raw HTML from AI edge function
+ * @param fallbackRecursos - Optional resources array from AI response
+ * @param grupoId - Group ID to load students from (for reminder injection)
+ * @param logTag - Tag for diagnostic logs (e.g., '[INITIAL-GEN]', '[REGENERATE]')
+ * @returns Sanitized HTML with reminders injected (or without if no students/contemplaciones)
+ */
+export function buildSanitizedLessonPlanHtml(
+  rawPlanHtml: string,
+  fallbackRecursos?: string[],
+  grupoId?: string,
+  logTag: string = '[PLAN-BUILD]'
+): string {
+  // STEP 1: Parse raw HTML
+  const parsedPlan = parsePlan(rawPlanHtml, fallbackRecursos);
+  
+  // STEP 2: Attempt to load students for reminder injection
+  if (!grupoId) {
+    console.log(`${logTag} No grupoId provided, building plan without reminders`);
+    return buildPlanHtml(parsedPlan);
+  }
+  
+  const resolveResult = resolveMockGroup(grupoId, false);
+  const mockGroup = resolveResult.group;
+  
+  if (!mockGroup || !mockGroup.students || mockGroup.students.length === 0) {
+    console.log(`${logTag} No students found for grupoId=${grupoId}, building plan without reminders`, {
+      matchType: resolveResult.matchType,
+      searchedValue: resolveResult.searchedValue
+    });
+    return buildPlanHtml(parsedPlan);
+  }
+  
+  // STEP 3: Map students to enforcement format
+  const students: Student[] = mockGroup.students.map(s => ({
+    id: s.id,
+    name: s.name
+  }));
+  
+  // STEP 4: Generate enforcement and build HTML with reminders in REPLACE mode
+  const enforcement = enforceForLessonPlan(students, rawPlanHtml);
+  const hasReminders = enforcement.diferenciacionBlock.length > 0;
+  
+  // Diagnostic logging
+  console.log(`${logTag} Building plan with reminders:`, {
+    grupoIdRaw: grupoId,
+    matchType: resolveResult.matchType,
+    resolvedGroupId: mockGroup.id,
+    studentsCount: students.length,
+    enforcementBlockLength: enforcement.diferenciacionBlock.length,
+    replaceModeUsed: hasReminders
+  });
+  
+  // STEP 5: Build final HTML
+  if (hasReminders) {
+    const remindersHtml = '<ul>\n' + 
+      enforcement.diferenciacionBlock.map(line => `  <li>${line}</li>`).join('\n') + 
+      '\n</ul>';
+    
+    // REPLACE mode: ignore parsed.diferenciacion entirely
+    return buildPlanHtml(parsedPlan, remindersHtml, { replaceDiferenciacion: true });
+  } else {
+    // No reminders generated: keep original diferenciacion (backward compatible)
+    console.log(`${logTag} No reminders generated (no contemplaciones selected?), keeping AI diferenciacion`);
+    return buildPlanHtml(parsedPlan);
   }
 }
 
