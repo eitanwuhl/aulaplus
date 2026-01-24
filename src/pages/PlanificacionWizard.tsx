@@ -16,7 +16,7 @@ import {
 } from '@/lib/competencyExtractor';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext } from '@/utils/groupContext';
-import { parsePlan, buildPlanHtmlWithReminders } from '@/lib/planParser';
+import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders } from '@/lib/planParser';
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
@@ -467,23 +467,21 @@ const generarPlanesAutomaticamente = async (
             const fallbackRecursos = normalizeArrayField(data.recursos);
             const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
             
-            // Helper: Normalize grupoId for consistent matching
-            const normalizeGrupoId = (id: any) => String(id ?? '').trim();
+            // Helper: Normalize grupoId for consistent matching (same as groupContext.ts)
+            const norm = (v: any) => String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
             
             // Load students for reminder injection
             if (grupoId) {
-              const normalizedGrupoId = normalizeGrupoId(grupoId);
-              const mockGroup = mockGroups.find(g => normalizeGrupoId(g.id) === normalizedGrupoId);
+              const normalizedGrupoId = norm(grupoId);
+              const mockGroup = mockGroups.find(g => norm(g.id) === normalizedGrupoId);
               
-              if (DIAG) {
-                console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Student loading:`, {
-                  grupoId,
-                  normalizedGrupoId,
-                  mockGroupFound: !!mockGroup,
-                  studentsCount: mockGroup?.students?.length || 0,
-                  first3Students: mockGroup?.students?.slice(0, 3).map(s => ({ id: s.id, name: s.name })) || []
-                });
-              }
+              console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Student loading:`, {
+                grupoIdRaw: grupoId,
+                grupoIdNormalized: normalizedGrupoId,
+                mockGroupFound: !!mockGroup,
+                studentsCount: mockGroup?.students?.length || 0,
+                first3Students: mockGroup?.students?.slice(0, 3).map(s => ({ id: s.id, name: s.name })) || []
+              });
               
               if (mockGroup && mockGroup.students && mockGroup.students.length > 0) {
                 // Map students to enforcement format
@@ -495,13 +493,12 @@ const generarPlanesAutomaticamente = async (
                 // Build with reminders
                 const enforcementResult = enforceForLessonPlan(students, data.plan_html);
                 
-                if (DIAG) {
-                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Enforcement output:`, {
-                    diferenciacionBlockLength: enforcementResult.diferenciacionBlock.length,
-                    diferenciacionBlockPreview: enforcementResult.diferenciacionBlock.slice(0, 2)
-                  });
-                }
+                console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Enforcement output:`, {
+                  diferenciacionBlockLength: enforcementResult.diferenciacionBlock.length,
+                  diferenciacionBlockPreview: enforcementResult.diferenciacionBlock.slice(0, 2)
+                });
                 
+                // IMPORTANT: Use buildPlanHtmlWithReminders to inject reminders
                 finalHtml = buildPlanHtmlWithReminders(parsedPlan, students, data.plan_html);
                 
                 if (DIAG) {
@@ -514,29 +511,29 @@ const generarPlanesAutomaticamente = async (
                   });
                 }
               } else {
-                // No students found - log available mockGroups for debugging
-                finalHtml = data.plan_html;
-                if (DIAG) {
-                  const availableGroupIds = mockGroups.slice(0, 10).map(g => g.id);
-                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No students found`, {
-                    searchedGrupoId: normalizedGrupoId,
-                    mockGroupFound: !!mockGroup,
-                    availableMockGroupIds: availableGroupIds,
-                    totalMockGroups: mockGroups.length
-                  });
-                }
+                // No students found - use buildPlanHtml without reminders
+                finalHtml = buildPlanHtml(parsedPlan);
+                
+                const availableGroupIds = mockGroups.slice(0, 10).map(g => g.id);
+                console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No students found`, {
+                  grupoIdRaw: grupoId,
+                  grupoIdNormalized: normalizedGrupoId,
+                  mockGroupFound: !!mockGroup,
+                  availableMockGroupIds: availableGroupIds,
+                  totalMockGroups: mockGroups.length
+                });
               }
             } else {
-              // No grupoId
-              finalHtml = data.plan_html;
-              if (DIAG) {
-                console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No grupoId provided`);
-              }
+              // No grupoId - use buildPlanHtml without reminders
+              finalHtml = buildPlanHtml(parsedPlan);
+              console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No grupoId provided`);
             }
           } catch (reminderError) {
-            // Fail gracefully: if reminder injection fails, use original HTML
+            // Fail gracefully: if reminder injection fails, use buildPlanHtml without reminders
             console.warn(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: Failed to inject reminders:`, reminderError);
-            finalHtml = data.plan_html;
+            const fallbackRecursos = normalizeArrayField(data.recursos);
+            const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
+            finalHtml = buildPlanHtml(parsedPlan);
           }
 
           // Actualizar la sesión con el plan generado

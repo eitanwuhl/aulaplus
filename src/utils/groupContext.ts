@@ -178,7 +178,15 @@ export async function loadGroupContext(grupoId: string | undefined): Promise<Gro
     // ========================================================================
     // 2. Fallback to mockGroups for student data
     // ========================================================================
-    const mockGroup = mockGroups.find(g => g.id === grupoId);
+    // Normalize function for consistent grupoId matching
+    const norm = (v: any) => String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+    
+    console.log('[loadGroupContext] grupoId raw=', grupoId, 'normalized=', norm(grupoId));
+    console.log('[loadGroupContext] mockGroups ids (first 20)=', mockGroups.slice(0, 20).map(g => g.id));
+    
+    const mockGroup = mockGroups.find(g => norm(g.id) === norm(grupoId));
+    
+    console.log('[loadGroupContext] mockGroup found?', !!mockGroup, 'studentsCount=', mockGroup?.students?.length ?? 0);
     
     if (!mockGroup || !mockGroup.students || mockGroup.students.length === 0) {
       console.log('[loadGroupContext] No mock group found or no students, returning teacher_sugerencias only');
@@ -267,6 +275,7 @@ export async function getGrupoIdFromPlanificacion(planificacionId: string | unde
     return undefined;
   }
 }
+
 
 
 
