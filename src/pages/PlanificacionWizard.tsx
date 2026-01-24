@@ -16,6 +16,9 @@ import {
 } from '@/lib/competencyExtractor';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext } from '@/utils/groupContext';
+import { parsePlan, buildPlanHtmlWithReminders } from '@/lib/planParser';
+import { mockGroups } from '@/data/mockData';
+import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 
 // PHASE 1: Helper para expandir unidades según clases_estimadas (reutilizable)
 function expandUnitsToSessionPlan(
@@ -454,6 +457,67 @@ const generarPlanesAutomaticamente = async (
             throw new Error(`Respuesta inválida para sesión ${sesion.orden}`);
           }
 
+          // CONTEMPLACIONES: Parse and inject deterministic reminders into Diferenciación/Adaptaciones
+          const DIAG = (window as any).__CONTEMPLACIONES_DEBUG__ === true;
+          let finalHtml: string;
+          
+          try {
+            // Parse AI-generated HTML
+            const fallbackRecursos = normalizeArrayField(data.recursos);
+            const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
+            
+            // Load students for reminder injection
+            if (grupoId) {
+              const mockGroup = mockGroups.find(g => g.id === grupoId);
+              
+              if (mockGroup && mockGroup.students && mockGroup.students.length > 0) {
+                // Map students to enforcement format
+                const students: EnforcementStudent[] = mockGroup.students.map(s => ({
+                  id: s.id,
+                  name: s.name
+                }));
+                
+                if (DIAG) {
+                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}:`, {
+                    grupoId,
+                    studentsCount: students.length,
+                    firstFiveStudents: students.slice(0, 5).map(s => ({ id: s.id, name: s.name })),
+                    hasParsedDiferenciacion: !!parsedPlan.diferenciacion
+                  });
+                }
+                
+                // Build with reminders
+                finalHtml = buildPlanHtmlWithReminders(parsedPlan, students, data.plan_html);
+                
+                if (DIAG) {
+                  // Check if any student name appears in the final HTML (marker for successful injection)
+                  const hasInjectedNames = students.some(s => finalHtml.includes(s.name));
+                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden} - Injection result:`, {
+                    hasInjectedNames,
+                    finalHtmlLength: finalHtml.length,
+                    containsDiferenciacionHeader: finalHtml.includes('Diferenciación/Adaptaciones')
+                  });
+                }
+              } else {
+                // No students found
+                finalHtml = data.plan_html;
+                if (DIAG) {
+                  console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No students found for grupoId=${grupoId}`);
+                }
+              }
+            } else {
+              // No grupoId
+              finalHtml = data.plan_html;
+              if (DIAG) {
+                console.log(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: No grupoId provided`);
+              }
+            }
+          } catch (reminderError) {
+            // Fail gracefully: if reminder injection fails, use original HTML
+            console.warn(`[WIZARD-CONTEMPLACIONES] Sesión ${sesion.orden}: Failed to inject reminders:`, reminderError);
+            finalHtml = data.plan_html;
+          }
+
           // Actualizar la sesión con el plan generado
           console.log(`Guardando para sesión ${sesion.orden}:`, {
             contenido: contenidosSesion[0]?.substring(0, 40),
@@ -463,7 +527,7 @@ const generarPlanesAutomaticamente = async (
           
           // Build update payload
           const updatePayload: any = {
-            plan_desarrollo: { html_completo: data.plan_html },
+            plan_desarrollo: { html_completo: finalHtml },
             argumento_competencias: data.argumento_competencias,
             recursos: normalizeArrayField(data.recursos),
             contenidos_anep: normalizeArrayField(contenidosSesion), // PHASE 1: Contenido de unidad asignada
