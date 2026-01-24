@@ -5,6 +5,8 @@
  * @module planParser
  */
 
+import { enforceForLessonPlan, type Student } from './contemplaciones/enforcement';
+
 export interface ParsedPlan {
   inicio: string;       // Clean HTML/markdown for Start section (no resources)
   desarrollo: string;   // Clean HTML/markdown for Development section (no resources)
@@ -178,8 +180,11 @@ export function parsePlan(input: string, fallbackResources?: string[]): ParsedPl
 /**
  * Serializes a parsed plan back into normalized HTML with clean headings.
  * Ensures resources remain separated and only class narrative is present.
+ * 
+ * @param parsed - Parsed plan with sections
+ * @param additionalDiferenciacion - Optional additional diferenciacion content to append (e.g., from contemplaciones)
  */
-export function buildPlanHtml(parsed: ParsedPlan): string {
+export function buildPlanHtml(parsed: ParsedPlan, additionalDiferenciacion?: string): string {
   const sections: Array<{ label: string; key: 'inicio' | 'desarrollo' | 'cierre' }> = [
     { label: 'Inicio', key: 'inicio' },
     { label: 'Desarrollo', key: 'desarrollo' },
@@ -203,11 +208,22 @@ export function buildPlanHtml(parsed: ParsedPlan): string {
     lines.push(content);
   });
 
-  const diferenciacion = (parsed.diferenciacion || '').trim();
-  if (diferenciacion) {
+  // Merge diferenciacion from parser with additional content
+  let diferenciacionContent = (parsed.diferenciacion || '').trim();
+  const additionalContent = (additionalDiferenciacion || '').trim();
+  
+  if (diferenciacionContent && additionalContent) {
+    // Both exist: append additional with separator
+    diferenciacionContent = `${diferenciacionContent}\n\n${additionalContent}`;
+  } else if (additionalContent) {
+    // Only additional exists
+    diferenciacionContent = additionalContent;
+  }
+  
+  if (diferenciacionContent) {
     hasContent = true;
     lines.push('<h2><strong>Diferenciaci├│n/Adaptaciones</strong></h2>');
-    lines.push(diferenciacion);
+    lines.push(diferenciacionContent);
   }
 
   lines.push('</section>');
@@ -572,5 +588,33 @@ function cleanHtml(html: string): string {
     .replace(/\n{3,}/g, '\n\n') // Remove excessive line breaks
     .replace(/\s{2,}/g, ' ') // Normalize spaces within lines
     .trim();
+}
+
+/**
+ * Builds plan HTML with deterministic contemplaciones reminders injected into Diferenciación/Adaptaciones
+ * 
+ * @param parsed - Parsed plan with sections
+ * @param students - List of students with IDs and names (for contemplaciones lookup)
+ * @param lessonContent - Optional lesson content for detecting written instructions
+ * @returns HTML string with reminders injected
+ */
+export function buildPlanHtmlWithReminders(
+  parsed: ParsedPlan,
+  students: Student[],
+  lessonContent?: string
+): string {
+  // Generate deterministic reminders from contemplaciones
+  const enforcement = enforceForLessonPlan(students, lessonContent);
+  
+  // Convert reminder lines to HTML list
+  let remindersHtml = '';
+  if (enforcement.diferenciacionBlock.length > 0) {
+    remindersHtml = '<ul>\n' + 
+      enforcement.diferenciacionBlock.map(line => `  <li>${line}</li>`).join('\n') + 
+      '\n</ul>';
+  }
+  
+  // Build plan with injected reminders
+  return buildPlanHtml(parsed, remindersHtml);
 }
 
