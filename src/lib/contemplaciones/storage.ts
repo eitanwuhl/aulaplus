@@ -29,6 +29,17 @@ export interface CustomContemplacion {
 }
 
 /**
+ * Metadata for seeding tracking (versioning and user-modification detection)
+ */
+export interface SeedingMetadata {
+  version: number; // Defaults version used for seeding
+  source: 'defaults' | 'legacy'; // Source of the seeded data
+  seededAt: string; // ISO timestamp of seeding
+  selectionHash: string; // Deterministic hash of sorted selected IDs
+  selectionCount: number; // Number of selected items (quick check)
+}
+
+/**
  * Obtener la key de localStorage para selecciones de contemplaciones
  */
 function getSelectedKey(studentId: string | number, category: ContemplacionCategoryStorage): string {
@@ -350,6 +361,139 @@ export function getAllSelected(
     catalogIds,
     customItems
   };
+}
+
+/**
+ * Seeding Metadata Functions
+ * 
+ * These functions handle metadata tracking for seeding operations,
+ * enabling version control and user-modification detection.
+ */
+
+/**
+ * Get the localStorage key for seeding metadata
+ */
+function getSeedMetaKey(studentId: string | number, category: ContemplacionCategoryStorage): string {
+  if (category === 'clase') {
+    return `contemplaciones_seed_meta_clase_${studentId}`;
+  }
+  return `contemplaciones_seed_meta_evaluaciones_${studentId}`;
+}
+
+/**
+ * Compute a deterministic hash of selected IDs
+ * 
+ * @param selectedIds - Array of selected contemplacion IDs
+ * @returns Hash string (simple but deterministic)
+ */
+export function computeSelectionHash(selectedIds: string[]): string {
+  // Sort for determinism, then join with separator
+  const sorted = [...selectedIds].sort();
+  const combined = sorted.join('|');
+  
+  // Simple hash (good enough for change detection)
+  let hash = 0;
+  for (let i = 0; i < combined.length; i++) {
+    const char = combined.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  
+  return hash.toString(36); // Base36 for shorter string
+}
+
+/**
+ * Read seeding metadata for a student + category
+ * 
+ * @param studentId - Student ID
+ * @param category - Category (clase | evaluaciones)
+ * @returns SeedingMetadata object, or null if not found
+ */
+export function readSeedMeta(
+  studentId: string | number,
+  category: ContemplacionCategoryStorage
+): SeedingMetadata | null {
+  try {
+    const key = getSeedMetaKey(studentId, category);
+    const stored = localStorage.getItem(key);
+    if (!stored) return null;
+    
+    const parsed = JSON.parse(stored) as SeedingMetadata;
+    
+    // Validate structure
+    if (
+      typeof parsed.version === 'number' &&
+      (parsed.source === 'defaults' || parsed.source === 'legacy') &&
+      typeof parsed.seededAt === 'string' &&
+      typeof parsed.selectionHash === 'string' &&
+      typeof parsed.selectionCount === 'number'
+    ) {
+      return parsed;
+    }
+    
+    return null;
+  } catch (error) {
+    console.warn(`[SEED-META] Error reading metadata for student ${studentId} (${category}):`, error);
+    return null;
+  }
+}
+
+/**
+ * Write seeding metadata for a student + category
+ * 
+ * @param studentId - Student ID
+ * @param category - Category (clase | evaluaciones)
+ * @param metadata - Metadata object to write
+ */
+export function writeSeedMeta(
+  studentId: string | number,
+  category: ContemplacionCategoryStorage,
+  metadata: SeedingMetadata
+): void {
+  try {
+    const key = getSeedMetaKey(studentId, category);
+    localStorage.setItem(key, JSON.stringify(metadata));
+  } catch (error) {
+    console.error(`[SEED-META] Error writing metadata for student ${studentId} (${category}):`, error);
+  }
+}
+
+/**
+ * Delete seeding metadata for a student + category
+ * 
+ * @param studentId - Student ID
+ * @param category - Category (clase | evaluaciones)
+ */
+export function deleteSeedMeta(
+  studentId: string | number,
+  category: ContemplacionCategoryStorage
+): void {
+  try {
+    const key = getSeedMetaKey(studentId, category);
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.error(`[SEED-META] Error deleting metadata for student ${studentId} (${category}):`, error);
+  }
+}
+
+/**
+ * Check if current selection matches the seeded hash (i.e., user has NOT modified)
+ * 
+ * @param studentId - Student ID
+ * @param category - Category (clase | evaluaciones)
+ * @returns true if selection has NOT been modified since last seed
+ */
+export function selectionMatchesSeed(
+  studentId: string | number,
+  category: ContemplacionCategoryStorage
+): boolean {
+  const meta = readSeedMeta(studentId, category);
+  if (!meta) return false;
+  
+  const currentSelection = readSelected(studentId, category);
+  const currentHash = computeSelectionHash(currentSelection);
+  
+  return currentHash === meta.selectionHash && currentSelection.length === meta.selectionCount;
 }
 
 
