@@ -20,7 +20,7 @@ export interface EvaluacionCualitativa {
 }
 
 export interface InformeTecnico {
-  sintesis: string;
+  sintesis: string | { title: string; bullets: string[] }[];  // New: support accordion cards OR legacy string
   estiloAprendizaje: string;
   objetivosPriorizados: string[];
   modalidadCursado: string;
@@ -137,13 +137,43 @@ export const mockStudents: Student[] = [
       },
     ],
     informeTecnico: {
-      sintesis: "Estudiante con perfil visual-kinestésico que requiere apoyos específicos para el manejo de la ansiedad evaluativa.",
+      sintesis: [
+        {
+          title: "Potencial Intelectual",
+          bullets: ["Posee un potencial intelectual mayor al que está manifestando, debido a diversos factores que inciden en su rendimiento."]
+        },
+        {
+          title: "Rendimiento Cognitivo",
+          bullets: [
+            "Su performance es comparativamente superior en la inteligencia no verbal respecto a la verbal.",
+            "Logra mayores niveles de conceptualización, deducción y abstracción con estímulos no verbales (apoyo icónico o material manipulativo)."
+          ]
+        },
+        {
+          title: "Polo Comprensivo",
+          bullets: ["Requiere la explicitación de las consignas en forma simplificada, tanto si se brindan de forma oral como escrita."]
+        },
+        {
+          title: "Lenguaje Escrito",
+          bullets: [
+            "Se observan características congruentes con una dificultad específica en lectoescritura.",
+            "Necesidad de evaluar el abordaje frente al conflicto cognitivo, las estrategias que aplica y su grado de inseguridad frente al estudio/tareas escritas, para determinar si se trata de una alteración a nivel global del lenguaje."
+          ]
+        },
+        {
+          title: "Área Lógico-Matemática",
+          bullets: [
+            "Se observan dificultades asociadas al sentido de las operaciones.",
+            "Dificultad en la resolución correcta de situaciones problemáticas por falta de flexibilidad en la aplicación de estrategias."
+          ]
+        }
+      ],
       estiloAprendizaje: "Visual-Kinestésico: procesa mejor la información a través de imágenes, esquemas y actividades prácticas.",
       objetivosPriorizados: ["Reducir ansiedad evaluativa", "Fortalecer comprensión lectora", "Desarrollar autonomía"],
       modalidadCursado: "Común con apoyos específicos",
-      ajustesProgramaticos: [
-        { materia: "Todas", ajustes: ["Tiempo adicional", "Apoyos visuales", "Segmentación de consignas"] }
-      ]
+      ajustesProgramaticos: [],
+      requiereAdecuacionAcceso: true,
+      requiereAdecuacionContenido: false
     }
   },
   {
@@ -187,13 +217,69 @@ export const mockStudents: Student[] = [
       },
     ],
     informeTecnico: {
-      sintesis: "Estudiante con fortalezas en procesamiento auditivo que destaca en instancias de intercambio oral.",
+      sintesis: [
+        {
+          title: "Disposición y Adaptación al Trabajo",
+          bullets: [
+            "Logra ajustarse al encuadre de trabajo.",
+            "Se muestra disponible y colaborador."
+          ]
+        },
+        {
+          title: "Potencial Intelectual",
+          bullets: [
+            "Posee un potencial intelectual habilitador que le confiere excelentes posibilidades para enfrentarse a los diferentes desafíos cognitivos.",
+            "No obstante, su potencial intelectual dista de su rendimiento real."
+          ]
+        },
+        {
+          title: "Recursos Cognitivos (Fortalezas)",
+          bullets: ["Cuenta con muy buenos recursos para el razonamiento y la abstracción, tanto verbal como no verbal, de la información."]
+        },
+        {
+          title: "Debilidades del Perfil Cognitivo y su Evidencia Académica",
+          bullets: [
+            "Los aspectos de la memoria de trabajo y la velocidad de procesamiento se constituyen en debilidades de su perfil.",
+            "Estas debilidades se evidencian específicamente en su rendimiento académico, evaluado a través de las áreas instrumentales."
+          ]
+        },
+        {
+          title: "Estilo de Aprendizaje y Adaptación a Novedades",
+          bullets: [
+            "Presenta un estilo de aprendizaje estructurado, algo rígido.",
+            "Enfrentarse a tareas novedosas y llevarlas a cabo le insume un marcado tiempo de adaptación."
+          ]
+        },
+        {
+          title: "Manejo del Conflicto Cognitivo y Habilidades Pragmáticas",
+          bullets: [
+            "Las debilidades a nivel de la pragmática del lenguaje, sumadas a su estilo de aprendizaje, generan un modo de enfrentar el conflicto cognitivo en el que puede perder eficacia.",
+            "Manifiesta dificultad para pedir ayuda a un adulto o a un par."
+          ]
+        },
+        {
+          title: "Diagnóstico y Congruencia del Perfil",
+          bullets: ["De acuerdo con sus antecedentes y los resultados obtenidos, se desprende un perfil congruente con un Síndrome Disejecutivo."]
+        },
+        {
+          title: "Definición y Alcance del Síndrome Disejecutivo",
+          bullets: [
+            "Implica una alteración en las funciones ejecutivas, las cuales abarcan:",
+            "Procesos cognitivos: planificación, programación, autorregulación, autocontrol y uso de la retroalimentación.",
+            "Procesos emocionales: vinculados a la motivación y a la regulación de sus conductas en función de ésta y de sus emociones."
+          ]
+        },
+        {
+          title: "Impacto Específico en la Escritura",
+          bullets: ["Esta alteración ha afectado, entre otros procesos, la correcta automatización de la praxia de la escritura, comprometiendo la legibilidad de la misma."]
+        }
+      ],
       estiloAprendizaje: "Auditivo-Lector/escritor: aprende mejor a través de explicaciones verbales y refuerza con material escrito.",
       objetivosPriorizados: ["Fortalecer escritura estructurada", "Desarrollar síntesis escrita", "Mantener fortalezas orales"],
       modalidadCursado: "Común con privilegio de instancias orales",
-      ajustesProgramaticos: [
-        { materia: "Todas", ajustes: ["Explicaciones orales previas", "Evaluaciones orales complementarias", "Esquemas de apoyo para escritura"] }
-      ]
+      ajustesProgramaticos: [],
+      requiereAdecuacionAcceso: true,
+      requiereAdecuacionContenido: false
     }
   },
   {
@@ -237,13 +323,56 @@ export const mockStudents: Student[] = [
       },
     ],
     informeTecnico: {
-      sintesis: "Estudiante con excelente capacidad de organización y síntesis que responde muy bien a estructuras visuales.",
+      sintesis: [
+        {
+          title: "Potencial",
+          bullets: ["Posee un potencial intelectual habilitador con muy buenas posibilidades para desafíos cognitivos, pero no está logrando utilizarlo plenamente debido a factores cognitivos y extracognitivos."]
+        },
+        {
+          title: "Perfil Cognitivo",
+          bullets: [
+            "Rendimiento Homogéneo: Perfil equilibrado en razonamiento verbal, no verbal, memoria operativa y velocidad de procesamiento (no se destacan puntos fuertes ni débiles en su propio perfil).",
+            "Mayor Beneficio: Despliega su potencial de forma eficaz al apoyarse en el procesamiento no verbal acompañado de lo icónico."
+          ]
+        },
+        {
+          title: "Lenguaje Escrito (Dislexia)",
+          bullets: [
+            "Rendimiento descendido en lectura y escritura.",
+            "Afectación en ambas rutas de acceso al léxico (fonológica y léxica).",
+            "Tipología de errores específica y congruente con Dislexia",
+            "Obstáculos comprensivos: escasa eficiencia en técnicas de estudio y necesidad de regular la información con un otro al leer textos complejos."
+          ]
+        },
+        {
+          title: "Área Lógico-Matemática",
+          bullets: [
+            "Mayor debilidad en automatizaciones y cálculo.",
+            "Dificultad para seleccionar, ordenar y organizar la información necesaria para resolver situaciones problemáticas.",
+            "Estas debilidades se consideran secundarias a características de su perfil cognitivo."
+          ]
+        },
+        {
+          title: "Factores Emocionales y Metacognitivos",
+          bullets: [
+            "Impacto Emocional: La predisposición al fracaso y la percepción de competencias asociadas al \"no poder\" en el área matemática interfieren significativamente, condicionando su motivación y persistencia.",
+            "Intervención Necesaria: Es fundamental intervenir tanto sobre los procesos instrumentales comprometidos como sobre los aspectos emocionales y actitudinales asociados, promoviendo experiencias de éxito para favorecer la confianza en sus capacidades."
+          ]
+        },
+        {
+          title: "Conclusión General",
+          bullets: [
+            "Recursos Suficientes: Cuenta con recursos cognitivos para afrontar adecuadamente la escolaridad secundaria.",
+            "Requerimientos: Las dificultades específicas (lectura, escritura, automatización matemática) sumadas a las variables de orden emocional y metacognitivo, exigen un acompañamiento sistemático y adecuaciones pedagógicas para que pueda desplegar su potencial de manera efectiva."
+          ]
+        }
+      ],
       estiloAprendizaje: "Visual-Lector/escritor: procesa eficientemente información presentada de manera visual y estructurada.",
       objetivosPriorizados: ["Potenciar habilidades de síntesis", "Desarrollar presentaciones orales", "Mantener organización visual"],
       modalidadCursado: "Común con énfasis en organizadores gráficos",
-      ajustesProgramaticos: [
-        { materia: "Todas", ajustes: ["Organizadores gráficos", "Esquemas y mapas conceptuales", "Secuencias visuales"] }
-      ]
+      ajustesProgramaticos: [],
+      requiereAdecuacionAcceso: true,
+      requiereAdecuacionContenido: false
     }
   },
   {
@@ -288,7 +417,85 @@ export const mockStudents: Student[] = [
       },
     ],
     informeTecnico: {
-      sintesis: "Estudiante con discapacidad intelectual leve que requiere adecuaciones curriculares de contenido para acceder al aprendizaje.",
+      sintesis: [
+        {
+          title: "Dificultades Generales y Presentación",
+          bullets: [
+            "Presenta significativas y persistentes dificultades de aprendizaje y en la interacción social.",
+            "Se destaca su timidez y escasa permanencia de la mirada.",
+            "Muestra una motilidad peculiar con rigidez postural.",
+            "Sus expresiones verbales oscilan entre una iniciativa verbal muy reducida y la verborragia frente a temas que le generan gran interés.",
+            "Su nivel de pensamiento es integrado, coherente y predominantemente realista."
+          ]
+        },
+        {
+          title: "Performance Intelectual",
+          bullets: [
+            "Su performance intelectual se ubica predominantemente muy por debajo de los valores promedio.",
+            "Se observa variabilidad en su funcionamiento entre las distintas escalas y en la valoración de una misma función."
+          ]
+        },
+        {
+          title: "Perfil Cognitivo (Fortalezas Relativas y Debilidades)",
+          bullets: [
+            "Indica un mejor funcionamiento a la hora de comprender y utilizar información visoperceptiva y visoespacial en comparación con las destrezas de razonamiento verbal.",
+            "Las destrezas de razonamiento verbal se ubican a nivel de deficiencia.",
+            "En su procesamiento visoespacial, la capacidad de construcción mental no motora (razonamiento visoespacial, relación entre información visual y conceptos abstractos, rotación mental) se ubica por encima del manejo constructivo específico."
+          ]
+        },
+        {
+          title: "Dificultades Instrumentales y Práxicas",
+          bullets: [
+            "Se observan dificultades instrumentales persistentes y significativas para tareas manipulativas.",
+            "Su funcionamiento práxico (copia de figuras, construcciones y grafía) se ubica muy por debajo de su edad cronológica."
+          ]
+        },
+        {
+          title: "Procesamiento de la Información Verbal y Lenguaje",
+          bullets: [
+            "El procesamiento de la información verbal se encuentra francamente comprometido.",
+            "Se observan dificultades de evocación y sintácticas en el lenguaje oral y escrito, acompañadas de un bajo nivel lexical.",
+            "Las dificultades en el acceso al vocabulario y en el procesamiento de la información entorpecen la comprensión y la expresión.",
+            "Los diferentes niveles lingüísticos se encuentran afectados, fundamentalmente los semánticos.",
+            "Las dificultades presentes en el lenguaje no son específicas, sino secundarias a una alteración global del desarrollo."
+          ]
+        },
+        {
+          title: "Rendimiento en Áreas Instrumentales (Lectura y Escritura)",
+          bullets: [
+            "En la lectura, presenta una velocidad muy descendida, aunque la precisión es buena. Muestra un descenso en los procesos semánticos y sintácticos.",
+            "En la escritura (discurso escrito), elabora textos sencillos de escasa extensión, pero se mantienen las dificultades expresivas en vocabulario y sintaxis."
+          ]
+        },
+        {
+          title: "Atención y Funciones Ejecutivas",
+          bullets: [
+            "Presenta un patrón de desempeño atencional extremadamente comprometido para su edad, con pobre control inhibitorio y escasa permanencia de focalización atencional frente a estímulos tanto verbales como visuales.",
+            "Requiere de sostén a través del estímulo externo. Específicamente, la estimulación en relación a sus logros mejora su interés y su performance.",
+            "No se observa oposicionismo, pero sí recurre con insistencia a mecanismos para evitar la realización de las tareas (cansancio, aburrimiento, etc.).",
+            "Su capacidad de organización, planificación y flexibilidad cognitiva presenta un funcionamiento muy variable y por lo general descendido, vinculado a sus dificultades instrumentales a nivel del lenguaje y práxicas."
+          ]
+        },
+        {
+          title: "Perfil Mnésico (Memoria)",
+          bullets: [
+            "La memoria de trabajo se constituye en una verdadera fortaleza, con un marcado sesgo a favor de la retención de información visual.",
+            "La diferencia entre el tipo de estímulo utilizado (visual vs. verbal) persiste tanto a nivel inmediato como diferido, alcanzando niveles de normalidad baja en la retención de información visual.",
+            "No presenta dificultades significativas para la codificación de caras, ni para su discriminación y reconocimiento, ni para el aprendizaje y recuerdo demorado de nombres (etiquetas verbales), y se beneficia de los ensayos de aprendizaje reteniendo lo aprendido.",
+            "Presenta sin embargo un span de memoria verbal muy descendido para la edad, le cuesta conservar listas de palabras en estado activo con un marcado efecto de interferencia.",
+            "Sus mayores dificultades se ubican a nivel de la codificación y evocación de una narración en condiciones de recuerdo libre, indicando un bajo rendimiento a nivel de memoria declarativa para información verbal.",
+            "Los relatos son confusos y extremadamente pobres, logrando retener solo las ideas centrales del texto referido con ausencia significativa de detalles."
+          ]
+        },
+        {
+          title: "Perfil Afectivo-Emocional y Social",
+          bullets: [
+            "Presenta un nivel de autonomía e intereses que distan significativamente de lo esperado en función de su edad cronológica.",
+            "Percibe sus dificultades a nivel académico y es extremadamente sensible a las manifestaciones de aprobación en su rendimiento, así como a la percepción de sus logros.",
+            "Su inhabilidad en el intercambio social persiste, a pesar de los avances logrados y reconocidos por él."
+          ]
+        }
+      ],
       estiloAprendizaje: "Kinestésico-Concreto: requiere experiencias de aprendizaje simplificadas, secuenciadas y con apoyo visual constante.",
       objetivosPriorizados: ["Contenidos esenciales y funcionales", "Desarrollo de habilidades para la vida", "Fortalecimiento de la autoestima"],
       modalidadCursado: "Común con adecuaciones curriculares significativas de contenido",
@@ -297,7 +504,9 @@ export const mockStudents: Student[] = [
         { materia: "Matemática", ajustes: ["Operaciones básicas funcionales", "Conceptos concretos aplicados a la vida diaria", "Uso de calculadora y material manipulativo"] },
         { materia: "Lengua", ajustes: ["Textos adaptados de menor complejidad", "Vocabulario esencial", "Comprensión lectora básica"] },
         { materia: "Ciencias/Historia", ajustes: ["Conceptos centrales simplificados", "Información presentada paso a paso", "Relación con experiencias cotidianas"] }
-      ]
+      ],
+      requiereAdecuacionAcceso: false,
+      requiereAdecuacionContenido: true
     }
   },
   {

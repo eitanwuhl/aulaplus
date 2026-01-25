@@ -7,7 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { motion } from "framer-motion";
-import { ArrowLeft, Edit2, Save, X, Plus, FileText, BookOpen, TrendingUp, Activity, AlertTriangle, Calendar, User, Trash2 } from 'lucide-react';
+import { ArrowLeft, Edit2, Save, X, Plus, FileText, BookOpen, TrendingUp, Activity, AlertTriangle, Calendar, User, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { ProgressiveDisclosure } from "@/components/ui/progressive-disclosure";
 import TeacherInsights from "@/components/TeacherInsights";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -246,6 +246,9 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
       }
     }
   }, [student.id, student.name, student.contemplaciones]); // Only run on mount or if student changes
+
+  // State for accordion (informe técnico síntesis cards)
+  const [expandedCards, setExpandedCards] = useState<Set<number>>(new Set());
 
   // State for adaptation flags (explicit checkboxes, no inference)
   const [requiereAdecuacionAcceso, setRequiereAdecuacionAcceso] = useState<boolean>(() => {
@@ -680,40 +683,112 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                     <ProgressiveDisclosure 
                       key={section.id}
                       title={`${section.icon} ${section.title}`}
-                      preview="Síntesis, estilo de aprendizaje y ajustes programáticos"
+                      preview="Síntesis de situación actual y declaración de adecuaciones"
                       className="mb-8"
                     >
                 <div className="space-y-6">
-                  <div className="bg-purple-50 p-4 rounded-lg border-l-4 border-purple-400">
-                    <h4 className="font-semibold text-gray-800 mb-2">Síntesis de situación actual</h4>
-                    <p className="text-gray-700 text-sm">{student.informeTecnico.sintesis}</p>
-                  </div>
-
-                  <div className="bg-blue-50 p-4 rounded-lg border-l-4 border-blue-400">
-                    <h4 className="font-semibold text-gray-800 mb-2">Estilo de aprendizaje</h4>
-                    <p className="text-gray-700 text-sm">{student.informeTecnico.estiloAprendizaje}</p>
-                  </div>
-
-                  <div className="bg-yellow-50 p-4 rounded-lg border-l-4 border-yellow-400">
-                    <h4 className="font-semibold text-gray-800 mb-2">Modalidad de cursado</h4>
-                    <p className="text-gray-700 text-sm">{student.informeTecnico.modalidadCursado}</p>
-                  </div>
-
-                  <div className="bg-orange-50 p-4 rounded-lg border-l-4 border-orange-400">
-                    <h4 className="font-semibold text-gray-800 mb-3">Ajustes programáticos por materia</h4>
-                    <div className="space-y-3">
-                      {student.informeTecnico.ajustesProgramaticos.map((ajuste, index) => (
-                        <div key={index} className="bg-white p-3 rounded border">
-                          <h5 className="font-medium text-gray-800 mb-2">{ajuste.materia}</h5>
-                          <ul className="list-disc list-inside text-gray-700 text-sm space-y-1">
-                            {ajuste.ajustes.map((item, itemIndex) => (
-                              <li key={itemIndex}>{item}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
+                  {/* Síntesis de situación actual - NEW: Accordion cards for students with adecuaciones */}
+                  {Array.isArray(student.informeTecnico.sintesis) ? (
+                    // NEW: Accordion UI for students with adecuaciones (Ana, Carlos, María, Diego)
+                    <div className="bg-purple-50 p-4 rounded-lg border-l-4 border-purple-400">
+                      <h4 className="font-semibold text-gray-800 mb-4">Síntesis de situación actual</h4>
+                      <div className="space-y-2">
+                        {student.informeTecnico.sintesis.map((card, index) => {
+                          const isExpanded = expandedCards.has(index);
+                          return (
+                            <div key={index} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                              <button
+                                onClick={() => {
+                                  const newExpanded = new Set(expandedCards);
+                                  if (isExpanded) {
+                                    newExpanded.delete(index);
+                                  } else {
+                                    newExpanded.add(index);
+                                  }
+                                  setExpandedCards(newExpanded);
+                                }}
+                                className="w-full flex items-center justify-between p-4 text-left hover:bg-gray-50 transition-colors"
+                              >
+                                <h5 className="font-semibold text-gray-800 text-sm">{card.title}</h5>
+                                {isExpanded ? (
+                                  <ChevronDown className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                                ) : (
+                                  <ChevronRight className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                                )}
+                              </button>
+                              {isExpanded && (
+                                <div className="px-4 pb-4 pt-2 border-t border-gray-100">
+                                  <ul className="space-y-2">
+                                    {card.bullets.map((bullet, bulletIndex) => (
+                                      <li key={bulletIndex} className="text-gray-700 text-sm flex items-start gap-2">
+                                        <span className="text-purple-600 font-bold mt-1">•</span>
+                                        <span>{bullet}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    // LEGACY: Simple text display for students without the new structure
+                    <>
+                      <div className="bg-purple-50 p-4 rounded-lg border-l-4 border-purple-400">
+                        <h4 className="font-semibold text-gray-800 mb-2">Síntesis de situación actual</h4>
+                        <p className="text-gray-700 text-sm">{student.informeTecnico.sintesis}</p>
+                      </div>
+
+                      <div className="bg-blue-50 p-4 rounded-lg border-l-4 border-blue-400">
+                        <h4 className="font-semibold text-gray-800 mb-2">Estilo de aprendizaje</h4>
+                        <p className="text-gray-700 text-sm">{student.informeTecnico.estiloAprendizaje}</p>
+                      </div>
+
+                      <div className="bg-yellow-50 p-4 rounded-lg border-l-4 border-yellow-400">
+                        <h4 className="font-semibold text-gray-800 mb-2">Modalidad de cursado</h4>
+                        <p className="text-gray-700 text-sm">{student.informeTecnico.modalidadCursado}</p>
+                      </div>
+
+                      {student.informeTecnico.ajustesProgramaticos && student.informeTecnico.ajustesProgramaticos.length > 0 && (
+                        <div className="bg-orange-50 p-4 rounded-lg border-l-4 border-orange-400">
+                          <h4 className="font-semibold text-gray-800 mb-3">Ajustes programáticos por materia</h4>
+                          <div className="space-y-3">
+                            {student.informeTecnico.ajustesProgramaticos.map((ajuste, index) => (
+                              <div key={index} className="bg-white p-3 rounded border">
+                                <h5 className="font-medium text-gray-800 mb-2">{ajuste.materia}</h5>
+                                <ul className="list-disc list-inside text-gray-700 text-sm space-y-1">
+                                  {ajuste.ajustes.map((item, itemIndex) => (
+                                    <li key={itemIndex}>{item}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* Ajustes programáticos - ONLY for Diego Martínez (requiereAdecuacionContenido === true) */}
+                  {Array.isArray(student.informeTecnico.sintesis) && student.informeTecnico.requiereAdecuacionContenido && student.informeTecnico.ajustesProgramaticos && student.informeTecnico.ajustesProgramaticos.length > 0 && (
+                    <div className="bg-orange-50 p-4 rounded-lg border-l-4 border-orange-400">
+                      <h4 className="font-semibold text-gray-800 mb-3">Ajustes programáticos por materia</h4>
+                      <div className="space-y-3">
+                        {student.informeTecnico.ajustesProgramaticos.map((ajuste, index) => (
+                          <div key={index} className="bg-white p-3 rounded border">
+                            <h5 className="font-medium text-gray-800 mb-2">{ajuste.materia}</h5>
+                            <ul className="list-disc list-inside text-gray-700 text-sm space-y-1">
+                              {ajuste.ajustes.map((item, itemIndex) => (
+                                <li key={itemIndex}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Explicit adaptation flags - user-controlled, no inference */}
                   <div className="bg-green-50 p-4 rounded-lg border-l-4 border-green-400">
