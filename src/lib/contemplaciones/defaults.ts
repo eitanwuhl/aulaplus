@@ -44,8 +44,7 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
       'Segmentación de consignas en pasos numerados',
       'Corrección centrada en contenido (no forma)',
       'Respuestas estructuradas en lugar de redacción extensa (bloques, casilleros, V/F con justificación)',
-      'Fragmentación de textos + preguntas inmediatamente después de cada fragmento',
-      'Enunciados simples y lenguaje concreto (sin frases encadenadas)'
+      'Fragmentación de textos + preguntas inmediatamente después de cada fragmento'
     ]
   },
   {
@@ -54,22 +53,25 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
     clase: [
       'Refuerzo positivo / comentarios de reconocimiento (motivación externa)',
       'Respuesta oral alternativa (cuando corresponda)',
-      'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
-      'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
-      'Reducción de copia mecánica (materiales fotocopiados o consignas ya impresas)',
+      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
       'Monitoreo docente y andamiaje (verificación de comprensión)',
+      'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
+      'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
+      'Letra ampliada y alto contraste',
+      'Reducción de copia mecánica (materiales fotocopiados o consignas ya impresas)',
       'Ubicación estratégica en aula (cerca del docente y/o pizarrón)'
     ],
     evaluacion: [
       'Tiempo adicional y pausas',
-      'Inicio anticipado / extensión operativa del tiempo (comenzar antes o terminar después)',
-      'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
       'Letra ampliada y alto contraste',
+      'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
       'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
       'Reducción de copia mecánica (materiales fotocopiados o consignas ya impresas)',
       'Monitoreo docente y andamiaje (verificación de comprensión)',
       'Fragmentación de textos + preguntas inmediatamente después de cada fragmento',
-      'Ubicación estratégica en aula (cerca del docente y/o pizarrón)'
+      'Ubicación estratégica en aula (cerca del docente y/o pizarrón)',
+      'Segmentación de consignas en pasos numerados',
+      'Enunciados simples y lenguaje concreto (sin frases encadenadas)'
     ]
   },
   {
@@ -79,38 +81,37 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
       'Refuerzo positivo / comentarios de reconocimiento (motivación externa)',
       'Reducción de copia mecánica (materiales fotocopiados o consignas ya impresas)',
       'Ubicación estratégica en aula (cerca del docente y/o pizarrón)',
+      'Respuesta oral alternativa (cuando corresponda)',
+      'Monitoreo docente y andamiaje (verificación de comprensión)',
       'Palabras clave en negrita e íconos de apoyo',
       'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
       'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
-      'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
       'Letra ampliada y alto contraste',
-      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
-      'Monitoreo docente y andamiaje (verificación de comprensión)',
-      'Respuesta oral alternativa (cuando corresponda)'
+      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)'
     ],
     evaluacion: [
+      'Fragmentación de textos + preguntas inmediatamente después de cada fragmento',
       'Tiempo adicional y pausas',
       'Inicio anticipado / extensión operativa del tiempo (comenzar antes o terminar después)',
-      'Señalización explícita de tiempos (avisar límites, tiempos por sección)',
-      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
       'Corrección centrada en contenido (no forma)',
       'Palabras clave en negrita e íconos de apoyo',
       'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
       'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
-      'Letra ampliada y alto contraste',
       'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
-      'Fragmentación de textos + preguntas inmediatamente después de cada fragmento'
+      'Monitoreo docente y andamiaje (verificación de comprensión)',
+      'Letra ampliada y alto contraste',
+      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
+      'Señalización explícita de tiempos (avisar límites, tiempos por sección)'
     ]
   },
   {
     studentId: 4, // Stable ID for Diego Martínez
     studentName: 'Diego Martínez',
     clase: [
-      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
       'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
+      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
       'Monitoreo docente y andamiaje (verificación de comprensión)',
-      'Palabras clave en negrita e íconos de apoyo',
-      'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)'
+      'Refuerzo positivo / comentarios de reconocimiento (motivación externa)'
     ],
     evaluacion: [
       'Lectura oral de consignas',
@@ -119,8 +120,8 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
       'Tiempo adicional y pausas',
       'Inicio anticipado / extensión operativa del tiempo (comenzar antes o terminar después)',
       'Corrección centrada en contenido (no forma)',
-      'Modelos y plantillas de respuesta (ejemplos ilustrativos, organizadores)',
       'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
+      'Modelos y plantillas de respuesta (ejemplos ilustrativos, organizadores)',
       'Priorización de tareas (orden recomendado, qué hacer primero)',
       'Respuestas estructuradas en lugar de redacción extensa (bloques, casilleros, V/F con justificación)'
     ]
@@ -242,11 +243,22 @@ export const ALL_STUDENT_DEFAULTS: StudentDefaults[] = [
 ];
 
 /**
+ * Normalize a name for matching: lowercase, trim, remove diacritics
+ */
+function normalizeName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, ''); // Remove diacritics (á→a, é→e, ñ→n)
+}
+
+/**
  * Get default contemplaciones for a specific student by ID or name.
  * 
  * Matching priority:
  * 1. By studentId (if provided and defined in defaults) - most stable
- * 2. By studentName (normalized lowercase) - fallback
+ * 2. By studentName (normalized: lowercase + remove diacritics) - fallback
  * 
  * @param studentName - The exact student name to match
  * @param studentId - Optional student ID for stable matching
@@ -262,11 +274,11 @@ export function getDefaultsForStudent(studentName: string, studentId?: number): 
     }
   }
   
-  // Priority 2: Try match by name (fallback)
-  const normalized = studentName.trim().toLowerCase();
+  // Priority 2: Try match by name (normalized with diacritic removal)
+  const normalized = normalizeName(studentName);
   
   for (const defaults of ALL_STUDENT_DEFAULTS) {
-    if (defaults.studentName.trim().toLowerCase() === normalized) {
+    if (normalizeName(defaults.studentName) === normalized) {
       return defaults;
     }
   }

@@ -15,6 +15,7 @@ import {
   writeSeedMeta,
   computeSelectionHash,
   selectionMatchesSeed,
+  isUserTouched,
   type ContemplacionCategoryStorage,
   type SeedingMetadata
 } from './storage';
@@ -143,12 +144,25 @@ export function seedDefaultsForCategory(
   }
 
   // CASE 2: Existing selection → check for upgrade opportunity
+  
+  // First check: has user manually touched this category?
+  const userHasTouched = isUserTouched(studentId, category);
+  
+  if (userHasTouched) {
+    // User has made manual edits → NEVER upgrade
+    if (verbose) {
+      console.log(`[SEED] [${CAT_UPPER}] user-touched-flag -> skipped-upgrade for ${studentName} (ID: ${studentId})`);
+    }
+    return result;
+  }
+  
+  // User has NOT touched → proceed with metadata-based upgrade logic
   const existingMeta = readSeedMeta(studentId, category);
 
   if (existingMeta) {
     // Has metadata → check version
     if (existingMeta.version < CURRENT_DEFAULTS_VERSION) {
-      // Older version → check if user modified
+      // Older version → check if user modified (hash comparison as additional safety)
       const currentHash = computeSelectionHash(existingSelection);
       const userModified = currentHash !== existingMeta.selectionHash || existingSelection.length !== existingMeta.selectionCount;
 
@@ -172,9 +186,9 @@ export function seedDefaultsForCategory(
           console.log(`[SEED] [${CAT_UPPER}] upgrade-from-v${existingMeta.version} -> upgraded ${resolution.resolved.length} contemplaciones for ${studentName} (ID: ${studentId})`);
         }
       } else {
-        // User modified → DO NOT upgrade
+        // User modified (detected by hash) → DO NOT upgrade
         if (verbose) {
-          console.log(`[SEED] [${CAT_UPPER}] user-modified -> skipped-upgrade for ${studentName} (ID: ${studentId})`);
+          console.log(`[SEED] [${CAT_UPPER}] user-modified-by-hash -> skipped-upgrade for ${studentName} (ID: ${studentId})`);
         }
       }
     } else {
