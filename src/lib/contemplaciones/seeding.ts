@@ -16,6 +16,7 @@ import {
   computeSelectionHash,
   selectionMatchesSeed,
   isUserTouched,
+  migrateLegacyKeys,
   type ContemplacionCategoryStorage,
   type SeedingMetadata
 } from './storage';
@@ -23,15 +24,15 @@ import {
 /**
  * Current defaults version
  * 
- * Increment this when defaults mappings change for existing students.
- * This triggers a safe upgrade mechanism that respects user modifications.
+ * HIGH VERSION NUMBER to force deterministic upgrade.
  * 
  * Version history:
- * - v1: Initial defaults implementation (Prompt 7 Part C)
- * - v2: Updated mappings based on informe técnico for 4 students with adecuaciones
- * - v3: Unified all 10 students with exact catalog labels; fixed regression from legacy key conflicts
+ * - v1: Initial defaults implementation
+ * - v2: Updated mappings for 4 students
+ * - v3: Unified all 10 students
+ * - v999: FORCE DETERMINISTIC - canonical keys, aggressive upgrade
  */
-export const CURRENT_DEFAULTS_VERSION = 3;
+export const CURRENT_DEFAULTS_VERSION = 999;
 
 export interface SeedingResult {
   seeded: boolean;
@@ -42,24 +43,22 @@ export interface SeedingResult {
 }
 
 /**
- * Seed default contemplaciones for a student (single category).
+ * DETERMINISTIC FORCE SEED/UPGRADE
  * 
- * IMPORTANT: This function includes version control and safe upgrade mechanism.
+ * This function enforces exact defaults for each student.
  * 
- * Decision tree:
- * 1. If NO selection exists → seed defaults + write metadata
- * 2. If selection exists:
- *    a. Load metadata
- *    b. If metadata.version < CURRENT_VERSION:
- *       - Check if user modified (compare hashes)
- *       - If NOT modified → UPGRADE to new defaults
- *       - If modified → SKIP upgrade (respect user)
- *    c. If no metadata:
- *       - Try detect legacy auto-seed → upgrade if detected
- *       - Otherwise → treat as user-owned, skip
+ * Algorithm:
+ * 1. Migrate any legacy keys to canonical format
+ * 2. Get defaults for this studentId (ID-based, NO name fallback)
+ * 3. Resolve labels to IDs (MUST resolve 100%, assert unresolved=0)
+ * 4. Check user_touched flag
+ * 5. If user_touched=true → SKIP (respect manual edits)
+ * 6. If user_touched=false → FORCE WRITE defaults (overwrite any existing)
+ * 7. Write seed metadata with v999
+ * 8. Return result with detailed info
  * 
- * @param studentId - The student ID
- * @param studentName - The student name (for matching defaults)
+ * @param studentId - The student ID (REQUIRED, must match defaults.ts)
+ * @param studentName - The student name (for logging only)
  * @param category - The category to seed ('clase' | 'evaluaciones')
  * @param verbose - Enable detailed logging (DEV only)
  * @returns SeedingResult with details about what was seeded
@@ -71,6 +70,10 @@ export function seedDefaultsForCategory(
   verbose: boolean = false
 ): SeedingResult {
   const CAT_UPPER = category.toUpperCase();
+  const canonicalKey = category === 'clase' 
+    ? `contemplaciones_clase_${studentId}` 
+    : `contemplaciones_evaluaciones_${studentId}`;
+    
   const result: SeedingResult = {
     seeded: false,
     category,
@@ -79,25 +82,35 @@ export function seedDefaultsForCategory(
     unresolvedLabels: []
   };
 
-  // Get defaults for this student (studentId is REQUIRED)
-  const defaults = getDefaultsForStudent(studentId, studentName);
+  if (verbose) {
+    console.log(`[SEED] [${CAT_UPPER}] ========== START SEEDING ==========`);
+    console.log(`[SEED] [${CAT_UPPER}] Student: ${studentName} (ID: ${studentId})`);
+    console.log(`[SEED] [${CAT_UPPER}] Canonical key: ${canonicalKey}`);
+  }
+
+  // STEP 1: Get defaults for this studentId (ID-based, NO name fallback)
+  const defaults = getDefaultsForStudent(studentId);
   if (!defaults) {
     if (verbose) {
-      console.log(`[SEED] [${CAT_UPPER}] No defaults defined for student ID: ${studentId} (name: ${studentName})`);
+      console.warn(`[SEED] [${CAT_UPPER}] ❌ NO DEFAULTS defined for student ID: ${studentId}`);
     }
     return result;
   }
 
-  // Get labels for this category
+  // STEP 2: Get labels for this category
   const labels = category === 'clase' ? defaults.clase : defaults.evaluacion;
   if (labels.length === 0) {
     if (verbose) {
-      console.log(`[SEED] [${CAT_UPPER}] No labels to seed for student ${studentName} in category ${category}`);
+      console.log(`[SEED] [${CAT_UPPER}] No labels to seed for this category`);
     }
     return result;
   }
 
-  // Resolve labels to IDs
+  if (verbose) {
+    console.log(`[SEED] [${CAT_UPPER}] Defaults found: ${labels.length} labels`);
+  }
+
+  // STEP 3: Resolve labels to IDs (MUST be 100% success)
   const categoryType = category === 'clase' ? 'clase' : 'evaluaciones';
   const resolution = resolveContemplacionIds(labels, categoryType);
 
@@ -105,129 +118,90 @@ export function seedDefaultsForCategory(
   result.unresolvedCount = resolution.unresolved.length;
   result.unresolvedLabels = resolution.unresolved;
 
-  // Warn about unresolved labels (DEV only)
-  if (verbose && resolution.unresolved.length > 0) {
-    console.warn(`[SEED] [${CAT_UPPER}] Warning: ${resolution.unresolved.length} label(s) could not be resolved for ${studentName}:`, resolution.unresolved);
+  // CRITICAL: Assert unresolved = 0 in DEV
+  if (resolution.unresolved.length > 0) {
+    const errorMsg = `[SEED] [${CAT_UPPER}] ❌ CRITICAL: ${resolution.unresolved.length} label(s) UNRESOLVED for ${studentName}`;
+    console.error(errorMsg, resolution.unresolved);
+    
+    if (import.meta.env.DEV) {
+      throw new Error(`${errorMsg}: ${resolution.unresolved.join(', ')}`);
+    }
   }
 
   if (resolution.resolved.length === 0) {
     if (verbose) {
-      console.log(`[SEED] [${CAT_UPPER}] No resolved IDs to seed for ${studentName}`);
+      console.warn(`[SEED] [${CAT_UPPER}] ❌ No resolved IDs (all labels failed)`);
     }
     return result;
   }
 
-  // Check if there's already a selection
-  const existingSelection = readSelected(studentId, category);
-  const hasExistingSelection = existingSelection.length > 0;
-
-  // CASE 1: No existing selection → seed fresh
-  if (!hasExistingSelection) {
-    writeSelected(studentId, category, resolution.resolved);
-    
-    // Write metadata
-    const metadata: SeedingMetadata = {
-      version: CURRENT_DEFAULTS_VERSION,
-      source: 'defaults',
-      seededAt: new Date().toISOString(),
-      selectionHash: computeSelectionHash(resolution.resolved),
-      selectionCount: resolution.resolved.length
-    };
-    writeSeedMeta(studentId, category, metadata);
-    
-    result.seeded = true;
-    
-    if (verbose) {
-      const keyName = category === 'clase' ? `contemplacionesClase:${studentId}` : `contemplacionesEval:${studentId}`;
-      console.log(`[SEED] [${CAT_UPPER}] FRESH SEED -> wrote ${resolution.resolved.length} IDs to ${keyName}`);
-      console.log(`[SEED] [${CAT_UPPER}] Student: ${studentName} (ID: ${studentId}), version: ${CURRENT_DEFAULTS_VERSION}`);
-      console.log(`[SEED] [${CAT_UPPER}] IDs:`, resolution.resolved);
-    }
-    
-    return result;
+  if (verbose) {
+    console.log(`[SEED] [${CAT_UPPER}] ✅ Resolved ${resolution.resolved.length} IDs`);
   }
 
-  // CASE 2: Existing selection → check for upgrade opportunity
-  
-  // First check: has user manually touched this category?
+  // STEP 4: Check user_touched flag
   const userHasTouched = isUserTouched(studentId, category);
   
   if (userHasTouched) {
-    // User has made manual edits → NEVER upgrade
     if (verbose) {
-      console.log(`[SEED] [${CAT_UPPER}] user-touched-flag -> skipped-upgrade for ${studentName} (ID: ${studentId})`);
+      console.log(`[SEED] [${CAT_UPPER}] 🔒 USER TOUCHED → SKIP (respecting manual edits)`);
+      console.log(`[SEED] [${CAT_UPPER}] ========== END SEEDING ==========`);
     }
     return result;
   }
-  
-  // User has NOT touched → proceed with metadata-based upgrade logic
-  const existingMeta = readSeedMeta(studentId, category);
 
-  if (existingMeta) {
-    // Has metadata → check version
-    if (existingMeta.version < CURRENT_DEFAULTS_VERSION) {
-      // Older version → check if user modified (hash comparison as additional safety)
-      const currentHash = computeSelectionHash(existingSelection);
-      const userModified = currentHash !== existingMeta.selectionHash || existingSelection.length !== existingMeta.selectionCount;
-
-      if (!userModified) {
-        // User did NOT modify → safe to upgrade
-        const keyName = category === 'clase' ? `contemplacionesClase:${studentId}` : `contemplacionesEval:${studentId}`;
-        
-        writeSelected(studentId, category, resolution.resolved);
-        
-        // Update metadata
-        const newMetadata: SeedingMetadata = {
-          version: CURRENT_DEFAULTS_VERSION,
-          source: 'defaults',
-          seededAt: new Date().toISOString(),
-          selectionHash: computeSelectionHash(resolution.resolved),
-          selectionCount: resolution.resolved.length
-        };
-        writeSeedMeta(studentId, category, newMetadata);
-        
-        result.seeded = true;
-        
-        if (verbose) {
-          console.log(`[SEED] [${CAT_UPPER}] UPGRADE v${existingMeta.version} → v${CURRENT_DEFAULTS_VERSION}`);
-          console.log(`[SEED] [${CAT_UPPER}] Student: ${studentName} (ID: ${studentId})`);
-          console.log(`[SEED] [${CAT_UPPER}] Old count: ${existingSelection.length}, New count: ${resolution.resolved.length}`);
-          console.log(`[SEED] [${CAT_UPPER}] Key: ${keyName}`);
-          console.log(`[SEED] [${CAT_UPPER}] New IDs:`, resolution.resolved);
-        }
-      } else {
-        // User modified (detected by hash) → DO NOT upgrade
-        if (verbose) {
-          console.log(`[SEED] [${CAT_UPPER}] SKIP UPGRADE (hash mismatch) -> Student: ${studentName} (ID: ${studentId})`);
-          console.log(`[SEED] [${CAT_UPPER}] Current hash: ${currentHash}, Seed hash: ${existingMeta.selectionHash}`);
-        }
-      }
-    } else {
-      // Already at current version or newer → skip
-      if (verbose) {
-        console.log(`[SEED] [${CAT_UPPER}] Already at version ${existingMeta.version} for ${studentName} (ID: ${studentId}), skipping`);
-      }
-    }
-  } else {
-    // No metadata → try detect legacy auto-seed
-    // For now, treat as user-owned and skip (conservative approach)
-    // Future: Could try to detect if selection matches legacy student.contemplaciones
-    if (verbose) {
-      console.log(`[SEED] [${CAT_UPPER}] no-metadata -> treating as user-owned, skipping for ${studentName} (ID: ${studentId})`);
-    }
+  if (verbose) {
+    console.log(`[SEED] [${CAT_UPPER}] ✅ NOT user-touched → will FORCE WRITE defaults`);
   }
 
+  // STEP 5: Read existing selection (for logging only)
+  const existingSelection = readSelected(studentId, category);
+  const existingMeta = readSeedMeta(studentId, category);
+  
+  if (verbose) {
+    console.log(`[SEED] [${CAT_UPPER}] Current state in storage:`);
+    console.log(`[SEED] [${CAT_UPPER}]   - Existing count: ${existingSelection.length}`);
+    console.log(`[SEED] [${CAT_UPPER}]   - Existing meta version: ${existingMeta?.version || 'none'}`);
+    console.log(`[SEED] [${CAT_UPPER}]   - Target count: ${resolution.resolved.length}`);
+    console.log(`[SEED] [${CAT_UPPER}]   - Target version: ${CURRENT_DEFAULTS_VERSION}`);
+  }
+
+  // STEP 6: FORCE WRITE defaults (overwrite any existing)
+  writeSelected(studentId, category, resolution.resolved);
+  
+  // STEP 7: Write metadata
+  const newMetadata: SeedingMetadata = {
+    version: CURRENT_DEFAULTS_VERSION,
+    source: 'defaults',
+    seededAt: new Date().toISOString(),
+    selectionHash: computeSelectionHash(resolution.resolved),
+    selectionCount: resolution.resolved.length
+  };
+  writeSeedMeta(studentId, category, newMetadata);
+  
+  result.seeded = true;
+  
+  if (verbose) {
+    console.log(`[SEED] [${CAT_UPPER}] ✅ FORCE WROTE ${resolution.resolved.length} IDs to ${canonicalKey}`);
+    console.log(`[SEED] [${CAT_UPPER}] ✅ Wrote metadata with v${CURRENT_DEFAULTS_VERSION}`);
+    console.log(`[SEED] [${CAT_UPPER}] IDs written:`, resolution.resolved);
+    console.log(`[SEED] [${CAT_UPPER}] ========== END SEEDING ==========`);
+  }
+  
   return result;
 }
 
 /**
  * Seed default contemplaciones for a student (both categories).
  * 
- * IMPORTANT: This function is idempotent and respects existing user selections.
- * It ONLY seeds categories that have NO existing selection in localStorage.
+ * DETERMINISTIC FORCE SEEDING:
+ * 1. Migrates any legacy keys to canonical format
+ * 2. Seeds/overwrites CLASE category (unless user_touched)
+ * 3. Seeds/overwrites EVALUACIONES category (unless user_touched)
+ * 4. Returns detailed results
  * 
- * @param studentId - The student ID
- * @param studentName - The student name (for matching defaults)
+ * @param studentId - The student ID (REQUIRED)
+ * @param studentName - The student name (for logging only)
  * @param verbose - Enable detailed logging (DEV only)
  * @returns Array of SeedingResult for each category
  */
@@ -236,13 +210,20 @@ export function seedDefaultsForStudent(
   studentName: string,
   verbose: boolean = false
 ): SeedingResult[] {
+  if (verbose) {
+    console.log(`\n========== SEEDING STUDENT ${studentName} (ID: ${studentId}) ==========`);
+  }
+
+  // STEP 0: Migrate any legacy keys to canonical format (one-time, idempotent)
+  migrateLegacyKeys(studentId);
+
   const results: SeedingResult[] = [];
 
-  // Seed CLASE category
+  // STEP 1: Seed CLASE category
   const claseResult = seedDefaultsForCategory(studentId, studentName, 'clase', verbose);
   results.push(claseResult);
 
-  // Seed EVALUACIÓN category
+  // STEP 2: Seed EVALUACIÓN category
   const evalResult = seedDefaultsForCategory(studentId, studentName, 'evaluaciones', verbose);
   results.push(evalResult);
 
@@ -252,12 +233,16 @@ export function seedDefaultsForStudent(
     const totalResolved = results.reduce((sum, r) => sum + r.resolvedCount, 0);
     const totalUnresolved = results.reduce((sum, r) => sum + r.unresolvedCount, 0);
     
-    console.log(`[SEED-SUMMARY] Student ${studentName} (ID: ${studentId}):`, {
-      categoriesSeeded: totalSeeded,
-      totalResolved,
-      totalUnresolved,
-      details: results
-    });
+    console.log(`\n[SEED-SUMMARY] Student ${studentName} (ID: ${studentId}):`);
+    console.log(`  Categories seeded: ${totalSeeded}/2`);
+    console.log(`  Total resolved: ${totalResolved}`);
+    console.log(`  Total unresolved: ${totalUnresolved}`);
+    
+    if (totalUnresolved > 0) {
+      console.error(`  ❌ UNRESOLVED LABELS DETECTED - THIS SHOULD NOT HAPPEN`);
+    }
+    
+    console.log(`========== END SEEDING STUDENT ${studentName} ==========\n`);
   }
 
   return results;

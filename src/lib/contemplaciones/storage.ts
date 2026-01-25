@@ -1,18 +1,22 @@
 /**
  * Persistencia de contemplaciones en localStorage
  * 
- * Este módulo maneja:
- * - Selecciones de contemplaciones por estudiante y categoría (clase/evaluaciones)
- * - Contemplaciones personalizadas (custom) por estudiante y categoría
+ * CANONICAL KEY FORMAT (SINGLE SOURCE OF TRUTH):
+ * - contemplaciones_clase_${studentId} -> string[] (IDs seleccionados)
+ * - contemplaciones_evaluaciones_${studentId} -> string[] (IDs seleccionados)
+ * - contemplaciones_custom_clase_${studentId} -> CustomContemplacion[]
+ * - contemplaciones_custom_evaluaciones_${studentId} -> CustomContemplacion[]
+ * - contemplaciones_seed_meta_clase_${studentId} -> SeedingMetadata
+ * - contemplaciones_seed_meta_evaluaciones_${studentId} -> SeedingMetadata
+ * - contemplaciones_user_touched_clase_${studentId} -> "true" | null
+ * - contemplaciones_user_touched_evaluaciones_${studentId} -> "true" | null
  * 
- * Keys de localStorage:
- * - contemplacionesClase:${studentId} -> string[] (IDs de contemplaciones seleccionadas)
- * - contemplacionesEval:${studentId} -> string[] (IDs de contemplaciones seleccionadas)
- * - contemplacionesCustomClase:${studentId} -> CustomContemplacion[]
- * - contemplacionesCustomEval:${studentId} -> CustomContemplacion[]
+ * LEGACY FORMATS (auto-migrated):
+ * - contemplacionesClase:${studentId} (colon variant)
+ * - contemplacionesEval:${studentId} (colon variant)
  * 
  * Compatibilidad:
- * - No modifica keys existentes: adecuacionAcceso:${studentId}, adecuacionContenido:${studentId}
+ * - No modifica keys de adecuaciones: adecuacionAcceso:${studentId}, adecuacionContenido:${studentId}
  * - No modifica key legacy: contemplaciones:${studentId} (si existe)
  */
 
@@ -40,75 +44,113 @@ export interface SeedingMetadata {
 }
 
 /**
- * Obtener la key de localStorage para selecciones de contemplaciones
+ * CANONICAL KEY FORMAT (ONE FORMAT ONLY)
+ * 
+ * We use underscores consistently for ALL contemplaciones keys.
+ * This is the single source of truth.
  */
 function getSelectedKey(studentId: string | number, category: ContemplacionCategoryStorage): string {
   if (category === 'clase') {
-    return `contemplacionesClase:${studentId}`;
+    return `contemplaciones_clase_${studentId}`;
   }
-  return `contemplacionesEval:${studentId}`;
+  return `contemplaciones_evaluaciones_${studentId}`;
 }
 
 /**
  * Obtener la key de localStorage para contemplaciones custom
+ * (uses same underscore format for consistency)
  */
 function getCustomKey(studentId: string | number, category: ContemplacionCategoryStorage): string {
   if (category === 'clase') {
-    return `contemplacionesCustomClase:${studentId}`;
+    return `contemplaciones_custom_clase_${studentId}`;
   }
-  return `contemplacionesCustomEval:${studentId}`;
+  return `contemplaciones_custom_evaluaciones_${studentId}`;
 }
 
 /**
- * One-time migration: Check for legacy keys and merge into canonical keys
+ * COMPREHENSIVE LEGACY KEY MIGRATION
  * 
- * Legacy key formats that may exist:
- * - contemplaciones_clase_${studentId} (underscore variant)
- * - contemplaciones_evaluaciones_${studentId} (underscore variant)
- * - Any other historical format
+ * Detects ALL possible legacy key formats and consolidates into canonical format.
  * 
- * This function runs automatically on first read and migrates data if needed.
+ * Canonical format (ONE FORMAT ONLY):
+ * - contemplaciones_clase_${studentId}
+ * - contemplaciones_evaluaciones_${studentId}
+ * 
+ * Legacy formats to detect and migrate:
+ * - contemplacionesClase:${studentId} (colon variant)
+ * - contemplacionesEval:${studentId} (colon variant)
+ * - contemplaciones_clase_${studentId} (if canonical is empty, might have old data)
+ * 
+ * This function runs automatically and is idempotent.
  */
-function migrateLegacyKeysIfNeeded(
-  studentId: string | number,
-  category: ContemplacionCategoryStorage
-): void {
-  const canonicalKey = getSelectedKey(studentId, category);
+export function migrateLegacyKeys(studentId: string | number): void {
+  const isDev = typeof window !== 'undefined' && import.meta.env.DEV;
   
-  // If canonical key already has data, no migration needed
-  const existingData = localStorage.getItem(canonicalKey);
-  if (existingData) {
-    return; // Already migrated or has current data
-  }
-  
-  // Check for legacy underscore variant
-  const legacyKey = category === 'clase' 
-    ? `contemplaciones_clase_${studentId}`
-    : `contemplaciones_evaluaciones_${studentId}`;
-  
-  const legacyData = localStorage.getItem(legacyKey);
-  
-  if (legacyData) {
-    try {
-      // Migrate: copy legacy data to canonical key
-      localStorage.setItem(canonicalKey, legacyData);
-      
-      // Remove legacy key to avoid future confusion
-      localStorage.removeItem(legacyKey);
-      
-      if (import.meta.env.DEV) {
-        console.log(`[MIGRATION] Migrated ${legacyKey} → ${canonicalKey}`);
+  // Migrate both categories
+  ['clase', 'evaluaciones'].forEach(cat => {
+    const category = cat as ContemplacionCategoryStorage;
+    const canonicalKey = getSelectedKey(studentId, category);
+    
+    // If canonical key already has data, skip migration
+    const existingCanonical = localStorage.getItem(canonicalKey);
+    if (existingCanonical) {
+      if (isDev) {
+        try {
+          const parsed = JSON.parse(existingCanonical);
+          console.log(`[MIGRATION] Student ${studentId} ${category}: canonical key exists with ${parsed.length} items`);
+        } catch {}
       }
-    } catch (error) {
-      console.error(`[MIGRATION] Error migrating ${legacyKey}:`, error);
+      return; // Already has data in canonical format
     }
-  }
+    
+    // Define all possible legacy key formats
+    const legacyFormats = [
+      // Colon variants (old format)
+      category === 'clase' ? `contemplacionesClase:${studentId}` : `contemplacionesEval:${studentId}`,
+      // Alternate underscore spellings
+      category === 'clase' ? `contemplacion_clase_${studentId}` : `contemplacion_evaluacion_${studentId}`,
+    ];
+    
+    // Try each legacy format
+    for (const legacyKey of legacyFormats) {
+      const legacyData = localStorage.getItem(legacyKey);
+      
+      if (legacyData) {
+        try {
+          // Validate it's an array
+          const parsed = JSON.parse(legacyData);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            // Migrate: copy to canonical key
+            localStorage.setItem(canonicalKey, legacyData);
+            
+            // Remove legacy key
+            localStorage.removeItem(legacyKey);
+            
+            if (isDev) {
+              console.log(`[MIGRATION] Student ${studentId} ${category}: migrated ${legacyKey} → ${canonicalKey} (${parsed.length} items)`);
+            }
+            
+            return; // Successfully migrated, stop trying other formats
+          }
+        } catch (error) {
+          if (isDev) {
+            console.error(`[MIGRATION] Error migrating ${legacyKey}:`, error);
+          }
+        }
+      }
+    }
+    
+    if (isDev) {
+      console.log(`[MIGRATION] Student ${studentId} ${category}: no legacy keys found, canonical key is empty`);
+    }
+  });
 }
 
 /**
  * Leer selecciones de contemplaciones para un estudiante y categoría
  * 
- * IMPORTANT: This function automatically migrates legacy keys on first read.
+ * IMPORTANT: Call migrateLegacyKeys(studentId) BEFORE reading if you want migration.
+ * This function only reads from the canonical key.
  * 
  * @param studentId ID del estudiante
  * @param category Categoría ('clase' o 'evaluaciones')
@@ -118,9 +160,6 @@ export function readSelected(
   studentId: string | number,
   category: ContemplacionCategoryStorage
 ): string[] {
-  // Auto-migrate legacy keys if needed (one-time, idempotent)
-  migrateLegacyKeysIfNeeded(studentId, category);
-  
   const key = getSelectedKey(studentId, category);
   
   try {
