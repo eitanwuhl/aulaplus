@@ -38,6 +38,7 @@ import {
   type CustomContemplacion,
   type ContemplacionCategoryStorage
 } from '@/lib/contemplaciones/storage';
+import { seedDefaultsForStudent } from '@/lib/contemplaciones/seeding';
 
 
 
@@ -170,28 +171,49 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
     return Array.from(new Set(catalogIds));
   };
 
-  // Auto-preselect suggested contemplaciones on initial load (only if no existing selection)
+  // Auto-seed deterministic suggested contemplaciones on initial load (only if no existing selection)
+  // This uses the new defaults system based on student profile (with/without adecuaciones)
   useEffect(() => {
-    // Check clase
-    const existingClase = readSelected(student.id, 'clase');
-    if (existingClase.length === 0 && student.contemplaciones && student.contemplaciones.length > 0) {
-      const suggestedClase = mapLegacyToCatalogIds(student.contemplaciones, 'clase');
-      if (suggestedClase.length > 0) {
-        writeSelected(student.id, 'clase', suggestedClase);
-        setSelectedClase(suggestedClase);
-      }
+    const isDev = import.meta.env.DEV;
+    
+    // Seed defaults for this student (idempotent - only seeds if no existing selection)
+    const seedingResults = seedDefaultsForStudent(student.id, student.name, isDev);
+    
+    // Update state if seeding happened
+    const claseResult = seedingResults.find(r => r.category === 'clase');
+    const evalResult = seedingResults.find(r => r.category === 'evaluaciones');
+    
+    if (claseResult?.seeded) {
+      setSelectedClase(readSelected(student.id, 'clase'));
     }
+    
+    if (evalResult?.seeded) {
+      setSelectedEval(readSelected(student.id, 'evaluaciones'));
+    }
+    
+    // Backward compatibility: If no modern defaults exist, fall back to legacy student.contemplaciones
+    if (!claseResult?.seeded && !evalResult?.seeded) {
+      // Check clase
+      const existingClase = readSelected(student.id, 'clase');
+      if (existingClase.length === 0 && student.contemplaciones && student.contemplaciones.length > 0) {
+        const suggestedClase = mapLegacyToCatalogIds(student.contemplaciones, 'clase');
+        if (suggestedClase.length > 0) {
+          writeSelected(student.id, 'clase', suggestedClase);
+          setSelectedClase(suggestedClase);
+        }
+      }
 
-    // Check evaluaciones
-    const existingEval = readSelected(student.id, 'evaluaciones');
-    if (existingEval.length === 0 && student.contemplaciones && student.contemplaciones.length > 0) {
-      const suggestedEval = mapLegacyToCatalogIds(student.contemplaciones, 'evaluaciones');
-      if (suggestedEval.length > 0) {
-        writeSelected(student.id, 'evaluaciones', suggestedEval);
-        setSelectedEval(suggestedEval);
+      // Check evaluaciones
+      const existingEval = readSelected(student.id, 'evaluaciones');
+      if (existingEval.length === 0 && student.contemplaciones && student.contemplaciones.length > 0) {
+        const suggestedEval = mapLegacyToCatalogIds(student.contemplaciones, 'evaluaciones');
+        if (suggestedEval.length > 0) {
+          writeSelected(student.id, 'evaluaciones', suggestedEval);
+          setSelectedEval(suggestedEval);
+        }
       }
     }
-  }, [student.id, student.contemplaciones]); // Only run on mount or if student changes
+  }, [student.id, student.name, student.contemplaciones]); // Only run on mount or if student changes
 
   // State for adaptation flags (explicit checkboxes, no inference)
   const [requiereAdecuacionAcceso, setRequiereAdecuacionAcceso] = useState<boolean>(() => {
