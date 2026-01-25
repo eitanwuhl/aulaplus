@@ -12,9 +12,12 @@ import { getAllContemplaciones, type Contemplacion } from './catalog';
  * - Trim whitespace
  * - Convert to lowercase
  * - Remove diacritics (á→a, é→e, etc.)
- * - Normalize quotes (" " → " ")
+ * - Normalize quotes and apostrophes
+ * - Normalize dashes (em-dash, en-dash → hyphen)
+ * - Remove parentheses content
+ * - Remove any leftover stray parentheses
+ * - Remove trailing punctuation
  * - Collapse multiple spaces to single space
- * - Remove parentheses content for more flexible matching
  */
 export function normalizeLabel(label: string): string {
   return label
@@ -22,15 +25,20 @@ export function normalizeLabel(label: string): string {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // Remove diacritics
-    .replace(/[""\u201C\u201D]/g, '"') // Normalize quotes
-    .replace(/[''\u2018\u2019]/g, "'") // Normalize apostrophes
-    .replace(/\s+/g, ' ') // Collapse whitespace
+    .replace(/[""\u201C\u201D]/g, '"') // Normalize double quotes
+    .replace(/[''\u2018\u2019]/g, "'") // Normalize single quotes/apostrophes
+    .replace(/[\u2013\u2014]/g, '-') // Normalize en-dash and em-dash to hyphen
     .replace(/\([^)]*\)/g, '') // Remove parentheses content
+    .replace(/[()]/g, '') // Remove any leftover stray parentheses
+    .replace(/[.:;,]+$/g, '') // Remove trailing punctuation
+    .replace(/\s+/g, ' ') // Collapse whitespace
     .trim();
 }
 
 /**
  * Resolve a contemplacion ID by matching label text.
+ * 
+ * Uses exact normalized match first, then conservative fallback with startsWith.
  * 
  * @param label - The label text to search for
  * @param category - Optional: restrict to specific category ('clase' | 'evaluaciones' | 'ambas')
@@ -42,11 +50,12 @@ export function resolveContemplacionId(
 ): string | null {
   const normalized = normalizeLabel(label);
   const allContemplaciones = getAllContemplaciones();
+  const isDev = typeof window !== 'undefined' && import.meta.env.DEV;
 
+  // First pass: exact normalized match
   for (const contemplacion of allContemplaciones) {
     const contemplacionNormalized = normalizeLabel(contemplacion.label);
     
-    // Check if labels match
     if (contemplacionNormalized === normalized) {
       // If category specified, verify this contemplation applies to that category
       if (category) {
@@ -57,6 +66,50 @@ export function resolveContemplacionId(
         return contemplacion.id;
       }
     }
+  }
+
+  // Second pass: conservative startsWith fallback (min 12 chars to avoid false positives)
+  const MIN_LENGTH_FOR_STARTS_WITH = 12;
+  
+  if (normalized.length >= MIN_LENGTH_FOR_STARTS_WITH) {
+    for (const contemplacion of allContemplaciones) {
+      const contemplacionNormalized = normalizeLabel(contemplacion.label);
+      
+      // Allow match when one normalized string starts with the other
+      const longerStr = contemplacionNormalized.length >= normalized.length ? contemplacionNormalized : normalized;
+      const shorterStr = contemplacionNormalized.length < normalized.length ? contemplacionNormalized : normalized;
+      
+      if (shorterStr.length >= MIN_LENGTH_FOR_STARTS_WITH && longerStr.startsWith(shorterStr)) {
+        // Category check
+        if (category) {
+          if (contemplacion.category === category || contemplacion.category === 'ambas') {
+            if (isDev) {
+              console.log(`[RESOLVER] Fallback match (startsWith): "${label}" → "${contemplacion.label}" (${contemplacion.id})`);
+            }
+            return contemplacion.id;
+          }
+        } else {
+          if (isDev) {
+            console.log(`[RESOLVER] Fallback match (startsWith): "${label}" → "${contemplacion.label}" (${contemplacion.id})`);
+          }
+          return contemplacion.id;
+        }
+      }
+    }
+  }
+
+  // No match found - log details in DEV
+  if (isDev) {
+    console.warn(`[RESOLVER] Unresolved label: "${label}"`);
+    console.warn(`[RESOLVER] Normalized: "${normalized}"`);
+    
+    // Show catalog normalized labels (first 5 as candidates)
+    const candidates = allContemplaciones
+      .filter(c => !category || c.category === category || c.category === 'ambas')
+      .slice(0, 5)
+      .map(c => `"${normalizeLabel(c.label)}" (${c.id})`);
+    
+    console.warn(`[RESOLVER] Sample catalog labels:`, candidates);
   }
 
   return null;
@@ -78,6 +131,7 @@ export function resolveContemplacionIds(
 } {
   const resolved: string[] = [];
   const unresolved: string[] = [];
+  const isDev = typeof window !== 'undefined' && import.meta.env.DEV;
 
   for (const label of labels) {
     const id = resolveContemplacionId(label, category);
@@ -86,6 +140,38 @@ export function resolveContemplacionIds(
     } else {
       unresolved.push(label);
     }
+  }
+
+  // Enhanced logging for unresolved labels in DEV
+  if (isDev && unresolved.length > 0) {
+    console.group(`[RESOLVER] Found ${unresolved.length} unresolved label(s) for category: ${category || 'any'}`);
+    
+    const allContemplaciones = getAllContemplaciones();
+    const catalogLabels = allContemplaciones
+      .filter(c => !category || c.category === category || c.category === 'ambas')
+      .map(c => normalizeLabel(c.label));
+    
+    unresolved.forEach(label => {
+      const normalized = normalizeLabel(label);
+      console.log(`  ❌ Original: "${label}"`);
+      console.log(`     Normalized: "${normalized}"`);
+      
+      // Find closest matches (Levenshtein would be ideal, but simple contains check for now)
+      const partialMatches = allContemplaciones
+        .filter(c => !category || c.category === category || c.category === 'ambas')
+        .filter(c => {
+          const cNorm = normalizeLabel(c.label);
+          return cNorm.includes(normalized.substring(0, 10)) || normalized.includes(cNorm.substring(0, 10));
+        })
+        .slice(0, 3)
+        .map(c => `"${c.label}" (${c.id})`);
+      
+      if (partialMatches.length > 0) {
+        console.log(`     Possible matches:`, partialMatches);
+      }
+    });
+    
+    console.groupEnd();
   }
 
   return { resolved, unresolved };
