@@ -37,15 +37,15 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
       'Señalización explícita de tiempos (avisar límites, tiempos por sección)',
       'Inicio anticipado / extensión operativa del tiempo (comenzar antes o terminar después)',
       'Ubicación estratégica en aula (cerca del docente y/o pizarrón)',
-      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
       'Modelos y plantillas de respuesta (ejemplos ilustrativos, organizadores)',
       'Guía de revisión / checklist del estudiante (autocontrol)',
       'Soporte digital para producción escrita (teclado / dictado a texto si el centro lo permite)',
-      'Corrección centrada en contenido (no forma)',
       'Priorización de tareas (orden recomendado, qué hacer primero)',
+      'Segmentación de consignas en pasos numerados',
+      'Corrección centrada en contenido (no forma)',
       'Respuestas estructuradas en lugar de redacción extensa (bloques, casilleros, V/F con justificación)',
       'Fragmentación de textos + preguntas inmediatamente después de cada fragmento',
-      'Segmentación de consignas en pasos numerados'
+      'Enunciados simples y lenguaje concreto (sin frases encadenadas)'
     ]
   },
   {
@@ -54,23 +54,22 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
     clase: [
       'Refuerzo positivo / comentarios de reconocimiento (motivación externa)',
       'Respuesta oral alternativa (cuando corresponda)',
-      'Monitoreo docente y andamiaje (verificación de comprensión)',
-      'Ubicación estratégica en aula (cerca del docente y/o pizarrón)',
-      'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
       'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
-      'Letra ampliada y alto contraste',
-      'Reducción de copia mecánica (materiales fotocopiados o consignas ya impresas)'
+      'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
+      'Reducción de copia mecánica (materiales fotocopiados o consignas ya impresas)',
+      'Monitoreo docente y andamiaje (verificación de comprensión)',
+      'Ubicación estratégica en aula (cerca del docente y/o pizarrón)'
     ],
     evaluacion: [
       'Tiempo adicional y pausas',
       'Inicio anticipado / extensión operativa del tiempo (comenzar antes o terminar después)',
       'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
       'Letra ampliada y alto contraste',
-      'Fragmentación de textos + preguntas inmediatamente después de cada fragmento',
-      'Monitoreo docente y andamiaje (verificación de comprensión)',
-      'Ubicación estratégica en aula (cerca del docente y/o pizarrón)',
+      'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
       'Reducción de copia mecánica (materiales fotocopiados o consignas ya impresas)',
-      'Hoja auxiliar / borrador permitido'
+      'Monitoreo docente y andamiaje (verificación de comprensión)',
+      'Fragmentación de textos + preguntas inmediatamente después de cada fragmento',
+      'Ubicación estratégica en aula (cerca del docente y/o pizarrón)'
     ]
   },
   {
@@ -80,49 +79,50 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
       'Refuerzo positivo / comentarios de reconocimiento (motivación externa)',
       'Reducción de copia mecánica (materiales fotocopiados o consignas ya impresas)',
       'Ubicación estratégica en aula (cerca del docente y/o pizarrón)',
-      'Respuesta oral alternativa (cuando corresponda)',
+      'Palabras clave en negrita e íconos de apoyo',
       'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
       'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
-      'Letra ampliada y alto contraste',
-      'Palabras clave en negrita e íconos de apoyo',
       'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
+      'Letra ampliada y alto contraste',
+      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
       'Monitoreo docente y andamiaje (verificación de comprensión)',
-      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)'
+      'Respuesta oral alternativa (cuando corresponda)'
     ],
     evaluacion: [
       'Tiempo adicional y pausas',
       'Inicio anticipado / extensión operativa del tiempo (comenzar antes o terminar después)',
+      'Señalización explícita de tiempos (avisar límites, tiempos por sección)',
+      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
       'Corrección centrada en contenido (no forma)',
       'Palabras clave en negrita e íconos de apoyo',
       'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
       'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)',
       'Letra ampliada y alto contraste',
       'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
-      'Fragmentación de textos + preguntas inmediatamente después de cada fragmento',
-      'Señalización explícita de tiempos (avisar límites, tiempos por sección)',
-      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)'
+      'Fragmentación de textos + preguntas inmediatamente después de cada fragmento'
     ]
   },
   {
     studentId: 4, // Stable ID for Diego Martínez
     studentName: 'Diego Martínez',
     clase: [
+      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
       'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
       'Monitoreo docente y andamiaje (verificación de comprensión)',
-      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
-      'Tipografía recomendada y tamaño mínimo (Arial 13–14; interlineado 1.5 o doble)',
+      'Palabras clave en negrita e íconos de apoyo',
       'Diagramación legible y "no saturada" (espaciado, márgenes, interlineado)'
     ],
     evaluacion: [
       'Lectura oral de consignas',
-      'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
       'Segmentación de consignas en pasos numerados',
+      'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
       'Tiempo adicional y pausas',
-      'Priorización de tareas (orden recomendado, qué hacer primero)',
-      'Respuestas estructuradas en lugar de redacción extensa (bloques, casilleros, V/F con justificación)',
+      'Inicio anticipado / extensión operativa del tiempo (comenzar antes o terminar después)',
       'Corrección centrada en contenido (no forma)',
       'Modelos y plantillas de respuesta (ejemplos ilustrativos, organizadores)',
-      'Guía de revisión / checklist del estudiante (autocontrol)'
+      'Anticipación y estructura previa (agenda, objetivos, punteos/esquemas)',
+      'Priorización de tareas (orden recomendado, qué hacer primero)',
+      'Respuestas estructuradas en lugar de redacción extensa (bloques, casilleros, V/F con justificación)'
     ]
   }
 ];
