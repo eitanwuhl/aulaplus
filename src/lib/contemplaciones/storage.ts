@@ -60,7 +60,55 @@ function getCustomKey(studentId: string | number, category: ContemplacionCategor
 }
 
 /**
+ * One-time migration: Check for legacy keys and merge into canonical keys
+ * 
+ * Legacy key formats that may exist:
+ * - contemplaciones_clase_${studentId} (underscore variant)
+ * - contemplaciones_evaluaciones_${studentId} (underscore variant)
+ * - Any other historical format
+ * 
+ * This function runs automatically on first read and migrates data if needed.
+ */
+function migrateLegacyKeysIfNeeded(
+  studentId: string | number,
+  category: ContemplacionCategoryStorage
+): void {
+  const canonicalKey = getSelectedKey(studentId, category);
+  
+  // If canonical key already has data, no migration needed
+  const existingData = localStorage.getItem(canonicalKey);
+  if (existingData) {
+    return; // Already migrated or has current data
+  }
+  
+  // Check for legacy underscore variant
+  const legacyKey = category === 'clase' 
+    ? `contemplaciones_clase_${studentId}`
+    : `contemplaciones_evaluaciones_${studentId}`;
+  
+  const legacyData = localStorage.getItem(legacyKey);
+  
+  if (legacyData) {
+    try {
+      // Migrate: copy legacy data to canonical key
+      localStorage.setItem(canonicalKey, legacyData);
+      
+      // Remove legacy key to avoid future confusion
+      localStorage.removeItem(legacyKey);
+      
+      if (import.meta.env.DEV) {
+        console.log(`[MIGRATION] Migrated ${legacyKey} → ${canonicalKey}`);
+      }
+    } catch (error) {
+      console.error(`[MIGRATION] Error migrating ${legacyKey}:`, error);
+    }
+  }
+}
+
+/**
  * Leer selecciones de contemplaciones para un estudiante y categoría
+ * 
+ * IMPORTANT: This function automatically migrates legacy keys on first read.
  * 
  * @param studentId ID del estudiante
  * @param category Categoría ('clase' o 'evaluaciones')
@@ -70,6 +118,9 @@ export function readSelected(
   studentId: string | number,
   category: ContemplacionCategoryStorage
 ): string[] {
+  // Auto-migrate legacy keys if needed (one-time, idempotent)
+  migrateLegacyKeysIfNeeded(studentId, category);
+  
   const key = getSelectedKey(studentId, category);
   
   try {

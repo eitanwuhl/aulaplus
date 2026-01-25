@@ -29,8 +29,9 @@ import {
  * Version history:
  * - v1: Initial defaults implementation (Prompt 7 Part C)
  * - v2: Updated mappings based on informe técnico for 4 students with adecuaciones
+ * - v3: Unified all 10 students with exact catalog labels; fixed regression from legacy key conflicts
  */
-export const CURRENT_DEFAULTS_VERSION = 2;
+export const CURRENT_DEFAULTS_VERSION = 3;
 
 export interface SeedingResult {
   seeded: boolean;
@@ -78,11 +79,11 @@ export function seedDefaultsForCategory(
     unresolvedLabels: []
   };
 
-  // Get defaults for this student
-  const defaults = getDefaultsForStudent(studentName, studentId);
+  // Get defaults for this student (studentId is REQUIRED)
+  const defaults = getDefaultsForStudent(studentId, studentName);
   if (!defaults) {
     if (verbose) {
-      console.log(`[SEED] [${CAT_UPPER}] No defaults defined for student ${studentName} (ID: ${studentId})`);
+      console.log(`[SEED] [${CAT_UPPER}] No defaults defined for student ID: ${studentId} (name: ${studentName})`);
     }
     return result;
   }
@@ -137,7 +138,10 @@ export function seedDefaultsForCategory(
     result.seeded = true;
     
     if (verbose) {
-      console.log(`[SEED] [${CAT_UPPER}] missing-key -> seeded ${resolution.resolved.length} contemplaciones for ${studentName} (ID: ${studentId})`);
+      const keyName = category === 'clase' ? `contemplacionesClase:${studentId}` : `contemplacionesEval:${studentId}`;
+      console.log(`[SEED] [${CAT_UPPER}] FRESH SEED -> wrote ${resolution.resolved.length} IDs to ${keyName}`);
+      console.log(`[SEED] [${CAT_UPPER}] Student: ${studentName} (ID: ${studentId}), version: ${CURRENT_DEFAULTS_VERSION}`);
+      console.log(`[SEED] [${CAT_UPPER}] IDs:`, resolution.resolved);
     }
     
     return result;
@@ -168,6 +172,8 @@ export function seedDefaultsForCategory(
 
       if (!userModified) {
         // User did NOT modify → safe to upgrade
+        const keyName = category === 'clase' ? `contemplacionesClase:${studentId}` : `contemplacionesEval:${studentId}`;
+        
         writeSelected(studentId, category, resolution.resolved);
         
         // Update metadata
@@ -183,12 +189,17 @@ export function seedDefaultsForCategory(
         result.seeded = true;
         
         if (verbose) {
-          console.log(`[SEED] [${CAT_UPPER}] upgrade-from-v${existingMeta.version} -> upgraded ${resolution.resolved.length} contemplaciones for ${studentName} (ID: ${studentId})`);
+          console.log(`[SEED] [${CAT_UPPER}] UPGRADE v${existingMeta.version} → v${CURRENT_DEFAULTS_VERSION}`);
+          console.log(`[SEED] [${CAT_UPPER}] Student: ${studentName} (ID: ${studentId})`);
+          console.log(`[SEED] [${CAT_UPPER}] Old count: ${existingSelection.length}, New count: ${resolution.resolved.length}`);
+          console.log(`[SEED] [${CAT_UPPER}] Key: ${keyName}`);
+          console.log(`[SEED] [${CAT_UPPER}] New IDs:`, resolution.resolved);
         }
       } else {
         // User modified (detected by hash) → DO NOT upgrade
         if (verbose) {
-          console.log(`[SEED] [${CAT_UPPER}] user-modified-by-hash -> skipped-upgrade for ${studentName} (ID: ${studentId})`);
+          console.log(`[SEED] [${CAT_UPPER}] SKIP UPGRADE (hash mismatch) -> Student: ${studentName} (ID: ${studentId})`);
+          console.log(`[SEED] [${CAT_UPPER}] Current hash: ${currentHash}, Seed hash: ${existingMeta.selectionHash}`);
         }
       }
     } else {

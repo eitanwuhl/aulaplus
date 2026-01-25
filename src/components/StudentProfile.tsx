@@ -176,41 +176,64 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
   useEffect(() => {
     const isDev = import.meta.env.DEV;
     
-    // Seed defaults for this student (idempotent - only seeds if no existing selection)
+    if (isDev) {
+      console.log(`[STUDENT-PROFILE] Opening profile for student ID: ${student.id} (${student.name})`);
+    }
+    
+    // Seed defaults for this student (idempotent - respects user_touched, upgrades if needed)
     const seedingResults = seedDefaultsForStudent(student.id, student.name, isDev);
     
-    // Update state if seeding happened
+    // Update state to reflect any seeding/upgrade that happened
     const claseResult = seedingResults.find(r => r.category === 'clase');
     const evalResult = seedingResults.find(r => r.category === 'evaluaciones');
     
     if (claseResult?.seeded) {
       setSelectedClase(readSelected(student.id, 'clase'));
+      if (isDev) {
+        console.log(`[STUDENT-PROFILE] Refreshing CLASE state after seeding/upgrade`);
+      }
     }
     
     if (evalResult?.seeded) {
       setSelectedEval(readSelected(student.id, 'evaluaciones'));
+      if (isDev) {
+        console.log(`[STUDENT-PROFILE] Refreshing EVALUACIONES state after seeding/upgrade`);
+      }
     }
     
-    // Backward compatibility: If no modern defaults exist, fall back to legacy student.contemplaciones
-    if (!claseResult?.seeded && !evalResult?.seeded) {
-      // Check clase
+    // Backward compatibility: ONLY fall back to legacy if this student has NO defaults defined in defaults.ts
+    // AND has no existing selection in localStorage
+    const hasModernDefaults = claseResult || evalResult; // If seeding was attempted, defaults exist
+    
+    if (!hasModernDefaults) {
+      // This student is not in defaults.ts → try legacy fallback
       const existingClase = readSelected(student.id, 'clase');
+      const existingEval = readSelected(student.id, 'evaluaciones');
+      
       if (existingClase.length === 0 && student.contemplaciones && student.contemplaciones.length > 0) {
         const suggestedClase = mapLegacyToCatalogIds(student.contemplaciones, 'clase');
         if (suggestedClase.length > 0) {
           writeSelected(student.id, 'clase', suggestedClase);
           setSelectedClase(suggestedClase);
+          if (isDev) {
+            console.log(`[STUDENT-PROFILE] Applied legacy fallback for CLASE (student not in defaults.ts)`);
+          }
         }
       }
 
-      // Check evaluaciones
-      const existingEval = readSelected(student.id, 'evaluaciones');
       if (existingEval.length === 0 && student.contemplaciones && student.contemplaciones.length > 0) {
         const suggestedEval = mapLegacyToCatalogIds(student.contemplaciones, 'evaluaciones');
         if (suggestedEval.length > 0) {
           writeSelected(student.id, 'evaluaciones', suggestedEval);
           setSelectedEval(suggestedEval);
+          if (isDev) {
+            console.log(`[STUDENT-PROFILE] Applied legacy fallback for EVALUACIONES (student not in defaults.ts)`);
+          }
         }
+      }
+    } else {
+      if (isDev) {
+        console.log(`[STUDENT-PROFILE] Student has modern defaults, skipping legacy fallback`);
       }
     }
   }, [student.id, student.name, student.contemplaciones]); // Only run on mount or if student changes
