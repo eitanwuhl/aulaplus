@@ -190,6 +190,9 @@ export function writeCustom(
 /**
  * Helper: Toggle selección de una contemplación
  * 
+ * IMPORTANT: This function marks the category as user-touched,
+ * preventing automatic upgrades/reseeds.
+ * 
  * @param studentId ID del estudiante
  * @param category Categoría ('clase' o 'evaluaciones')
  * @param contemplacionId ID de la contemplación a togglear
@@ -215,6 +218,10 @@ export function toggleSelected(
   }
   
   writeSelected(studentId, category, newSelection);
+  
+  // Mark as user-touched to prevent automatic upgrades
+  markUserTouched(studentId, category);
+  
   return newSelection;
 }
 
@@ -322,6 +329,9 @@ export function removeCustom(
 /**
  * Helper: Toggle selección de contemplación custom
  * 
+ * IMPORTANT: This function marks the category as user-touched,
+ * preventing automatic upgrades/reseeds.
+ * 
  * @param studentId ID del estudiante
  * @param category Categoría ('clase' o 'evaluaciones')
  * @param customId ID de la contemplación custom a togglear
@@ -336,6 +346,9 @@ export function toggleCustomSelected(
   
   if (item) {
     updateCustom(studentId, category, customId, { selected: !item.selected });
+    
+    // Mark as user-touched to prevent automatic upgrades
+    markUserTouched(studentId, category);
   }
 }
 
@@ -494,6 +507,85 @@ export function selectionMatchesSeed(
   const currentHash = computeSelectionHash(currentSelection);
   
   return currentHash === meta.selectionHash && currentSelection.length === meta.selectionCount;
+}
+
+/**
+ * User-Touched Flag Functions
+ * 
+ * Tracks whether a user has manually edited contemplaciones for a student+category.
+ * When set to true, prevents automatic upgrades/reseeds to respect user choices.
+ */
+
+/**
+ * Get the localStorage key for user-touched flag
+ */
+function getUserTouchedKey(studentId: string | number, category: ContemplacionCategoryStorage): string {
+  if (category === 'clase') {
+    return `contemplaciones_user_touched_clase_${studentId}`;
+  }
+  return `contemplaciones_user_touched_evaluaciones_${studentId}`;
+}
+
+/**
+ * Check if user has manually touched contemplaciones for a student + category
+ * 
+ * @param studentId - Student ID
+ * @param category - Category (clase | evaluaciones)
+ * @returns true if user has made manual edits
+ */
+export function isUserTouched(
+  studentId: string | number,
+  category: ContemplacionCategoryStorage
+): boolean {
+  try {
+    const key = getUserTouchedKey(studentId, category);
+    const value = localStorage.getItem(key);
+    return value === 'true';
+  } catch (error) {
+    console.warn(`[USER-TOUCHED] Error reading flag for student ${studentId} (${category}):`, error);
+    return false;
+  }
+}
+
+/**
+ * Mark contemplaciones as user-touched for a student + category
+ * 
+ * This is called when user manually toggles a checkbox.
+ * Once set, automatic upgrades/reseeds will be blocked.
+ * 
+ * @param studentId - Student ID
+ * @param category - Category (clase | evaluaciones)
+ */
+export function markUserTouched(
+  studentId: string | number,
+  category: ContemplacionCategoryStorage
+): void {
+  try {
+    const key = getUserTouchedKey(studentId, category);
+    localStorage.setItem(key, 'true');
+  } catch (error) {
+    console.error(`[USER-TOUCHED] Error writing flag for student ${studentId} (${category}):`, error);
+  }
+}
+
+/**
+ * Clear user-touched flag for a student + category
+ * 
+ * Typically only used for testing/debugging.
+ * 
+ * @param studentId - Student ID
+ * @param category - Category (clase | evaluaciones)
+ */
+export function clearUserTouched(
+  studentId: string | number,
+  category: ContemplacionCategoryStorage
+): void {
+  try {
+    const key = getUserTouchedKey(studentId, category);
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.error(`[USER-TOUCHED] Error clearing flag for student ${studentId} (${category}):`, error);
+  }
 }
 
 
