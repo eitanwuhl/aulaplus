@@ -9,7 +9,8 @@
  */
 
 export interface StudentDefaults {
-  studentName: string;
+  studentId?: number; // Optional: Student ID for stable matching
+  studentName: string; // Student name for fallback matching
   clase: string[]; // Labels to resolve to IDs
   evaluacion: string[]; // Labels to resolve to IDs
 }
@@ -22,6 +23,7 @@ export interface StudentDefaults {
  */
 export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
   {
+    studentId: 2, // Stable ID for Carlos López
     studentName: 'Carlos López',
     clase: [
       'Refuerzo positivo / comentarios de reconocimiento (motivación externa)',
@@ -47,6 +49,7 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
     ]
   },
   {
+    studentId: 1, // Stable ID for Ana García
     studentName: 'Ana García',
     clase: [
       'Refuerzo positivo / comentarios de reconocimiento (motivación externa)',
@@ -71,6 +74,7 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
     ]
   },
   {
+    studentId: 3, // Stable ID for María Rodríguez
     studentName: 'María Rodríguez',
     clase: [
       'Refuerzo positivo / comentarios de reconocimiento (motivación externa)',
@@ -100,6 +104,7 @@ export const STUDENTS_WITH_ADECUACIONES: StudentDefaults[] = [
     ]
   },
   {
+    studentId: 4, // Stable ID for Diego Martínez
     studentName: 'Diego Martínez',
     clase: [
       'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
@@ -237,12 +242,27 @@ export const ALL_STUDENT_DEFAULTS: StudentDefaults[] = [
 ];
 
 /**
- * Get default contemplaciones for a specific student by name.
+ * Get default contemplaciones for a specific student by ID or name.
+ * 
+ * Matching priority:
+ * 1. By studentId (if provided and defined in defaults) - most stable
+ * 2. By studentName (normalized lowercase) - fallback
  * 
  * @param studentName - The exact student name to match
+ * @param studentId - Optional student ID for stable matching
  * @returns StudentDefaults object if found, or null
  */
-export function getDefaultsForStudent(studentName: string): StudentDefaults | null {
+export function getDefaultsForStudent(studentName: string, studentId?: number): StudentDefaults | null {
+  // Priority 1: Try match by studentId (most stable)
+  if (studentId !== undefined) {
+    for (const defaults of ALL_STUDENT_DEFAULTS) {
+      if (defaults.studentId === studentId) {
+        return defaults;
+      }
+    }
+  }
+  
+  // Priority 2: Try match by name (fallback)
   const normalized = studentName.trim().toLowerCase();
   
   for (const defaults of ALL_STUDENT_DEFAULTS) {
@@ -258,9 +278,10 @@ export function getDefaultsForStudent(studentName: string): StudentDefaults | nu
  * Check if a student has predefined defaults.
  * 
  * @param studentName - The student name to check
+ * @param studentId - Optional student ID for stable matching
  * @returns true if defaults exist for this student
  */
-export function hasDefaults(studentName: string): boolean {
-  return getDefaultsForStudent(studentName) !== null;
+export function hasDefaults(studentName: string, studentId?: number): boolean {
+  return getDefaultsForStudent(studentName, studentId) !== null;
 }
 
