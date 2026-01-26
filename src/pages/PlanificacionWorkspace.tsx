@@ -13,9 +13,13 @@ import { EditorSesionNuevo } from '@/components/planificacion/EditorSesionNuevo'
 import { useCalendarioSesiones } from '@/hooks/useCalendarioSesiones';
 import { Planificacion, SesionClase, DistribucionModalidades, ConfiguracionHorario } from '@/types/planificacion';
 import { supabase } from '@/integrations/supabase/client';
-import { parsePlan, buildPlanHtml } from '@/lib/planParser';
+import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupContext';
+import { mockGroups } from '@/data/mockData';
+import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
+import { resolveMockGroup } from '@/utils/resolveMockGroup';
 
 export default function PlanificacionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -190,8 +194,17 @@ export default function PlanificacionWorkspace() {
       // This extracts sections (Inicio/Desarrollo/Cierre), removes resource blocks from narrative,
       // and normalizes resources into a clean array.
       const fallbackRecursos = normalizeArrayField(data?.recursos);
+      
+      // CONTEMPLACIONES: Use centralized helper to inject deterministic reminders in REPLACE mode
+      const sanitizedHtml = buildSanitizedLessonPlanHtml(
+        data.plan_html,
+        fallbackRecursos,
+        planificacion.grupo_id,
+        '[WORKSPACE-CONTEMPLACIONES]'
+      );
+      
+      // Parse again for resource extraction
       const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
-      const sanitizedHtml = buildPlanHtml(parsedPlan);
       
       // PHASE 4: Preserve existing manual resources when auto-generating
       // Auto-detected resources from new plan

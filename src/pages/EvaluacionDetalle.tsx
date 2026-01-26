@@ -9,6 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { EvaluacionVisualRenderer } from '@/components/evaluaciones/EvaluacionVisualRenderer';
 import { getSubtemaPorId } from '@/data/catalogo';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { mockGroups } from '@/data/mockData';
 
 interface Evaluacion {
   id: string;
@@ -29,7 +30,8 @@ interface Evaluacion {
       content: string;
       version: number;
       adaptations?: string[];
-      assignedStudents?: string[];
+      assignedStudents?: string[];  // Legacy: Student names (for backward compatibility)
+      assignedStudentIds?: (string | number)[];  // NEW: Student IDs assigned to this version
     }>;
     base_prototype?: string;
   };
@@ -45,6 +47,7 @@ const EvaluacionDetalle: React.FC = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [evaluacion, setEvaluacion] = useState<Evaluacion | null>(null);
+  const [students, setStudents] = useState<Array<{ id: number; name: string; contemplaciones: string[] }>>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,7 +63,8 @@ const EvaluacionDetalle: React.FC = () => {
       setError(null);
 
       try {
-        const { data, error: fetchError } = await supabase
+        // Load evaluation
+        const { data: evalData, error: fetchError } = await supabase
           .from('evaluaciones')
           .select('*')
           .eq('id', id)
@@ -71,13 +75,42 @@ const EvaluacionDetalle: React.FC = () => {
           throw fetchError;
         }
 
-        if (!data) {
+        if (!evalData) {
           setError('Evaluación no encontrada');
           setIsLoading(false);
           return;
         }
 
-        setEvaluacion(data as unknown as Evaluacion);
+        const evaluacionData = evalData as unknown as Evaluacion;
+        setEvaluacion(evaluacionData);
+
+        // Load group to get students (needed for reminders calculation)
+        // Note: Students are stored in mockData, not in Supabase grupos table
+        if (evaluacionData.grupo_id) {
+          // Try to find group in mockGroups (fallback for student data)
+          const mockGroup = mockGroups.find(g => g.id === evaluacionData.grupo_id);
+          if (mockGroup?.students) {
+            setStudents(mockGroup.students);
+            
+            // DEV-ONLY: Diagnostic logging
+            if (import.meta.env.DEV && (window as any).__CONTEMPLACIONES_DEBUG__ === true) {
+              console.log('[EVALUACION DETALLE] Loaded students from mockGroup:', {
+                grupoId: evaluacionData.grupo_id,
+                studentsCount: mockGroup.students.length,
+                studentIds: mockGroup.students.map(s => ({ id: s.id, name: s.name }))
+              });
+            }
+          } else {
+            console.warn('[EVALUACION DETALLE] ⚠️ Grupo no encontrado en mockData:', evaluacionData.grupo_id);
+            console.warn('[EVALUACION DETALLE] Los recordatorios no se mostrarán. Grupos disponibles:', mockGroups.map(g => g.id));
+            // Non-fatal: continue without students (reminders won't show but evaluation will)
+            // Set empty array explicitly to avoid fallback to "first 4 students"
+            setStudents([]);
+          }
+        } else {
+          // No grupo_id, set empty array explicitly
+          setStudents([]);
+        }
       } catch (err: any) {
         console.error('[EVALUACION DETALLE] Error cargando evaluación:', err);
         setError(err.message || 'Error al cargar la evaluación');
@@ -180,12 +213,15 @@ const EvaluacionDetalle: React.FC = () => {
                   title: evalItem.title,
                   content: evalItem.content,
                   version: evalItem.version || 1,
-                  adaptations: evalItem.adaptations
+                  adaptations: evalItem.adaptations,
+                  assignedStudents: evalItem.assignedStudents,
+                  assignedStudentIds: evalItem.assignedStudentIds
                 }}
                 subject={evaluacion.materia}
                 selectedContent={selectedContent}
                 duration="90 minutos"
                 requirements={evaluacion.requerimientos}
+                students={students}
                 criteriosLogro={evaluacion.criterios_logro || []}
               />
             ))}

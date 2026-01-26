@@ -19,7 +19,8 @@ interface EvaluacionVisualRendererProps {
     content: string;
     version: number;
     adaptations?: string[];
-    assignedStudents?: string[];  // Student names assigned to this version
+    assignedStudents?: string[];  // Legacy: Student names (for backward compatibility)
+    assignedStudentIds?: (string | number)[];  // NEW: Student IDs assigned to this version
   };
   subject?: string;
   selectedContent?: { nombre: string }[];
@@ -114,6 +115,7 @@ export const EvaluacionVisualRenderer: React.FC<EvaluacionVisualRendererProps> =
             version={String(evaluation.version)}
             students={students}
             assignedStudents={evaluation.assignedStudents}
+            assignedStudentIds={evaluation.assignedStudentIds}
           />
         </CardContent>
       </Card>

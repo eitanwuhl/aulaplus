@@ -17,6 +17,10 @@ interface CleanEvaluationDisplayProps {
 export const CleanEvaluationDisplay: React.FC<CleanEvaluationDisplayProps> = ({
   evaluation
 }) => {
+  // GUARDRAIL: This component displays ONLY the student-facing evaluation content.
+  // It MUST NEVER import or use enforceForEvaluation() or inject reminders.
+  // Reminders belong ONLY in SimplifiedSmartRubric student cards, never in evaluation content.
+  
   // Limpiar contenido para mostrar solo la evaluación pura
   const { pureContent } = ContentCleaner.extractPureEvaluation(evaluation.content);
   

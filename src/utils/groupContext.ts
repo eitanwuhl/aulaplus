@@ -7,6 +7,7 @@
 
 import { supabase } from '@/integrations/supabase/client';
 import { mockGroups, type TeacherSugerencias } from '@/data/mockData';
+import { resolveMockGroup } from './resolveMockGroup';
 
 // ============================================================================
 // Types
@@ -176,9 +177,18 @@ export async function loadGroupContext(grupoId: string | undefined): Promise<Gro
     }
     
     // ========================================================================
-    // 2. Fallback to mockGroups for student data
+    // 2. Fallback to mockGroups for student data using robust resolver
     // ========================================================================
-    const mockGroup = mockGroups.find(g => g.id === grupoId);
+    const resolveResult = resolveMockGroup(grupoId, true);
+    const mockGroup = resolveResult.group;
+    
+    console.log('[loadGroupContext] Resolution result:', {
+      matchType: resolveResult.matchType,
+      mockGroupFound: !!mockGroup,
+      studentsCount: mockGroup?.students?.length ?? 0,
+      resolvedGroupId: mockGroup?.id,
+      resolvedGroupName: mockGroup?.name
+    });
     
     if (!mockGroup || !mockGroup.students || mockGroup.students.length === 0) {
       console.log('[loadGroupContext] No mock group found or no students, returning teacher_sugerencias only');
@@ -267,6 +277,7 @@ export async function getGrupoIdFromPlanificacion(planificacionId: string | unde
     return undefined;
   }
 }
+
 
 
 

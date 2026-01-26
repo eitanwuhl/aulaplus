@@ -10,9 +10,12 @@ import { SesionClase } from '@/types/planificacion';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { PDFGenerator } from '@/components/PDFGenerator';
-import { parsePlan, buildPlanHtml, ParsedPlan } from '@/lib/planParser';
+import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml, ParsedPlan } from '@/lib/planParser';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupContext';
+import { mockGroups } from '@/data/mockData';
+import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
+import { resolveMockGroup } from '@/utils/resolveMockGroup';
 
 interface EditorSesionNuevoProps {
   sesion: SesionClase | null;
@@ -358,11 +361,24 @@ export function EditorSesionNuevo({
       }
 
       // PHASE 2: Parse and sanitize AI-modified HTML before saving
+      // CONTEMPLACIONES: Use centralized helper to inject deterministic reminders in REPLACE mode
       const fallbackRecursos = Array.isArray(data.recursos)
         ? data.recursos
         : normalizeArrayField(data.recursos);
+      
+      // Load grupoId for reminder injection (same as initial generation)
+      const grupoId = await getGrupoIdFromPlanificacion(planificacionId);
+      
+      // Use centralized helper for consistent reminder injection across all flows
+      const sanitizedHtml = buildSanitizedLessonPlanHtml(
+        data.plan_html,
+        fallbackRecursos,
+        grupoId,
+        '[REGENERATE-CONTEMPLACIONES]'
+      );
+      
+      // Parse again for resource extraction
       const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
-      const sanitizedHtml = buildPlanHtml(parsedPlan);
       
       // PHASE 4: Preserve manual resources when regenerating plan
       const autoResources = normalizeArrayField(parsedPlan.recursos);
@@ -452,11 +468,21 @@ export function EditorSesionNuevo({
       }
 
       // PHASE 2: Parse and sanitize AI-generated HTML before saving
+      // CONTEMPLACIONES: Use centralized helper to inject deterministic reminders in REPLACE mode
       const fallbackRecursos = Array.isArray(data.recursos)
         ? data.recursos
         : normalizeArrayField(data.recursos);
+      
+      // Use centralized helper for consistent reminder injection across all flows
+      const sanitizedHtml = buildSanitizedLessonPlanHtml(
+        data.plan_html,
+        fallbackRecursos,
+        grupoId,
+        '[INITIAL-GEN-CONTEMPLACIONES]'
+      );
+      
+      // Parse again for resource extraction
       const parsedPlan = parsePlan(data.plan_html, fallbackRecursos);
-      const sanitizedHtml = buildPlanHtml(parsedPlan);
       
       // PHASE 4: Preserve manual resources when regenerating plan
       const autoResources = normalizeArrayField(parsedPlan.recursos);

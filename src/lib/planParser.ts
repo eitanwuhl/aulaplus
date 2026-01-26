@@ -5,6 +5,9 @@
  * @module planParser
  */
 
+import { enforceForLessonPlan, type Student } from './contemplaciones/enforcement';
+import { resolveMockGroup } from '@/utils/resolveMockGroup';
+
 export interface ParsedPlan {
   inicio: string;       // Clean HTML/markdown for Start section (no resources)
   desarrollo: string;   // Clean HTML/markdown for Development section (no resources)
@@ -178,8 +181,17 @@ export function parsePlan(input: string, fallbackResources?: string[]): ParsedPl
 /**
  * Serializes a parsed plan back into normalized HTML with clean headings.
  * Ensures resources remain separated and only class narrative is present.
+ * 
+ * @param parsed - Parsed plan with sections
+ * @param additionalDiferenciacion - Optional additional diferenciacion content to append or replace (e.g., from contemplaciones)
+ * @param options - Optional build options
+ * @param options.replaceDiferenciacion - If true, replaces parsed.diferenciacion with additionalDiferenciacion instead of merging (default: false)
  */
-export function buildPlanHtml(parsed: ParsedPlan): string {
+export function buildPlanHtml(
+  parsed: ParsedPlan, 
+  additionalDiferenciacion?: string,
+  options?: { replaceDiferenciacion?: boolean }
+): string {
   const sections: Array<{ label: string; key: 'inicio' | 'desarrollo' | 'cierre' }> = [
     { label: 'Inicio', key: 'inicio' },
     { label: 'Desarrollo', key: 'desarrollo' },
@@ -203,11 +215,34 @@ export function buildPlanHtml(parsed: ParsedPlan): string {
     lines.push(content);
   });
 
-  const diferenciacion = (parsed.diferenciacion || '').trim();
-  if (diferenciacion) {
+  // Merge or replace diferenciacion based on options
+  const parsedContent = (parsed.diferenciacion || '').trim();
+  const additionalContent = (additionalDiferenciacion || '').trim();
+  const shouldReplace = options?.replaceDiferenciacion === true;
+  
+  let diferenciacionContent = '';
+  
+  if (shouldReplace && additionalContent) {
+    // Replace mode: use ONLY additional content (ignore parsed content)
+    diferenciacionContent = additionalContent;
+  } else {
+    // Merge mode (default, backward compatible):
+    if (parsedContent && additionalContent) {
+      // Both exist: append additional with separator
+      diferenciacionContent = `${parsedContent}\n\n${additionalContent}`;
+    } else if (additionalContent) {
+      // Only additional exists
+      diferenciacionContent = additionalContent;
+    } else {
+      // Only parsed content exists (or both empty)
+      diferenciacionContent = parsedContent;
+    }
+  }
+  
+  if (diferenciacionContent) {
     hasContent = true;
     lines.push('<h2><strong>Diferenciaci├│n/Adaptaciones</strong></h2>');
-    lines.push(diferenciacion);
+    lines.push(diferenciacionContent);
   }
 
   lines.push('</section>');
@@ -572,5 +607,215 @@ function cleanHtml(html: string): string {
     .replace(/\n{3,}/g, '\n\n') // Remove excessive line breaks
     .replace(/\s{2,}/g, ' ') // Normalize spaces within lines
     .trim();
+}
+
+/**
+ * Strips inline generic "Diferenciación/Adaptaciones:" blocks from AI-generated HTML.
+ * 
+ * ROOT CAUSE: AI sometimes generates a generic differentiation block INSIDE the plan content:
+ * <p><strong>Diferenciación/Adaptaciones:</strong></p>
+ * <ul>
+ *   <li>Adaptación para perfil visual: ...</li>
+ *   <li>Adaptación para perfil auditivo: ...</li>
+ * </ul>
+ * 
+ * This appears BEFORE our deterministic H2 section, causing generic bullets to show first.
+ * 
+ * SOLUTION: Remove these inline blocks (identified by the colon ":") when we have 
+ * deterministic reminders to inject.
+ * 
+ * SAFETY: Only removes blocks with "Diferenciación/Adaptaciones:" (WITH colon).
+ * Our final H2 section uses "Diferenciación/Adaptaciones" (WITHOUT colon), so it's preserved.
+ * 
+ * @param rawHtml - Raw HTML from AI edge function
+ * @returns HTML with inline generic blocks removed
+ */
+export function stripInlineGenericDiferenciacionBlocks(rawHtml: string): string {
+  if (!rawHtml) return rawHtml;
+  
+  let strippedCount = 0;
+  let result = rawHtml;
+  
+  // Pattern to match:
+  // 1. A paragraph or heading containing "Diferenciación/Adaptaciones:" (WITH colon)
+  // 2. Followed by optional whitespace/newlines
+  // 3. Followed by a <ul>...</ul> block
+  // 
+  // We use a non-greedy match for the UL content to avoid capturing too much.
+  // We match case-insensitively and handle accent variations.
+  
+  const pattern = /<(?:p|h[1-6])[^>]*>\s*<strong>\s*(?:Diferenciaci[oó]n(?:es)?(?:\s*(?:\/|y)\s*Adaptaciones?)?|Adaptaciones?)\s*:\s*<\/strong>\s*<\/(?:p|h[1-6])>\s*<ul[^>]*>[\s\S]*?<\/ul>/gi;
+  
+  // Replace all occurrences
+  result = result.replace(pattern, (match) => {
+    strippedCount++;
+    console.log(`[DIFF-STRIP] Removed inline generic block #${strippedCount}:`, {
+      matchLength: match.length,
+      preview: match.substring(0, 100) + '...'
+    });
+    return ''; // Remove the matched block
+  });
+  
+  if (strippedCount > 0) {
+    console.log(`[DIFF-STRIP] Total inline generic blocks removed: ${strippedCount}`);
+  }
+  
+  return result;
+}
+
+/**
+ * Builds plan HTML with deterministic contemplaciones reminders injected into Diferenciación/Adaptaciones
+ * 
+ * When deterministic reminders exist, they REPLACE (not merge) the AI-generated diferenciacion content
+ * to avoid generic/duplicated bullets and keep the section fully personalized with student names.
+ * 
+ * @param parsed - Parsed plan with sections
+ * @param students - List of students with IDs and names (for contemplaciones lookup)
+ * @param lessonContent - Optional lesson content for detecting written instructions
+ * @returns HTML string with reminders injected or replaced
+ */
+export function buildPlanHtmlWithReminders(
+  parsed: ParsedPlan,
+  students: Student[],
+  lessonContent?: string
+): string {
+  // Generate deterministic reminders from contemplaciones
+  const enforcement = enforceForLessonPlan(students, lessonContent);
+  
+  // Convert reminder lines to HTML list
+  let remindersHtml = '';
+  if (enforcement.diferenciacionBlock.length > 0) {
+    remindersHtml = '<ul>\n' + 
+      enforcement.diferenciacionBlock.map(line => `  <li>${line}</li>`).join('\n') + 
+      '\n</ul>';
+  }
+  
+  // Build plan with injected reminders
+  if (remindersHtml) {
+    // Replace mode: use ONLY deterministic reminders (ignore AI-generated generic diferenciacion)
+    return buildPlanHtml(parsed, remindersHtml, { replaceDiferenciacion: true });
+  } else {
+    // No reminders: keep original parsed diferenciacion (backward compatible)
+    return buildPlanHtml(parsed);
+  }
+}
+
+/**
+ * Centralized helper to build sanitized lesson plan HTML with deterministic reminders.
+ * This function encapsulates the complete post-processing pipeline:
+ * 1. Resolve group and load students
+ * 2. Generate enforcement to detect if reminders exist
+ * 3. **STRIP** inline generic blocks from raw HTML (if reminders exist)
+ * 4. Parse cleaned HTML
+ * 5. Inject deterministic reminders in REPLACE mode
+ * 6. Return sanitized HTML
+ * 
+ * Use this for BOTH initial generation AND regeneration flows to ensure consistency.
+ * 
+ * @param rawPlanHtml - Raw HTML from AI edge function
+ * @param fallbackRecursos - Optional resources array from AI response
+ * @param grupoId - Group ID to load students from (for reminder injection)
+ * @param logTag - Tag for diagnostic logs (e.g., '[INITIAL-GEN]', '[REGENERATE]')
+ * @returns Sanitized HTML with reminders injected (or without if no students/contemplaciones)
+ */
+export function buildSanitizedLessonPlanHtml(
+  rawPlanHtml: string,
+  fallbackRecursos?: string[],
+  grupoId?: string,
+  logTag: string = '[PLAN-BUILD]'
+): string {
+  // STEP 1: Attempt to load students for reminder injection
+  if (!grupoId) {
+    console.log(`${logTag} No grupoId provided, building plan without reminders`);
+    const parsedPlan = parsePlan(rawPlanHtml, fallbackRecursos);
+    return buildPlanHtml(parsedPlan);
+  }
+  
+  const resolveResult = resolveMockGroup(grupoId, false);
+  const mockGroup = resolveResult.group;
+  
+  if (!mockGroup || !mockGroup.students || mockGroup.students.length === 0) {
+    console.log(`${logTag} No students found for grupoId=${grupoId}, building plan without reminders`, {
+      matchType: resolveResult.matchType,
+      searchedValue: resolveResult.searchedValue
+    });
+    const parsedPlan = parsePlan(rawPlanHtml, fallbackRecursos);
+    return buildPlanHtml(parsedPlan);
+  }
+  
+  // STEP 2: Map students to enforcement format
+  const students: Student[] = mockGroup.students.map(s => ({
+    id: s.id,
+    name: s.name
+  }));
+  
+  // STEP 3: Generate enforcement to check if we have reminders
+  const enforcement = enforceForLessonPlan(students, rawPlanHtml);
+  const hasReminders = enforcement.diferenciacionBlock.length > 0;
+  
+  // STEP 4: STRIP inline generic blocks BEFORE parsing (if we have reminders)
+  let cleanedHtml = rawPlanHtml;
+  if (hasReminders) {
+    const beforeLength = rawPlanHtml.length;
+    cleanedHtml = stripInlineGenericDiferenciacionBlocks(rawPlanHtml);
+    const afterLength = cleanedHtml.length;
+    const strippedBytes = beforeLength - afterLength;
+    
+    console.log(`[DIFF-STRIP] ${logTag} Stripping summary:`, {
+      remindersCount: enforcement.diferenciacionBlock.length,
+      strippedBytes,
+      didStrip: strippedBytes > 0
+    });
+  }
+  
+  // STEP 5: Parse the cleaned HTML
+  const parsedPlan = parsePlan(cleanedHtml, fallbackRecursos);
+  
+  // Diagnostic logging
+  console.log(`${logTag} Building plan with reminders:`, {
+    grupoIdRaw: grupoId,
+    matchType: resolveResult.matchType,
+    resolvedGroupId: mockGroup.id,
+    studentsCount: students.length,
+    enforcementBlockLength: enforcement.diferenciacionBlock.length,
+    replaceModeUsed: hasReminders
+  });
+  
+  // STEP 6: Build final HTML
+  if (hasReminders) {
+    const remindersHtml = '<ul>\n' + 
+      enforcement.diferenciacionBlock.map(line => `  <li>${line}</li>`).join('\n') + 
+      '\n</ul>';
+    
+    // REPLACE mode: ignore parsed.diferenciacion entirely
+    const finalHtml = buildPlanHtml(parsedPlan, remindersHtml, { replaceDiferenciacion: true });
+    
+    // VERIFICATION: Check if generic strings leaked through
+    const genericMarkers = [
+      'Adaptación para perfil visual',
+      'Adaptación para perfil auditivo',
+      'Adaptación para perfil kinestésico',
+      'perfil visual predominante',
+      'perfil auditivo predominante'
+    ];
+    
+    const leakedGeneric = genericMarkers.some(marker => 
+      finalHtml.toLowerCase().includes(marker.toLowerCase())
+    );
+    
+    if (leakedGeneric) {
+      console.warn(`[DIFF-STRIP] ${logTag} WARNING: Generic differentiation text still present in final HTML!`, {
+        markers: genericMarkers.filter(m => finalHtml.toLowerCase().includes(m.toLowerCase()))
+      });
+    } else {
+      console.log(`[DIFF-STRIP] ${logTag} ✅ Verification passed: No generic text in final HTML`);
+    }
+    
+    return finalHtml;
+  } else {
+    // No reminders generated: keep original diferenciacion (backward compatible)
+    console.log(`${logTag} No reminders generated (no contemplaciones selected?), keeping AI diferenciacion`);
+    return buildPlanHtml(parsedPlan);
+  }
 }
 
