@@ -16,6 +16,11 @@ import {
 } from '@/lib/competencyExtractor';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext } from '@/utils/groupContext';
+import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
+import { mockGroups } from '@/data/mockData';
+import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
+import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
+import { resolveMockGroup } from '@/utils/resolveMockGroup';
 
 // PHASE 1: Helper para expandir unidades según clases_estimadas (reutilizable)
 function expandUnitsToSessionPlan(
@@ -454,6 +459,15 @@ const generarPlanesAutomaticamente = async (
             throw new Error(`Respuesta inválida para sesión ${sesion.orden}`);
           }
 
+          // CONTEMPLACIONES: Use centralized helper to inject deterministic reminders in REPLACE mode
+          const fallbackRecursos = normalizeArrayField(data.recursos);
+          const finalHtml = buildSanitizedLessonPlanHtml(
+            data.plan_html,
+            fallbackRecursos,
+            grupoId,
+            `[WIZARD-CONTEMPLACIONES-S${sesion.orden}]`
+          );
+
           // Actualizar la sesión con el plan generado
           console.log(`Guardando para sesión ${sesion.orden}:`, {
             contenido: contenidosSesion[0]?.substring(0, 40),
@@ -463,7 +477,7 @@ const generarPlanesAutomaticamente = async (
           
           // Build update payload
           const updatePayload: any = {
-            plan_desarrollo: { html_completo: data.plan_html },
+            plan_desarrollo: { html_completo: finalHtml },
             argumento_competencias: data.argumento_competencias,
             recursos: normalizeArrayField(data.recursos),
             contenidos_anep: normalizeArrayField(contenidosSesion), // PHASE 1: Contenido de unidad asignada

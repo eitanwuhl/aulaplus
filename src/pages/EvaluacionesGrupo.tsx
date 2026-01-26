@@ -43,7 +43,8 @@ interface GeneratedEvaluation {
   title: string;
   content: string;
   adaptations: string[];
-  assignedStudents: string[];
+  assignedStudents: string[];  // Legacy: Student names (for backward compatibility)
+  assignedStudentIds?: (string | number)[];  // NEW: Student IDs assigned to this version
   rubrica?: any[];
   feedback?: {
     liked: string[];
@@ -670,7 +671,7 @@ const EvaluacionesGrupo = () => {
       arr.map(a => {
         const persisted = getPersistedContemplaciones(a.id);
         const activas = persisted.length ? persisted : a.contemplaciones;
-        return { nombre: a.name, contemplaciones: activas };
+        return { nombre: a.name, contemplaciones: activas, id: a.id };
       });
 
     return {
@@ -785,14 +786,16 @@ const EvaluacionesGrupo = () => {
           title: 'Versión Estándar',
           adaptationLevel: 'standard' as const,
           adaptations: ['Formato estándar', 'Tiempo regular (80 min)', 'Instrucciones claras'],
-          assignedStudents: versionStudentData?.v1.map(s => s.nombre) || []
+          assignedStudents: versionStudentData?.v1.map(s => s.nombre) || [],
+          assignedStudentIds: versionStudentData?.v1.map(s => s.id) || []
         },
         {
           id: '2', 
           title: 'Versión con Apoyos Moderados',
           adaptationLevel: 'moderate' as const,
           adaptations: ['Tiempo extendido 50%', 'Apoyo visual', 'Estructura guiada', 'Lectura de enunciados'],
-          assignedStudents: versionStudentData?.v2.map(s => s.nombre) || []
+          assignedStudents: versionStudentData?.v2.map(s => s.nombre) || [],
+          assignedStudentIds: versionStudentData?.v2.map(s => s.id) || []
         },
         // V3 only generated if there are students with content adaptation
         ...(hasContentAdaptation ? [{
@@ -800,7 +803,8 @@ const EvaluacionesGrupo = () => {
           title: 'Versión Altamente Adaptada', 
           adaptationLevel: 'high' as const,
           adaptations: ['Evaluación oral', 'Materiales concretos', 'Tiempo flexible', 'Acompañamiento 1:1'],
-          assignedStudents: versionStudentData?.v3.map(s => s.nombre) || []
+          assignedStudents: versionStudentData?.v3.map(s => s.nombre) || [],
+          assignedStudentIds: versionStudentData?.v3.map(s => s.id) || []
         }] : [])
       ];
 
@@ -827,7 +831,8 @@ const EvaluacionesGrupo = () => {
             title: evalConfig.title,
             content: fallbackContent,
             adaptations: evalConfig.adaptations,
-            assignedStudents: evalConfig.assignedStudents
+            assignedStudents: evalConfig.assignedStudents,
+            assignedStudentIds: evalConfig.assignedStudentIds
           };
         }
 
@@ -837,7 +842,8 @@ const EvaluacionesGrupo = () => {
           title: evalConfig.title,
           content: data.content,
           adaptations: evalConfig.adaptations,
-          assignedStudents: evalConfig.assignedStudents
+          assignedStudents: evalConfig.assignedStudents,
+          assignedStudentIds: evalConfig.assignedStudentIds
         };
       });
 
@@ -856,7 +862,8 @@ const EvaluacionesGrupo = () => {
           title: 'Versión Estándar',
           content: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
           adaptations: ['Formato estándar', 'Tiempo regular (80 min)', 'Instrucciones claras'],
-          assignedStudents: versionStudentData?.v1.map(s => s.nombre) || []
+          assignedStudents: versionStudentData?.v1.map(s => s.nombre) || [],
+          assignedStudentIds: versionStudentData?.v1.map(s => s.id) || []
         },
         {
           id: '2',
@@ -864,7 +871,8 @@ const EvaluacionesGrupo = () => {
           title: 'Versión con Apoyos Moderados', 
           content: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 2),
           adaptations: ['Tiempo extendido 50%', 'Apoyo visual', 'Estructura guiada', 'Lectura de enunciados'],
-          assignedStudents: versionStudentData?.v2.map(s => s.nombre) || []
+          assignedStudents: versionStudentData?.v2.map(s => s.nombre) || [],
+          assignedStudentIds: versionStudentData?.v2.map(s => s.id) || []
         },
         // V3 only generated if there are students with content adaptation
         ...(hasContentAdaptation ? [{
@@ -873,7 +881,8 @@ const EvaluacionesGrupo = () => {
           title: 'Versión Altamente Adaptada',
           content: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 3),
           adaptations: ['Evaluación oral', 'Materiales concretos', 'Tiempo flexible', 'Acompañamiento 1:1'],
-          assignedStudents: versionStudentData?.v3.map(s => s.nombre) || []
+          assignedStudents: versionStudentData?.v3.map(s => s.nombre) || [],
+          assignedStudentIds: versionStudentData?.v3.map(s => s.id) || []
         }] : [])
       ];
       setGeneratedEvaluations(evaluations);
