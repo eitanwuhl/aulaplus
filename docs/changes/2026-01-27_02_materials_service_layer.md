@@ -504,18 +504,20 @@ function AttachMaterial() {
 - `src/hooks/useMaterialAttachments.ts` (new)
 - `docs/changes/2026-01-27_02_materials_service_layer.md` (new)
 
-**Git Status** (to be verified after commit):
+**Git Status**:
 ```bash
 $ git status
 On branch Uso-material-docente-y-nexo-clases-evaluaciones
-...
+nothing to commit, working tree clean
 ```
 
-**Git Log** (to be verified after commit):
+**Git Log**:
 ```bash
 $ git log -1 --oneline
-<hash> feat(materials): service layer + storage upload + attachments CRUD
+7a2822d feat(materials): service layer + storage upload + attachments CRUD
 ```
+
+**Commit Hash**: `7a2822d`
 
 ---
 
