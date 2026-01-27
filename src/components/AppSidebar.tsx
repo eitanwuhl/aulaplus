@@ -6,7 +6,8 @@ import {
   BarChart3, 
   Settings,
   ClipboardList,
-  FolderOpen
+  FolderOpen,
+  Library
 } from "lucide-react"
 import { NavLink, useLocation } from "react-router-dom"
 import logo from "@/assets/logo/aulaplus-logo.png.png"
@@ -48,6 +49,12 @@ import {
     url: "/mis-planificaciones", 
     icon: FolderOpen,
     description: "Planificaciones guardadas y contador de competencias"
+  },
+  { 
+    title: "Biblioteca de Materiales", 
+    url: "/biblioteca-materiales", 
+    icon: Library,
+    description: "Gestiona tus materiales docentes"
   },
 ]
 

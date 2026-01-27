@@ -25,7 +25,6 @@ import { getCompetenciasEspecificasCiudadania, getCriteriosLogroPorCompetenciasC
 import { RubricaIntegrada } from "@/components/RubricaIntegrada";
 import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { AttachMaterialsPanel } from "@/components/materials";
 
 interface ResultadoEvaluacion {
   grupo: string;
