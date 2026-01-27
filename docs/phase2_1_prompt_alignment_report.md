@@ -496,3 +496,7 @@ Phase 2.1 completa la alineación de prompts entre ambos paths de generación. A
 
 
 
+
+
+
+

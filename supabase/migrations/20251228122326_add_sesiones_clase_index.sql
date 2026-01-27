@@ -21,3 +21,7 @@ COMMENT ON INDEX idx_sesiones_clase_planificacion_orden IS 'Index for efficient 
 
 
 
+
+
+
+
