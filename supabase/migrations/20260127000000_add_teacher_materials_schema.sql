@@ -193,3 +193,7 @@ COMMENT ON COLUMN public.material_attachments.priority IS
 
 COMMIT;
 
+
+
+
+

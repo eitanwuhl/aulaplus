@@ -131,3 +131,7 @@ COMMENT ON COLUMN evaluaciones.competencias_anep IS 'Array of competency IDs use
 
 
 
+
+
+
+
