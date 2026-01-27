@@ -639,46 +639,48 @@ const EvaluacionesGrupo = () => {
     return materia ? contenidosPorMateria(materia as Materia) : [];
   }, [materia, materiasSeleccionadas, esInterdisciplinaria]);
 
-  // Función para obtener datos de versión (using explicit flags as source of truth)
-  const getVersionData = useCallback(() => {
+  // Función para obtener datos de versión (using unified provider as source of truth)
+  const getVersionData = useCallback(async () => {
     if (!selectedGroup) return null;
 
-    const alumnos = selectedGroup.students;
+    // Use unified provider instead of direct mock access
+    const { getGroupContextForAI } = await import('@/services/groupContext/provider');
+    const groupContext = await getGroupContextForAI(selectedGroup.id, { purpose: 'evaluation' });
     
-    // NEW RULE: Classify students using explicit flags only (no inference)
-    // V3 (Content-adapted): Only students with requiereAdecuacionContenido === true
-    const conAdecuacionContenido = alumnos.filter(a => 
-      studentRequiresContentAdaptation(a)
+    // Classify students using explicit flags from provider (deterministic, no inference)
+    // V3 (Content-adapted): Only students with hasDeclaredContentAdaptation === true
+    const conAdecuacionContenido = groupContext.students.filter(s => 
+      s.hasDeclaredContentAdaptation
     );
     
-    // V2 (Moderate support): Students with requiereAdecuacionAcceso === true (but NOT content adaptation)
-    const conAdecuacionAcceso = alumnos.filter(a => 
-      studentRequiresAccessAccommodations(a) && !studentRequiresContentAdaptation(a)
+    // V2 (Moderate support): Students with acceso accommodations but NOT content adaptation
+    // Note: acceso accommodations are determined by contemplaciones, not explicit flags
+    // For now, we use contemplaciones that indicate acceso needs (not content changes)
+    const conAdecuacionAcceso = groupContext.students.filter(s => 
+      !s.hasDeclaredContentAdaptation && 
+      (s.contemplacionesEvaluaciones.length > 0 || s.ajustes)
     );
     
-    // V1 (Standard): All remaining students (no explicit flags, or only other accommodations)
-    const sinAdecuacionesExplicitas = alumnos.filter(a => 
-      !studentRequiresContentAdaptation(a) && !studentRequiresAccessAccommodations(a)
+    // V1 (Standard): All remaining students
+    const sinAdecuacionesExplicitas = groupContext.students.filter(s => 
+      !s.hasDeclaredContentAdaptation && 
+      s.contemplacionesEvaluaciones.length === 0 && 
+      !s.ajustes
     );
 
-    // Assign students to versions
-    const v1 = sinAdecuacionesExplicitas;
-    const v2 = conAdecuacionAcceso;
-    const v3 = conAdecuacionContenido; // Only students with content adaptation
-
-    // Helper to create student details (preserve contemplaciones for display)
-    const detalles = (arr: typeof alumnos) =>
-      arr.map(a => {
-        const persisted = getPersistedContemplaciones(a.id);
-        const activas = persisted.length ? persisted : a.contemplaciones;
-        return { nombre: a.name, contemplaciones: activas, id: a.id };
-      });
+    // Helper to create student details (for UI display - uses display names from provider)
+    const detalles = (students: typeof groupContext.students) =>
+      students.map(s => ({
+        nombre: s.displayName,
+        contemplaciones: s.contemplacionesEvaluaciones,
+        id: s.studentId
+      }));
 
     return {
-      v1: detalles(v1),
-      v2: detalles(v2),
-      v3: detalles(v3),
-      hasContentAdaptation: conAdecuacionContenido.length > 0  // Flag to determine if V3 should be generated
+      v1: detalles(sinAdecuacionesExplicitas),
+      v2: detalles(conAdecuacionAcceso),
+      v3: detalles(conAdecuacionContenido),
+      hasContentAdaptation: groupContext.hasContentAdaptation  // From provider (deterministic)
     };
   }, [selectedGroup]);
 
@@ -695,6 +697,10 @@ const EvaluacionesGrupo = () => {
         try {
           const { supabase } = await import('@/integrations/supabase/client');
           
+          // Load unified group context for AI generation
+          const { getGroupContextForAI } = await import('@/services/groupContext/provider');
+          const groupContextData = await getGroupContextForAI(selectedGroup?.id || '', { purpose: 'evaluation' });
+          
           const { data, error } = await supabase.functions.invoke('modify-evaluation', {
             body: {
               originalEvaluation: text,
@@ -702,8 +708,12 @@ const EvaluacionesGrupo = () => {
               groupContext: {
                 subject: materia,
                 content: selectedSubtemas,
-                groupName: selectedGroup?.name || 'Grupo seleccionado',
-                students: selectedGroup?.students || []
+                groupName: groupContextData.groupName,
+                // Use anonymized students from unified provider
+                students: groupContextData.anonymizedStudentsForPrompt,
+                ...(groupContextData.dominantLearningStyle && {
+                  dominantProfile: groupContextData.dominantLearningStyle
+                })
               },
               type: 'modification',
               adaptationLevel: 'standard'
@@ -760,11 +770,17 @@ const EvaluacionesGrupo = () => {
       ]);
     }
     
-    // Obtener la clasificación de estudiantes (lógica existente)
-    const versionStudentData = getVersionData();
+    // Obtener la clasificación de estudiantes (using unified provider)
+    const versionStudentData = await getVersionData();
     
     try {
       const { supabase } = await import('@/integrations/supabase/client');
+      const { getGroupContextForAI } = await import('@/services/groupContext/provider');
+      
+      // Load unified group context for AI generation
+      const groupContextData = await getGroupContextForAI(selectedGroup.id, { purpose: 'evaluation' });
+      
+      // Build evaluation-specific group context (combines group data with evaluation-specific fields)
       const groupContext = {
         subject: esInterdisciplinaria ? materiasSeleccionadas.join(', ') : materia,
         subjects: esInterdisciplinaria ? materiasSeleccionadas : [materia],
@@ -772,8 +788,13 @@ const EvaluacionesGrupo = () => {
         competencies: selectedCompetenciasIds,
         criteriosLogro: selectedCriteriosLogro,
         isInterdisciplinary: esInterdisciplinaria,
-        groupName: selectedGroup.name,
-        students: selectedGroup.students
+        groupName: groupContextData.groupName,
+        // Use anonymized students from unified provider
+        students: groupContextData.anonymizedStudentsForPrompt,
+        // Include dominant profile if available
+        ...(groupContextData.dominantLearningStyle && {
+          dominantProfile: groupContextData.dominantLearningStyle
+        })
       };
 
       // Generate evaluations using explicit flags as source of truth
@@ -852,7 +873,7 @@ const EvaluacionesGrupo = () => {
       setActiveTab('results');
     } catch (error) {
       console.error('Error generating evaluations:', error);
-      // Fallback to local generation if AI fails (using explicit flags)
+      // Fallback to local generation if AI fails (using provider data)
       const hasContentAdaptation = versionStudentData?.hasContentAdaptation ?? false;
       
       const evaluations: GeneratedEvaluation[] = [
@@ -908,6 +929,10 @@ const EvaluacionesGrupo = () => {
 
     await makeAPICall(async () => {
       const { supabase } = await import('@/integrations/supabase/client');
+      const { getGroupContextForAI } = await import('@/services/groupContext/provider');
+      
+      // Load unified group context for AI generation
+      const groupContextData = await getGroupContextForAI(selectedGroup?.id || '', { purpose: 'evaluation' });
       
       const { data, error } = await supabase.functions.invoke('modify-evaluation', {
         body: {
@@ -916,8 +941,11 @@ const EvaluacionesGrupo = () => {
           groupContext: {
             subject: materia,
             content: selectedSubtemas,
-            groupName: selectedGroup?.name || 'Grupo seleccionado',
-            students: selectedGroup?.students || []
+            groupName: groupContextData.groupName,
+            students: groupContextData.anonymizedStudentsForPrompt,
+            ...(groupContextData.dominantLearningStyle && {
+              dominantProfile: groupContextData.dominantLearningStyle
+            })
           },
           type: 'modification',
           adaptationLevel: evaluation.id === '1' ? 'standard' : evaluation.id === '2' ? 'moderate' : 'high'
@@ -982,6 +1010,10 @@ const EvaluacionesGrupo = () => {
         ...evaluation.feedback.suggestions.map(item => `Sugerencia: ${item}`)
       ].join('. ');
 
+      // Load unified group context for AI generation
+      const { getGroupContextForAI } = await import('@/services/groupContext/provider');
+      const groupContextData = await getGroupContextForAI(selectedGroup?.id || '', { purpose: 'evaluation' });
+      
       const { data, error } = await supabase.functions.invoke('modify-evaluation', {
         body: {
           originalEvaluation: evaluation.content,
@@ -989,8 +1021,11 @@ const EvaluacionesGrupo = () => {
           groupContext: {
             subject: materia,
             content: selectedSubtemas,
-            groupName: selectedGroup?.name || 'Grupo seleccionado',
-            students: selectedGroup?.students || []
+            groupName: groupContextData.groupName,
+            students: groupContextData.anonymizedStudentsForPrompt,
+            ...(groupContextData.dominantLearningStyle && {
+              dominantProfile: groupContextData.dominantLearningStyle
+            })
           },
           type: 'modification',
           adaptationLevel: evaluation.id === '1' ? 'standard' : evaluation.id === '2' ? 'moderate' : 'high'
@@ -1070,6 +1105,10 @@ const EvaluacionesGrupo = () => {
   const generateAIResponse = async (userMessage: string, subject: string) => {
     try {
       const { supabase } = await import('@/integrations/supabase/client');
+      const { getGroupContextForAI } = await import('@/services/groupContext/provider');
+      
+      // Load unified group context for AI generation
+      const groupContextData = await getGroupContextForAI(selectedGroup?.id || '', { purpose: 'evaluation' });
       
       const { data, error } = await supabase.functions.invoke('modify-evaluation', {
         body: {
@@ -1078,8 +1117,11 @@ const EvaluacionesGrupo = () => {
           groupContext: {
             subject: subject,
             content: selectedSubtemas,
-            groupName: selectedGroup?.name || 'Grupo seleccionado',
-            students: selectedGroup?.students || []
+            groupName: groupContextData.groupName,
+            students: groupContextData.anonymizedStudentsForPrompt,
+            ...(groupContextData.dominantLearningStyle && {
+              dominantProfile: groupContextData.dominantLearningStyle
+            })
           }
         }
       });

@@ -20,3 +20,4 @@ COMMENT ON COLUMN public.sesiones_clase.session_brief IS 'Optional teacher-provi
 
 
 
+
