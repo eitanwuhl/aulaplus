@@ -23,7 +23,7 @@ export default tseslint.config(
         allowShortCircuit: true,
         allowTernary: true,
         allowTaggedTemplates: true
-      }]
+      }],
     }
   }
 );
