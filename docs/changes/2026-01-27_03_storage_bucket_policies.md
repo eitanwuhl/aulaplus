@@ -569,18 +569,20 @@ echo "SELECT policyname FROM pg_policies WHERE tablename = 'objects' AND policyn
 - `supabase/migrations/20260127000001_add_teacher_materials_storage_bucket.sql` (new)
 - `docs/changes/2026-01-27_03_storage_bucket_policies.md` (new)
 
-**Git Status** (to be verified after commit):
+**Git Status**:
 ```bash
 $ git status
 On branch Uso-material-docente-y-nexo-clases-evaluaciones
-...
+nothing to commit, working tree clean
 ```
 
-**Git Log** (to be verified after commit):
+**Git Log**:
 ```bash
 $ git log -1 --oneline
-<hash> feat(storage): teacher-materials bucket + policies
+1855ffd feat(storage): teacher-materials bucket + policies
 ```
+
+**Commit Hash**: `1855ffd`
 
 ---
 
