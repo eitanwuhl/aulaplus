@@ -16,6 +16,7 @@ import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupCont
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { resolveMockGroup } from '@/utils/resolveMockGroup';
+import { AttachMaterialsPanel } from '@/components/materials';
 
 interface EditorSesionNuevoProps {
   sesion: SesionClase | null;
@@ -1032,6 +1033,12 @@ export function EditorSesionNuevo({
                 <Button onClick={handleGuardarRecursos}>Guardar Recursos Adicionales</Button>
               </CardContent>
             </Card>
+
+            {/* Material Docente - Attachments Panel */}
+            <AttachMaterialsPanel
+              targetType="sesion"
+              targetId={sesion?.id}
+            />
           </TabsContent>
 
           {/* Tab: Evaluación */}
