@@ -18,12 +18,13 @@ export default tseslint.config(
       "react-refresh": reactRefresh,
     },
     rules: {
-    rules: {
-  "@typescript-eslint/no-unused-expressions": "off",
-  "no-unused-expressions": ["error", {
-    allowShortCircuit: true,
-    allowTernary: true,
-    allowTaggedTemplates: true
-  }]
-}
+      "@typescript-eslint/no-unused-expressions": "off",
+      "no-unused-expressions": ["error", {
+        allowShortCircuit: true,
+        allowTernary: true,
+        allowTaggedTemplates: true
+      }]
+    }
+  }
+);
 
