@@ -78,7 +78,10 @@ npm run lint  # ✅ Ejecuta sin errores de configuración
 ```bash
 git add tailwind.config.ts docs/changes/2026-01-27_01b_fix_eslint_config.md
 git commit -m "chore(lint): fix eslint config error"
+# b06bb26 chore(lint): fix eslint config error
 ```
+
+**Hash**: `b06bb26`
 
 ## Próximos Pasos
 
