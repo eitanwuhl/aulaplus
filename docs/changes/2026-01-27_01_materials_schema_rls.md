@@ -373,9 +373,26 @@ SyntaxError: Unexpected end of input
 
 **Commit Message**: `feat(db): teacher materials + attachments schema and RLS`
 
+**Commit Hash**: `6b07d8e`
+
+**Git Log Output**:
+```bash
+$ git log -1 --oneline
+6b07d8e feat(db): teacher materials + attachments schema and RLS
+```
+
+**Git Status** (after commit):
+```bash
+$ git status
+On branch Uso-material-docente-y-nexo-clases-evaluaciones
+nothing to commit, working tree clean
+```
+
 **Files Changed**:
 - `supabase/migrations/20260127000000_add_teacher_materials_schema.sql` (new)
 - `docs/changes/2026-01-27_01_materials_schema_rls.md` (new)
+
+**Note**: This commit also included other untracked files from the baseline (documentation files, rule files, etc.) that were staged together. The migration and change report are the primary deliverables for this phase.
 
 ---
 
