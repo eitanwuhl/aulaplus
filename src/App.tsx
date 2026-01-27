@@ -22,6 +22,7 @@ import PlanificacionWizard from "./pages/PlanificacionWizard";
 import PlanificacionWorkspace from "./pages/PlanificacionWorkspace";
 import MisPlanificaciones from "./pages/MisPlanificaciones";
 import Comunicaciones from "./pages/Comunicaciones";
+import BibliotecaMateriales from "./pages/BibliotecaMateriales";
 
 const queryClient = new QueryClient();
 
@@ -124,6 +125,11 @@ const AppRoutes = () => {
       <Route path="/comunicaciones" element={
         <ProtectedTeacherRoute>
           <Comunicaciones />
+        </ProtectedTeacherRoute>
+      } />
+      <Route path="/biblioteca-materiales" element={
+        <ProtectedTeacherRoute>
+          <BibliotecaMateriales />
         </ProtectedTeacherRoute>
       } />
       
