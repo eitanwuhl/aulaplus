@@ -695,20 +695,22 @@ const filteredMaterials = materials.filter((material) => {
 - `src/components/AppSidebar.tsx` (modified - added 6 lines)
 - `docs/changes/2026-01-27_03_1_materials_library_hotfix_restore_intent.md` (new - this report)
 
-**Total**: +296 lines, -13 lines, 7 files changed
+**Total**: +994 lines, -16 lines, 7 files changed
 
-**Git Status** (to be verified after commit):
+**Git Status** (verified):
 ```bash
 $ git status
 On branch Uso-material-docente-y-nexo-clases-evaluaciones
-...
+nothing to commit, working tree clean
 ```
 
-**Git Log** (to be verified after commit):
+**Git Log** (verified):
 ```bash
 $ git log -1 --oneline
-<hash> fix(ui): standalone materials library page and remove misplaced panels
+9bda6d2 fix(ui): standalone materials library page and remove misplaced panels
 ```
+
+**Commit Hash**: `9bda6d2`
 
 ---
 
