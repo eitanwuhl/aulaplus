@@ -10,6 +10,7 @@ import { EvaluacionVisualRenderer } from '@/components/evaluaciones/EvaluacionVi
 import { getSubtemaPorId } from '@/data/catalogo';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { mockGroups } from '@/data/mockData';
+import { AttachMaterialsPanel } from '@/components/materials';
 
 interface Evaluacion {
   id: string;
@@ -201,6 +202,12 @@ const EvaluacionDetalle: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* Material Docente */}
+        <AttachMaterialsPanel
+          targetType="evaluacion"
+          targetId={evaluacion.id}
+        />
 
         {/* Evaluaciones Generadas */}
         {evaluacionesGeneradas.length > 0 ? (
