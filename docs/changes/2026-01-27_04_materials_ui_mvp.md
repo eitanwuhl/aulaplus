@@ -530,18 +530,20 @@ Automatic folder assignment on upload:
 
 **Total**: ~770 lines of new code + ~7 lines modified
 
-**Git Status** (to be verified after commit):
+**Git Status**:
 ```bash
 $ git status
 On branch Uso-material-docente-y-nexo-clases-evaluaciones
-...
+nothing to commit, working tree clean
 ```
 
-**Git Log** (to be verified after commit):
+**Git Log**:
 ```bash
 $ git log -1 --oneline
-<hash> feat(materials): UI library + attachments integration (MVP)
+5e603c1 feat(materials): UI library + attachments integration (MVP)
 ```
+
+**Commit Hash**: `5e603c1`
 
 ---
 
