@@ -1,0 +1,47 @@
+# AulaPlus v0 - Cursor Rules
+
+> **Primary Reference**: Always read `docs/ARCHITECTURE_SSoT.md` before making code changes.
+
+## Architecture Contract Enforcement
+
+**CRITICAL**: The Architecture Single Source of Truth (`docs/ARCHITECTURE_SSoT.md`) is the definitive contract for all code changes.
+
+### Before Any Code Change
+
+1. **Read the SSoT**: Check `docs/ARCHITECTURE_SSoT.md` for relevant contracts, guardrails, and "where to change things" guide.
+
+2. **Impact Analysis Required** for changes to:
+   - `src/lib/planParser.ts` (backward compatibility critical)
+   - `supabase/functions/*` (edge function contracts)
+   - Database migrations/RLS (data isolation)
+   - `src/lib/contemplaciones/*` (catalog stability)
+   - `src/contexts/AuthContext.tsx` (auth flow)
+   - `src/utils/groupContext.ts` (group loading)
+
+3. **Guardrails** (never break without approval):
+   - Plan parser backward compatibility
+   - AI generation contract (`{ plan_html, argumento_competencias, recursos, titulo }`)
+   - Database invariants (explicit save, soft delete, RLS)
+   - Contemplaciones catalog IDs stability
+   - Session estado enum values
+
+### Common Patterns
+
+- **New page**: Create `src/pages/NewPage.tsx`, add route in `src/App.tsx`, add nav in `src/components/AppSidebar.tsx`
+- **DB migration**: Create new file, include RLS, test sequence, update types
+- **Edge function**: Maintain request/response contract, document in SSoT
+- **Plan parser**: Additive changes only, test with existing plans
+
+### File References
+
+See `docs/ARCHITECTURE_SSoT.md` for:
+- Complete contracts and invariants
+- "Where to change things" guide
+- Key file references
+- Known gaps and risks
+
+---
+
+**For detailed rules, see**: `.cursor/rules/ARCHITECTURE_SSoT.md`
+
+

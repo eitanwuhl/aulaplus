@@ -438,3 +438,4 @@ const all = getAllSelected('student-123', 'clase');
 **Última actualización:** 2026-01-23
 
 
+

@@ -264,3 +264,4 @@ Esta implementación es solo la UI del perfil. Las siguientes integraciones vend
 **Última actualización:** 2026-01-23
 
 
+

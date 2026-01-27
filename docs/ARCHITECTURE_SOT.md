@@ -297,7 +297,7 @@ Frontend:
 - **Error Logging**: `console.error()` in DEV mode only
 
 **Edge Functions**:
-- **Retry Logic**: Exponential backoff for OpenAI rate limits (3 attempts, baseDelay=1000ms)
+- **Retry Logic**: Exponential backoff for OpenAI rate limits (3 attempts, baseDelay=2000ms)
 - **Error Responses**: JSON error responses with status codes
 - **CORS Headers**: All edge functions include CORS headers
 

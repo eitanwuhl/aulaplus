@@ -1,8 +1,9 @@
 # AulaPlus v0 - Project Overview
 
-**Date**: December 28, 2024  
+**Date**: January 26, 2026 (Last Updated)  
 **Repository**: aulaplus-v0  
-**Build System**: Vite + React + TypeScript
+**Build System**: Vite + React + TypeScript  
+**Branch**: `Nuevos-perfiles-y-reglas-para-contemplaciones`
 
 ---
 
@@ -172,8 +173,8 @@ VITE_SUPABASE_ANON_KEY=<anon_public_key>
 
 **OpenAI Integration**:
 - API Key: `OPENAI_API_KEY` environment variable (set in Supabase dashboard)
-- Models: `gpt-4o-mini` (default), `gpt-4.1-2025-04-14` (optional fallback)
-- Retry logic: Exponential backoff for rate limits (3 retries)
+- Models: `gpt-4o-mini` (default for generate-plan-completo, no fallback); `gpt-4.1-2025-04-14` used by modify-evaluation and generate-bulletin-text
+- Retry logic: Exponential backoff for rate limits (3 retries, base delay: 2000ms)
 
 ### State Management
 
@@ -332,7 +333,8 @@ const queryClient = new QueryClient();
 │  ┌────────────────────────────────────────────────────────────────┐ │
 │  │  OpenAI API (api.openai.com)                                   │ │
 │  │  - Model: gpt-4o-mini (default)                                │ │
-│  │  - Fallback: gpt-4.1-2025-04-14                                │ │
+│  │  - Note: generate-plan-completo has no fallback; modify-evaluation │ │
+│  │    and generate-bulletin-text use gpt-4.1-2025-04-14            │ │
 │  │  - API Key: Stored in Supabase env vars                        │ │
 │  └────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
@@ -830,9 +832,9 @@ const openAIApiKey = Deno.env.get('OPENAI_API_KEY');
 }
 ```
 
-**AI Model**: `gpt-4o-mini` (default), fallback to `gpt-4.1-2025-04-14`
+**AI Model**: `gpt-4o-mini` (no fallback)
 
-**Temperature**: 0.7, Max Tokens: 3000
+**Temperature**: 0.7, Max Tokens: 3000 (not explicitly set, uses OpenAI defaults)
 
 **Prompt Structure**:
 1. System message: "You are a pedagogical expert..."
@@ -1143,10 +1145,16 @@ loadGroupContext(grupoId):
 - **Usage**: AI includes profile-driven decisions in activities
 
 #### Student Adjustments (Contemplaciones)
+- **System**: Canonical catalog of 26 contemplaciones (1-26) with deterministic enforcement
+- **Location**: `src/lib/contemplaciones/` (catalog, defaults, enforcement, storage, seeding, resolver)
 - **Examples**:
   - "Lectura oral de consignas" (Oral reading of instructions)
   - "Tiempo adicional y pausas" (Additional time and breaks)
   - "Palabras clave en negrita" (Bold keywords)
+- **Categories**: `clase` (class), `evaluaciones` (evaluations), `ambas` (both)
+- **Storage**: localStorage with canonical keys (`contemplaciones_clase_${studentId}`, `contemplaciones_evaluaciones_${studentId}`)
+- **Default Seeding**: Per-student defaults (v999) with deterministic migration
+- **Enforcement**: Deterministic reminder generation (no LLM dependency) for evaluation cards and class differentiation sections
 - **Purpose**: Inform differentiation in lesson plans and evaluations
 - **Anonymization**: Names replaced with "Estudiante A/B/C" in AI prompts
 
@@ -1397,10 +1405,10 @@ loadGroupContext(grupoId):
 
 **Edge Functions**: Exponential backoff for OpenAI rate limits
 ```typescript
-retryWithBackoff(fn, maxRetries=3, baseDelay=1000):
+retryWithBackoff(fn, maxRetries=3, baseDelay=2000):
   - Attempt 1: No delay
-  - Attempt 2: 1s delay
-  - Attempt 3: 2s delay
+  - Attempt 2: 2s delay
+  - Attempt 3: 4s delay
   - Gives up after 3 attempts
 ```
 

@@ -420,15 +420,16 @@ export function EditorSesionNuevo({
 
     setIsAILoading(true);
     try {
-      // PHASE 4: Load group context from Supabase + mockGroups
+      // Load unified group context for AI generation
       const grupoId = await getGrupoIdFromPlanificacion(planificacionId);
-      const groupContext = await loadGroupContext(grupoId);
+      const { getGroupContextForAI } = await import('@/services/groupContext/provider');
+      const groupContext = await getGroupContextForAI(grupoId, { purpose: 'planning' });
       
-      if (groupContext.perfilGrupo) {
-        console.log('[PHASE4-EditorSesion] Using group profile:', {
-          tamanio: groupContext.perfilGrupo.tamanio,
-          dominante: groupContext.perfilGrupo.dominante,
-          estudiantesConAjustes: groupContext.estudiantes?.length || 0,
+      if (groupContext.groupProfile) {
+        console.log('[EditorSesion] Using group profile:', {
+          tamanio: groupContext.groupProfile.tamanio,
+          dominante: groupContext.groupProfile.dominante,
+          estudiantesConAjustes: groupContext.anonymizedStudentsForPrompt.length,
           teacherSugerenciasPresent: !!groupContext.teacherSugerencias
         });
       }
@@ -444,9 +445,17 @@ export function EditorSesionNuevo({
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
         instruccionesDocente: undefined,
-        // PHASE 4: Include group profile and student adjustments if available
-        ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
-        ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes })
+        // Include group profile and student adjustments from unified provider
+        ...(groupContext.groupProfile && { 
+          perfilGrupo: {
+            tamanio: groupContext.groupProfile.tamanio,
+            dominante: groupContext.groupProfile.dominante,
+            distribucion: groupContext.groupProfile.distribucion
+          }
+        }),
+        ...(groupContext.anonymizedStudentsForPrompt.length > 0 && { 
+          estudiantes: groupContext.anonymizedStudentsForPrompt 
+        })
       };
 
       console.log('Generando plan inicial con payload:', payload);

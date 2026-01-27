@@ -260,30 +260,31 @@ async function generateAIPlan(params: {
       ...(params.unitAssignment.isExtraSlot && { isExtraSlot: true })
     } : undefined;
 
-    // PHASE 4: Load group context from Supabase + mockGroups
-    const groupContextData = await loadGroupContext(params.grupoId);
+    // Load unified group context for AI generation
+    const { getGroupContextForAI } = await import('@/services/groupContext/provider');
+    const groupContext = await getGroupContextForAI(params.grupoId, { purpose: 'planning' });
     
-    if (groupContextData.perfilGrupo) {
-      console.log('[PHASE4-useFullSessionGen] Using group profile:', {
-        dominante: groupContextData.perfilGrupo.dominante,
-        estudiantesConAjustes: groupContextData.estudiantes?.length || 0,
-        teacherSugerenciasPresent: !!groupContextData.teacherSugerencias
+    if (groupContext.groupProfile) {
+      console.log('[useFullSessionGen] Using group profile:', {
+        dominante: groupContext.groupProfile.dominante,
+        estudiantesConAjustes: groupContext.anonymizedStudentsForPrompt.length,
+        teacherSugerenciasPresent: !!groupContext.teacherSugerencias
       });
     }
     
     // Build enriched additionalContext with teacher suggestions if available
     let additionalContext = `Modalidad: ${params.modalidad}, Sesión ${params.sesionNumero}/${params.totalSesiones}`;
     
-    if (groupContextData.teacherSugerencias) {
+    if (groupContext.teacherSugerencias) {
       const suggestions = [];
-      if (groupContextData.teacherSugerencias.aula) {
-        suggestions.push(`Teacher suggestions for classroom: ${groupContextData.teacherSugerencias.aula}`);
+      if (groupContext.teacherSugerencias.aula) {
+        suggestions.push(`Teacher suggestions for classroom: ${groupContext.teacherSugerencias.aula}`);
       }
-      if (groupContextData.teacherSugerencias.evaluaciones) {
-        suggestions.push(`Teacher suggestions for evaluations: ${groupContextData.teacherSugerencias.evaluaciones}`);
+      if (groupContext.teacherSugerencias.evaluaciones) {
+        suggestions.push(`Teacher suggestions for evaluations: ${groupContext.teacherSugerencias.evaluaciones}`);
       }
-      if (groupContextData.teacherSugerencias.otras) {
-        suggestions.push(`Other important notes: ${groupContextData.teacherSugerencias.otras}`);
+      if (groupContext.teacherSugerencias.otras) {
+        suggestions.push(`Other important notes: ${groupContext.teacherSugerencias.otras}`);
       }
       if (suggestions.length > 0) {
         additionalContext += `\n\n` + suggestions.join('\n');
@@ -318,9 +319,13 @@ Use these exact labels in the output: 'Actividad:' and 'Recursos:'.`,
           competencies: params.competencias,
           groupName: params.grupoId,
           additionalContext,
-          // PHASE 4: Include anonymized students and dominant profile
-          ...(groupContextData.estudiantes && { students: groupContextData.estudiantes }),
-          ...(groupContextData.perfilGrupo && { dominantProfile: groupContextData.perfilGrupo.dominante })
+          // Include anonymized students and dominant profile from unified provider
+          ...(groupContext.anonymizedStudentsForPrompt.length > 0 && { 
+            students: groupContext.anonymizedStudentsForPrompt 
+          }),
+          ...(groupContext.dominantLearningStyle && { 
+            dominantProfile: groupContext.dominantLearningStyle 
+          })
         },
         // PHASE 2: Incluir unitContext en payload (opcional para backward compatibility)
         ...(unitContext && { unitContext }),

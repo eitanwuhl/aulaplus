@@ -1,13 +1,19 @@
 /**
  * PHASE 4: Shared helper for loading group profile + student adjustments
  * 
- * Single source of truth for group context data across all generation entry points.
- * Uses hybrid approach: Supabase (for teacher_sugerencias) + mockGroups (for student data).
+ * DEPRECATED: This function is now a wrapper around the new unified provider.
+ * Use `getGroupContextForAI()` from `@/services/groupContext/provider` instead.
+ * 
+ * This wrapper is kept for backward compatibility during migration.
+ * 
+ * IMPORTANT: Legacy UI only — do NOT use for AI generation.
+ * All AI generation flows must use `getGroupContextForAI()` directly.
+ * 
+ * @deprecated Use `getGroupContextForAI()` from `@/services/groupContext/provider`
  */
 
-import { supabase } from '@/integrations/supabase/client';
-import { mockGroups, type TeacherSugerencias } from '@/data/mockData';
-import { resolveMockGroup } from './resolveMockGroup';
+import { getGroupContextForAI } from '@/services/groupContext/provider';
+import type { GroupContextForAI } from '@/types/groupContextForAI';
 
 // ============================================================================
 // Types
@@ -122,22 +128,12 @@ function hasMeaningfulData(data: GroupContextData): boolean {
 // ============================================================================
 
 /**
- * Load group context data from Supabase (teacher_sugerencias) + mockGroups (students)
+ * Load group context data (DEPRECATED - wrapper for backward compatibility)
  * 
- * @param grupoId - Group ID (e.g. "9no 1") or undefined
- * @returns GroupContextData object with perfilGrupo, estudiantes, teacherSugerencias
+ * @deprecated Use `getGroupContextForAI()` from `@/services/groupContext/provider` instead
  * 
- * Behavior:
- * - If grupoId is undefined, returns empty object (backward compatibility)
- * - Attempts to load teacher_sugerencias from Supabase (table grupos)
- * - Falls back to mockGroups for student data
- * - Calculates learning style distribution and dominant style
- * - Anonymizes student data (no names)
- * - Caps to MAX_STUDENTS_WITH_ADJUSTMENTS (10)
- * - Returns empty object if no meaningful data found
- * 
- * Future-proof: If a students table is added to Supabase, only this function
- * needs to be updated (transparent to consumers).
+ * This function wraps the new unified provider and converts the response
+ * to the old GroupContextData format for backward compatibility.
  */
 export async function loadGroupContext(grupoId: string | undefined): Promise<GroupContextData> {
   // Backward compatibility: if no grupoId, return empty
@@ -146,106 +142,34 @@ export async function loadGroupContext(grupoId: string | undefined): Promise<Gro
     return {};
   }
   
-  console.log('[loadGroupContext] Loading context for grupo:', grupoId);
+  console.log('[loadGroupContext] DEPRECATED: Use getGroupContextForAI() instead');
   
   try {
-    // ========================================================================
-    // 1. Try to load from Supabase (teacher_sugerencias only for now)
-    // ========================================================================
-    let teacherSugerencias: TeacherSugerencias | undefined;
+    // Use new unified provider
+    const context = await getGroupContextForAI(grupoId, { purpose: 'planning' });
     
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (user) {
-        const { data, error } = await supabase
-          .from('grupos')
-          .select('teacher_sugerencias')
-          .eq('id', grupoId)
-          .eq('user_id', user.id)
-          .maybeSingle(); // Use maybeSingle to avoid error if not found
-        
-        if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-          console.warn('[loadGroupContext] Error fetching from Supabase grupos:', error);
-        } else if (data?.teacher_sugerencias) {
-          teacherSugerencias = data.teacher_sugerencias as TeacherSugerencias;
-          console.log('[loadGroupContext] Loaded teacher_sugerencias from Supabase');
-        }
-      }
-    } catch (supabaseError) {
-      console.warn('[loadGroupContext] Supabase fetch failed, continuing with mock fallback:', supabaseError);
-    }
-    
-    // ========================================================================
-    // 2. Fallback to mockGroups for student data using robust resolver
-    // ========================================================================
-    const resolveResult = resolveMockGroup(grupoId, true);
-    const mockGroup = resolveResult.group;
-    
-    console.log('[loadGroupContext] Resolution result:', {
-      matchType: resolveResult.matchType,
-      mockGroupFound: !!mockGroup,
-      studentsCount: mockGroup?.students?.length ?? 0,
-      resolvedGroupId: mockGroup?.id,
-      resolvedGroupName: mockGroup?.name
-    });
-    
-    if (!mockGroup || !mockGroup.students || mockGroup.students.length === 0) {
-      console.log('[loadGroupContext] No mock group found or no students, returning teacher_sugerencias only');
-      
-      // Return teacher_sugerencias if available, even without student data
-      if (teacherSugerencias) {
-        return { teacherSugerencias };
-      }
-      
-      return {}; // No data available
-    }
-    
-    console.log('[loadGroupContext] Found mock group with', mockGroup.students.length, 'students');
-    
-    // ========================================================================
-    // 3. Calculate learning style distribution
-    // ========================================================================
-    const distribucion = calculateLearningStyleDistribution(mockGroup.students);
-    const dominante = calculateDominantStyle(distribucion);
-    
-    const perfilGrupo: PerfilGrupo = {
-      tamanio: mockGroup.students.length,
-      dominante,
-      distribucion: Object.keys(distribucion).length > 0 ? distribucion : undefined
-    };
-    
-    // ========================================================================
-    // 4. Anonymize and filter students (only with adjustments)
-    // ========================================================================
-    const estudiantes = anonymizeAndFilterStudents(mockGroup.students);
-    
-    // ========================================================================
-    // 5. Build result object
-    // ========================================================================
+    // Convert to old format for backward compatibility
     const result: GroupContextData = {
-      perfilGrupo,
-      estudiantes,
-      teacherSugerencias
+      perfilGrupo: context.groupProfile ? {
+        tamanio: context.groupProfile.tamanio,
+        dominante: context.groupProfile.dominante,
+        distribucion: context.groupProfile.distribucion
+      } : undefined,
+      estudiantes: context.anonymizedStudentsForPrompt.length > 0
+        ? context.anonymizedStudentsForPrompt
+        : undefined,
+      teacherSugerencias: context.teacherSugerencias
     };
     
     // Only return if there's meaningful data
     if (!hasMeaningfulData(result)) {
-      console.log('[loadGroupContext] No meaningful data found, returning empty context');
       return {};
     }
-    
-    console.log('[loadGroupContext] Successfully loaded context:', {
-      perfilGrupo: { tamanio: perfilGrupo.tamanio, dominante: perfilGrupo.dominante },
-      estudiantesConAjustes: estudiantes?.length || 0,
-      teacherSugerenciasPresent: !!teacherSugerencias
-    });
     
     return result;
     
   } catch (error) {
-    console.error('[loadGroupContext] Unexpected error loading group context:', error);
-    // Return empty on error (fail gracefully)
+    console.error('[loadGroupContext] Error loading group context:', error);
     return {};
   }
 }

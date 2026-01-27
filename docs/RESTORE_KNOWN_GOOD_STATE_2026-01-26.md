@@ -698,3 +698,4 @@ git apply BACKUP_before_restore.patch
 **Autor**: AI Assistant (Claude Sonnet 4.5)  
 **Commit de referencia**: `b34c1a0`
 
+
