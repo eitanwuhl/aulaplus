@@ -176,13 +176,71 @@ export async function archiveMaterial(id: string): Promise<{ success: boolean; e
       return { success: false, error: 'ID de material inválido' };
     }
 
+    // Get authenticated user first
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      console.error('[archiveMaterial] Auth error:', authError);
+      return { success: false, error: 'Usuario no autenticado' };
+    }
+
+    // Verify ownership before attempting update (for debugging)
+    // This helps identify if the issue is ownership mismatch
+    const { data: material, error: fetchError } = await supabase
+      .from('teacher_materials')
+      .select('id, user_id, deleted_at')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchError) {
+      console.error('[archiveMaterial] Fetch error:', fetchError);
+      return { success: false, error: 'Error al verificar material: ' + fetchError.message };
+    }
+
+    if (!material) {
+      return { success: false, error: 'Material no encontrado' };
+    }
+
+    // Debug logging in development
+    if (import.meta.env.DEV) {
+      console.log('[archiveMaterial] Debug info:', {
+        materialId: id,
+        materialUserId: material.user_id,
+        currentUserId: user.id,
+        ownershipMatch: material.user_id === user.id,
+        alreadyDeleted: !!material.deleted_at
+      });
+    }
+
+    // Verify ownership
+    if (material.user_id !== user.id) {
+      console.error('[archiveMaterial] Ownership mismatch:', {
+        materialUserId: material.user_id,
+        currentUserId: user.id
+      });
+      return { success: false, error: 'No tienes permiso para archivar este material' };
+    }
+
+    // Check if already deleted
+    if (material.deleted_at) {
+      return { success: false, error: 'El material ya está archivado' };
+    }
+
+    // Perform the update
     const { error } = await supabase
       .from('teacher_materials')
       .update({ deleted_at: new Date().toISOString() })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('user_id', user.id); // Extra safety: ensure we only update own materials
 
     if (error) {
       console.error('[archiveMaterial] Update error:', error);
+      console.error('[archiveMaterial] Error details:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint
+      });
       return { success: false, error: error.message || 'Error al archivar material' };
     }
 
