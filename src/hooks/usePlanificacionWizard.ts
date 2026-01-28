@@ -216,26 +216,43 @@ export const usePlanificacionWizard = () => {
       }
 
       case 2: {
-        // Validar unidades_didacticas
+        // A/B/C Validation Rule: Allow generation if at least ONE is true:
+        // A) >= 1 ANEP content (unidades didácticas with content)
+        // B) >= 1 material attached (plan-level, checked later via DB)
+        // C) Sufficiently informative focus/topic text
+        
         const unidades = wizardData.enfoque?.unidades_didacticas || [];
-        if (unidades.length === 0) {
+        const hasAnepContent = unidades.length > 0 && unidades.some(u => u.contenido_texto?.trim());
+        
+        const requerimientos = wizardData.enfoque?.requerimientos_docente?.trim() || '';
+        const sessionBriefs = wizardData.enfoque?.sessionBriefs || [];
+        const hasMeaningfulBriefs = sessionBriefs.some(b => (b?.trim() || '').length >= 15);
+        const hasMeaningfulRequerimientos = requerimientos.length >= 20;
+        const hasSufficientFocusText = hasMeaningfulBriefs || hasMeaningfulRequerimientos;
+        
+        // Note: Material attachments (B) will be checked at generation time since they're DB-based
+        // For wizard validation, we only check A and C here
+        
+        if (!hasAnepContent && !hasSufficientFocusText) {
           errors.push({
-            fieldId: 'unidades_didacticas',
-            message: 'Debes crear al menos una unidad didáctica',
-            type: 'required'
+            fieldId: 'generation_requirements',
+            message: 'Para generar planes necesitas al menos: (A) contenido ANEP en unidades didácticas, O (B) materiales adjuntos, O (C) texto de foco/tema suficientemente informativo (ej: temas de las clases o requerimientos del docente)',
+            type: 'custom'
           });
-          if (!firstInvalidField) firstInvalidField = 'unidades_didacticas';
+          if (!firstInvalidField) firstInvalidField = 'generation_requirements';
         }
 
-        // Validar que al menos una unidad tenga competencias seleccionadas
-        const tieneCompetencias = unidades.some(u => u.competencias_ids && u.competencias_ids.length > 0);
-        if (unidades.length > 0 && !tieneCompetencias) {
-          errors.push({
-            fieldId: 'competencias_especificas',
-            message: 'Debes seleccionar al menos una competencia específica en tus unidades',
-            type: 'required'
-          });
-          if (!firstInvalidField) firstInvalidField = 'competencias_especificas';
+        // If ANEP content is provided, validate competencies
+        if (hasAnepContent) {
+          const tieneCompetencias = unidades.some(u => u.competencias_ids && u.competencias_ids.length > 0);
+          if (!tieneCompetencias) {
+            errors.push({
+              fieldId: 'competencias_especificas',
+              message: 'Si usas contenido ANEP, debes seleccionar al menos una competencia específica en tus unidades',
+              type: 'required'
+            });
+            if (!firstInvalidField) firstInvalidField = 'competencias_especificas';
+          }
         }
 
         // Validar distribucion_modalidades (suma = 100%)

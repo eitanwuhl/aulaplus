@@ -115,3 +115,4 @@ git commit -m "fix: add trailing comma in eslint config rules
 - Enables linting functionality"
 ```
 
+

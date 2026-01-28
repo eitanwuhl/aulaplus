@@ -409,6 +409,15 @@ const generarPlanesAutomaticamente = async (
             console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: NO hay sessionBrief en wizard state (índice ${i})`);
           }
           
+          // PHASE 4: Load attached materials (plan-level + session-level)
+          const { loadAttachedMaterialsForSession, formatMaterialsForAI } = await import('@/utils/loadAttachedMaterials');
+          const attachedMaterials = await loadAttachedMaterialsForSession(planificacionId, sesion.id);
+          const materialsContext = formatMaterialsForAI(attachedMaterials);
+          
+          if (attachedMaterials.length > 0) {
+            console.log(`[MATERIALS] Sesión ${sesion.orden}: ${attachedMaterials.length} material(es) adjunto(s)`);
+          }
+          
           const payload = {
             modo: 'generar_plan_html',
             sesionId: sesion.id,
@@ -426,7 +435,9 @@ const generarPlanesAutomaticamente = async (
             ...(sessionBrief?.trim() && { sessionBrief: sessionBrief.trim() }),
             // PHASE 3 (Profile Usage): Include group profile and student adjustments if available
             ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
-            ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes })
+            ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes }),
+            // PHASE 4: Include attached materials context
+            ...(materialsContext && { materialsContext })
           };
 
           console.log(`Generando plan para sesión ${sesion.orden} (intento ${intentos + 1}/${maxIntentos}) con payload:`, payload);
@@ -832,6 +843,37 @@ export default function PlanificacionWizard() {
       
       // Guardar el ID de la planificación para posibles reintentos
       wizardData.planificacionId = planificacion.id;
+
+      // Persist plan-level material attachments (if any)
+      const attachedPlanMaterialIds = wizardData.enfoque?.attachedPlanMaterialIds || [];
+      if (attachedPlanMaterialIds.length > 0) {
+        const { addAttachment } = await import('@/services/materials');
+        
+        console.log(`[Materials] Attaching ${attachedPlanMaterialIds.length} materials to plan ${planificacion.id}`);
+        
+        const attachmentPromises = attachedPlanMaterialIds.map((materialId, index) =>
+          addAttachment({
+            target_type: 'planificacion',
+            target_id: planificacion.id,
+            material_id: materialId,
+            priority: index + 1
+          })
+        );
+        
+        const attachmentResults = await Promise.allSettled(attachmentPromises);
+        const failedAttachments = attachmentResults.filter(r => r.status === 'rejected');
+        
+        if (failedAttachments.length > 0) {
+          console.error('[Materials] Some attachments failed:', failedAttachments);
+          toast({
+            title: 'Advertencia',
+            description: `${failedAttachments.length} material(es) no se pudieron adjuntar. La planificación se creó correctamente.`,
+            variant: 'default'
+          });
+        } else {
+          console.log(`[Materials] Successfully attached ${attachedPlanMaterialIds.length} materials`);
+        }
+      }
 
       // Determinar tipo de planificación y crear sesiones
       if (wizardData.tipo_planificacion === 'sin_periodo') {

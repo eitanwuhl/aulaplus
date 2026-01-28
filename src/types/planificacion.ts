@@ -136,7 +136,10 @@ export interface WizardData {
     objetivos_unidad?: string;
     // PHASE 3.1: Optional per-session focus/title overrides
     sessionBriefs?: (string | undefined)[];
+    // PHASE 4: Plan-level material attachments (for A/B/C validation)
+    attachedPlanMaterialIds?: string[];
   };
+  planificacionId?: string;
 }
 
 export interface AlertaGrupo {
