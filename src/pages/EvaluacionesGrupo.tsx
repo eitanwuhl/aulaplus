@@ -24,6 +24,7 @@ import { getCompetenciasEspecificasLiteratura, getCriteriosLogroPorCompetenciasL
 import { getCompetenciasEspecificasCiudadania, getCriteriosLogroPorCompetenciasCiudadania } from "@/data/competenciasCiudadania";
 import { RubricaIntegrada } from "@/components/RubricaIntegrada";
 import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
+import { EvaluationSourceSelector, EvaluationMaterialsSection } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 interface ResultadoEvaluacion {
@@ -387,6 +388,24 @@ const EvaluacionesGrupo = () => {
   const [nombreEvaluacion, setNombreEvaluacion] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const { toast } = useToast();
+  
+  // PHASE 5: Evaluation sources (multi-session + materials)
+  const [evaluationSourceConfig, setEvaluationSourceConfig] = useState<{
+    planificacionId?: string;
+    sessionIds: string[];
+    evaluationFocus: string;
+  }>({
+    sessionIds: [],
+    evaluationFocus: ''
+  });
+  
+  const [evaluationMaterialsConfig, setEvaluationMaterialsConfig] = useState<{
+    directMaterialIds: string[];
+    includeSessionMaterials: boolean;
+  }>({
+    directMaterialIds: [],
+    includeSessionMaterials: false
+  });
 
   const selectedGroup: Group | undefined = useMemo(
     () => mockGroups.find(g => g.id === selectedGroupId),
@@ -515,6 +534,12 @@ const EvaluacionesGrupo = () => {
           evaluaciones: generatedEvaluations,
           base_prototype: basePrototype
         },
+        // PHASE 5: Evaluation sources (sessions + materials)
+        source_planificacion_id: evaluationSourceConfig.planificacionId || null,
+        source_session_ids: evaluationSourceConfig.sessionIds,
+        evaluation_focus: evaluationSourceConfig.evaluationFocus || null,
+        direct_material_ids: evaluationMaterialsConfig.directMaterialIds,
+        include_session_materials: evaluationMaterialsConfig.includeSessionMaterials,
         is_saved: true,
         saved_at: new Date().toISOString(),
         deleted_at: null
@@ -1547,6 +1572,22 @@ const EvaluacionesGrupo = () => {
               )}
             </div>
 
+            {/* PHASE 5: Evaluation sources (sessions + materials) */}
+            <EvaluationSourceSelector
+              grupoId={selectedGroupId}
+              config={evaluationSourceConfig}
+              onChange={setEvaluationSourceConfig}
+              disabled={isGenerating || requestInProgress}
+            />
+            
+            {/* PHASE 5: Evaluation materials */}
+            <EvaluationMaterialsSection
+              config={evaluationMaterialsConfig}
+              onChange={setEvaluationMaterialsConfig}
+              selectedSessionIds={evaluationSourceConfig.sessionIds}
+              disabled={isGenerating || requestInProgress}
+            />
+
             <div className="space-y-4">
               {!showAdvancedFeatures && (
                 <Button 
@@ -1602,11 +1643,14 @@ const EvaluacionesGrupo = () => {
               
               <Button 
                 onClick={handleGenerateEvaluations} 
-                disabled={isGenerating || requestInProgress || !selectedGroupId || 
+                disabled={
+                  isGenerating || requestInProgress || !selectedGroupId || 
                   (!esInterdisciplinaria && !materia) || 
                   (esInterdisciplinaria && materiasSeleccionadas.length === 0) || 
-                  selectedSubtemas.length === 0 || 
-                  selectedCriteriosLogro.length === 0}
+                  // A/B/C-like validation: Allow generation if EITHER ANEP OR sessions selected
+                  (selectedSubtemas.length === 0 && evaluationSourceConfig.sessionIds.length === 0) ||
+                  (selectedCriteriosLogro.length === 0 && evaluationSourceConfig.sessionIds.length === 0)
+                }
                 className="w-full"
               >
                 {isGenerating ? (
