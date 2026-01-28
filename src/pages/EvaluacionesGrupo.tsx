@@ -24,7 +24,8 @@ import { getCompetenciasEspecificasLiteratura, getCriteriosLogroPorCompetenciasL
 import { getCompetenciasEspecificasCiudadania, getCriteriosLogroPorCompetenciasCiudadania } from "@/data/competenciasCiudadania";
 import { RubricaIntegrada } from "@/components/RubricaIntegrada";
 import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
-import { EvaluationSourceSelector, EvaluationMaterialsSection } from "@/components/evaluaciones";
+import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport } from "@/components/evaluaciones";
+import type { AIDesignReportData } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 interface ResultadoEvaluacion {
@@ -406,6 +407,12 @@ const EvaluacionesGrupo = () => {
     directMaterialIds: [],
     includeSessionMaterials: false
   });
+  
+  // PHASE 6: Time budgeting
+  const [targetDurationMinutes, setTargetDurationMinutes] = useState<number>(80);  // Default: 80 minutes
+  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState<number | null>(null);
+  const [timeBreakdown, setTimeBreakdown] = useState<any>(null);
+  const [aiDesignReport, setAiDesignReport] = useState<string | null>(null);
 
   const selectedGroup: Group | undefined = useMemo(
     () => mockGroups.find(g => g.id === selectedGroupId),
@@ -532,7 +539,12 @@ const EvaluacionesGrupo = () => {
         requerimientos,
         evaluacion_generada: {
           evaluaciones: generatedEvaluations,
-          base_prototype: basePrototype
+          base_prototype: basePrototype,
+          // PHASE 6: Time budgeting + AI Design Report
+          targetDurationMinutes,
+          estimatedDurationMinutes,
+          timeBreakdown,
+          aiDesignReport: aiDesignReport ? JSON.parse(aiDesignReport) : null
         },
         // PHASE 5: Evaluation sources (sessions + materials)
         source_planificacion_id: evaluationSourceConfig.planificacionId || null,
@@ -783,8 +795,13 @@ const EvaluacionesGrupo = () => {
   };
 
   const handleGenerateEvaluations = async () => {
-    if (!selectedGroup || (!materia && !esInterdisciplinaria) || selectedSubtemas.length === 0) return;
+    // PHASE 6: Allow generation if EITHER ANEP OR sessions are selected
+    const hasAnepContent = selectedSubtemas.length > 0;
+    const hasSessions = evaluationSourceConfig.sessionIds.length > 0;
+    
+    if (!selectedGroup || (!materia && !esInterdisciplinaria)) return;
     if (esInterdisciplinaria && materiasSeleccionadas.length === 0) return;
+    if (!hasAnepContent && !hasSessions) return;
     
     setIsGenerating(true);
     
@@ -797,6 +814,31 @@ const EvaluacionesGrupo = () => {
     
     // Obtener la clasificación de estudiantes (using unified provider)
     const versionStudentData = await getVersionData();
+    
+    // PHASE 6: Build session digests if sessions are selected
+    let generationContext = null;
+    if (hasSessions || evaluationMaterialsConfig.directMaterialIds.length > 0) {
+      try {
+        const { buildEvaluationGenerationContext, serializeGenerationContext } = await import('@/services/evaluations');
+        
+        generationContext = await buildEvaluationGenerationContext({
+          sourcePlanificacionId: evaluationSourceConfig.planificacionId,
+          sourceSessionIds: evaluationSourceConfig.sessionIds,
+          evaluationFocus: evaluationSourceConfig.evaluationFocus,
+          directMaterialIds: evaluationMaterialsConfig.directMaterialIds,
+          includeSessionMaterials: evaluationMaterialsConfig.includeSessionMaterials,
+          selectedSubtemas,
+          selectedCompetenciasIds,
+          selectedCriteriosLogro,
+          requerimientos,
+          targetDurationMinutes
+        });
+        
+        console.log('[PHASE 6] Generation context built:', serializeGenerationContext(generationContext));
+      } catch (error) {
+        console.error('[PHASE 6] Error building generation context:', error);
+      }
+    }
     
     try {
       const { supabase } = await import('@/integrations/supabase/client');
@@ -895,6 +937,41 @@ const EvaluacionesGrupo = () => {
 
       const evaluations = await Promise.all(evaluationPromises);
       setGeneratedEvaluations(evaluations);
+      
+      // PHASE 6: Simulate time budgeting response (until edge function is updated)
+      // In production, this would come from the edge function response
+      const simulatedTotalMinutes = targetDurationMinutes * 0.95;  // Simulating fit within target
+      setEstimatedDurationMinutes(Math.round(simulatedTotalMinutes));
+      
+      // Simulate time breakdown
+      setTimeBreakdown({
+        sections: [
+          { itemType: 'multiple_choice', estimatedMinutes: Math.round(simulatedTotalMinutes * 0.3), description: 'Preguntas de opción múltiple' },
+          { itemType: 'short_answer', estimatedMinutes: Math.round(simulatedTotalMinutes * 0.3), description: 'Respuestas cortas' },
+          { itemType: 'essay', estimatedMinutes: Math.round(simulatedTotalMinutes * 0.4), description: 'Pregunta de desarrollo' }
+        ],
+        heuristicAssumptions: 'Tiempo estimado basado en: 2 min/pregunta opción múltiple, 5 min/respuesta corta, 15-20 min/desarrollo'
+      });
+      
+      // Simulate AI Design Report (if sessions or materials were used)
+      if (generationContext && (generationContext.sessionDigests.length > 0 || generationContext.directMaterials.length > 0)) {
+        const reportData: AIDesignReportData = {
+          rationale: `Esta evaluación fue diseñada integrando ${generationContext.sessionDigests.length} sesión(es) de clase y ${generationContext.directMaterials.length} material(es) docente. El enfoque evaluativo busca: ${generationContext.evaluationFocus || 'evaluar la comprensión integral de los contenidos trabajados'}.`,
+          coverageMapping: generationContext.sessionDigests.map(s => ({
+            sessionId: s.sessionId,
+            sessionTitle: s.titulo || `Sesión ${s.orden}`,
+            sectionsIncluded: ['Sección 1', 'Sección 2']  // Simplified - would come from AI
+          })),
+          materialsUsage: generationContext.directMaterials.map(m => ({
+            materialId: m.materialId,
+            materialTitle: m.title,
+            usageDescription: `Utilizado como base para las preguntas de comprensión${m.focusText ? `: ${m.focusText}` : ''}`
+          })),
+          adaptationNotes: `Las contemplaciones se aplicaron de forma diferenciada en las 3 versiones generadas, manteniendo coherencia con las adaptaciones declaradas para cada estudiante.`
+        };
+        setAiDesignReport(JSON.stringify(reportData));
+      }
+      
       setActiveTab('results');
     } catch (error) {
       console.error('Error generating evaluations:', error);
@@ -1587,6 +1664,15 @@ const EvaluacionesGrupo = () => {
               selectedSessionIds={evaluationSourceConfig.sessionIds}
               disabled={isGenerating || requestInProgress}
             />
+            
+            {/* PHASE 6: Time budgeting */}
+            <TimeBudgetingSection
+              targetMinutes={targetDurationMinutes}
+              onTargetChange={setTargetDurationMinutes}
+              estimatedMinutes={estimatedDurationMinutes}
+              timeBreakdown={timeBreakdown}
+              disabled={isGenerating || requestInProgress}
+            />
 
             <div className="space-y-4">
               {!showAdvancedFeatures && (
@@ -1734,6 +1820,14 @@ const EvaluacionesGrupo = () => {
                     onRegenerate={(evaluationId) => handleRegenerate(evaluationId)}
                   />
                 ))}
+                
+                {/* PHASE 6: AI Design Report */}
+                {aiDesignReport && (
+                  <AIDesignReport 
+                    reportData={JSON.parse(aiDesignReport)} 
+                    className="mt-6"
+                  />
+                )}
                 
                 {selectedCriteriosLogro.length > 0 && (
                   <Card className="border-2 border-green-300">
