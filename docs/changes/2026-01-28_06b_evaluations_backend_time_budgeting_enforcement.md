@@ -834,9 +834,9 @@ No database changes in this phase (all data stored in JSONB `evaluacion_generada
 fix(evaluations): real time budgeting enforcement + digests-based generation
 ```
 
-**Commit Hash**: (Se agregará después del commit)
+**Commit Hash**: `9d98255`
 
-**Git Status**: (Se verificará después del commit)
+**Git Status**: ✅ Clean (nothing to commit, working tree clean)
 
 ---
 
