@@ -20,16 +20,19 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Upload, FileText, Search, Trash2, Loader2, FolderOpen, AlertTriangle } from 'lucide-react';
+import { Upload, FileText, Search, Trash2, Loader2, FolderOpen, AlertTriangle, ExternalLink } from 'lucide-react';
 import { useMaterialsList, useArchiveMaterial } from '@/hooks/useMaterials';
 import { UploadMaterialDialog } from '@/components/materials';
 import { formatDistanceToNow } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { getSignedUrl } from '@/services/materials';
+import { toast } from '@/hooks/use-toast';
 
 const BibliotecaMateriales: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [materialToDelete, setMaterialToDelete] = useState<string | null>(null);
+  const [openingMaterial, setOpeningMaterial] = useState<string | null>(null);
 
   // Query materials
   const { data: materials = [], isLoading, error } = useMaterialsList({
@@ -55,6 +58,40 @@ const BibliotecaMateriales: React.FC = () => {
     
     await archiveMutation.mutateAsync(materialToDelete);
     setMaterialToDelete(null);
+  };
+
+  const handleOpenMaterial = async (material: any) => {
+    if (!material.storage_path) {
+      toast({
+        title: 'Error',
+        description: 'No se puede abrir el material: ruta de almacenamiento faltante',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setOpeningMaterial(material.id);
+
+    try {
+      // Get signed URL for the file (valid for 1 hour)
+      const result = await getSignedUrl(material.storage_path);
+
+      if (!result.success || !result.signedUrl) {
+        throw new Error(result.error || 'No se pudo obtener URL del archivo');
+      }
+
+      // Open in new tab
+      window.open(result.signedUrl, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      console.error('[handleOpenMaterial] Error:', error);
+      toast({
+        title: 'Error al abrir material',
+        description: error instanceof Error ? error.message : 'Ocurrió un error desconocido',
+        variant: 'destructive',
+      });
+    } finally {
+      setOpeningMaterial(null);
+    }
   };
 
   const getMimeTypeLabel = (mimeType: string | null) => {
@@ -158,19 +195,31 @@ const BibliotecaMateriales: React.FC = () => {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {filteredMaterials.map((material) => (
-            <Card key={material.id} className="hover:shadow-lg transition-shadow">
+            <Card 
+              key={material.id} 
+              className="hover:shadow-lg transition-shadow cursor-pointer"
+              onClick={() => handleOpenMaterial(material)}
+            >
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-2 flex-1 min-w-0">
-                    <FileText className="h-5 w-5 text-primary shrink-0" />
+                    {openingMaterial === material.id ? (
+                      <Loader2 className="h-5 w-5 text-primary shrink-0 animate-spin" />
+                    ) : (
+                      <FileText className="h-5 w-5 text-primary shrink-0" />
+                    )}
                     <CardTitle className="text-base truncate" title={material.title}>
                       {material.title}
                     </CardTitle>
+                    <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
                   </div>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setMaterialToDelete(material.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMaterialToDelete(material.id);
+                    }}
                     className="shrink-0 h-8 w-8 p-0 hover:bg-destructive/10 hover:text-destructive"
                     title="Archivar material"
                   >

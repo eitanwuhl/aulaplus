@@ -161,10 +161,15 @@ export function MaterialsLibraryDialog({
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={handleCancel}>
+            <Button 
+              type="button"
+              variant="outline" 
+              onClick={handleCancel}
+            >
               Cancelar
             </Button>
             <Button
+              type="button"
               onClick={handleConfirm}
               disabled={localSelectedIds.size === 0}
             >
