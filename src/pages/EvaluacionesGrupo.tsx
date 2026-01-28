@@ -897,20 +897,43 @@ const EvaluacionesGrupo = () => {
       ];
 
       const evaluationPromises = evaluationConfigs.map(async (evalConfig) => {
+        // PHASE 6b: Build request with generation_context if available
+        const requestBody: any = {
+          originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, parseInt(evalConfig.id)),
+          modification: requerimientos || `Genera una evaluación adaptada para nivel ${evalConfig.adaptationLevel}`,
+          groupContext,
+          type: 'modification',
+          adaptationLevel: evalConfig.adaptationLevel
+        };
+        
+        // Add generation_context if session digests were built
+        if (generationContext) {
+          const { serializeGenerationContext } = await import('@/services/evaluations');
+          requestBody.generation_context = serializeGenerationContext(generationContext);
+        }
+        
         const { data, error } = await supabase.functions.invoke('modify-evaluation', {
-          body: {
-            originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, parseInt(evalConfig.id)),
-            modification: requerimientos || `Genera una evaluación adaptada para nivel ${evalConfig.adaptationLevel}`,
-            groupContext,
-            type: 'modification',
-            adaptationLevel: evalConfig.adaptationLevel
-          }
+          body: requestBody
         });
 
         if (error) throw error;
 
+        // Return raw response data (will be processed after Promise.all)
+        return { data, error };
+      });
+
+      const evaluationsData = await Promise.all(evaluationPromises);
+      
+      // PHASE 6b: Extract backend responses (data objects) before mapping to evaluations
+      const firstBackendResponse = evaluationsData[0];  // Already awaited by Promise.all
+      
+      // Map to evaluation format
+      const evaluations = evaluationsData.map((item, idx) => {
+        const evalConfig = evaluationConfigs[idx];
+        const data = item.data;
+        
         // Validate AI response content
-        if (!data.content || data.content.trim().length === 0) {
+        if (!data?.content || data.content.trim().length === 0) {
           console.warn(`AI returned empty content for evaluation ${evalConfig.id}`);
           const fallbackContent = basePrototype || generatePrototipo(selectedSubtemas, requerimientos, parseInt(evalConfig.id));
           return {
@@ -934,42 +957,44 @@ const EvaluacionesGrupo = () => {
           assignedStudentIds: evalConfig.assignedStudentIds
         };
       });
-
-      const evaluations = await Promise.all(evaluationPromises);
+      
       setGeneratedEvaluations(evaluations);
       
-      // PHASE 6: Simulate time budgeting response (until edge function is updated)
-      // In production, this would come from the edge function response
-      const simulatedTotalMinutes = targetDurationMinutes * 0.95;  // Simulating fit within target
-      setEstimatedDurationMinutes(Math.round(simulatedTotalMinutes));
+      // PHASE 6b: Use REAL backend values (from first evaluation response)
+      // All evaluation versions share the same time budgeting and design report (global, not per-version)
+      const firstData = firstBackendResponse?.data;
       
-      // Simulate time breakdown
-      setTimeBreakdown({
-        sections: [
-          { itemType: 'multiple_choice', estimatedMinutes: Math.round(simulatedTotalMinutes * 0.3), description: 'Preguntas de opción múltiple' },
-          { itemType: 'short_answer', estimatedMinutes: Math.round(simulatedTotalMinutes * 0.3), description: 'Respuestas cortas' },
-          { itemType: 'essay', estimatedMinutes: Math.round(simulatedTotalMinutes * 0.4), description: 'Pregunta de desarrollo' }
-        ],
-        heuristicAssumptions: 'Tiempo estimado basado en: 2 min/pregunta opción múltiple, 5 min/respuesta corta, 15-20 min/desarrollo'
-      });
-      
-      // Simulate AI Design Report (if sessions or materials were used)
-      if (generationContext && (generationContext.sessionDigests.length > 0 || generationContext.directMaterials.length > 0)) {
-        const reportData: AIDesignReportData = {
-          rationale: `Esta evaluación fue diseñada integrando ${generationContext.sessionDigests.length} sesión(es) de clase y ${generationContext.directMaterials.length} material(es) docente. El enfoque evaluativo busca: ${generationContext.evaluationFocus || 'evaluar la comprensión integral de los contenidos trabajados'}.`,
-          coverageMapping: generationContext.sessionDigests.map(s => ({
-            sessionId: s.sessionId,
-            sessionTitle: s.titulo || `Sesión ${s.orden}`,
-            sectionsIncluded: ['Sección 1', 'Sección 2']  // Simplified - would come from AI
-          })),
-          materialsUsage: generationContext.directMaterials.map(m => ({
-            materialId: m.materialId,
-            materialTitle: m.title,
-            usageDescription: `Utilizado como base para las preguntas de comprensión${m.focusText ? `: ${m.focusText}` : ''}`
-          })),
-          adaptationNotes: `Las contemplaciones se aplicaron de forma diferenciada en las 3 versiones generadas, manteniendo coherencia con las adaptaciones declaradas para cada estudiante.`
-        };
-        setAiDesignReport(JSON.stringify(reportData));
+      if (firstData) {
+        // Extract time budgeting from backend
+        if (firstData.estimatedTotalMinutes !== undefined) {
+          setEstimatedDurationMinutes(firstData.estimatedTotalMinutes);
+          console.log('[PHASE 6b] Real estimated time from backend:', firstData.estimatedTotalMinutes);
+        }
+        
+        if (firstData.timeBreakdown) {
+          setTimeBreakdown({
+            sections: firstData.timeBreakdown,
+            heuristicAssumptions: 'Estimación generada por IA basada en el tipo y cantidad de items'
+          });
+          console.log('[PHASE 6b] Real time breakdown from backend:', firstData.timeBreakdown);
+        }
+        
+        // Extract AI Design Report from backend
+        if (firstData.aiDesignReport) {
+          setAiDesignReport(JSON.stringify(firstData.aiDesignReport));
+          console.log('[PHASE 6b] Real AI Design Report from backend');
+        }
+        
+        // Log if time was refined
+        if (firstData.wasTimeRefined) {
+          console.log('[PHASE 6b] ⚠️ Time budget was refined by backend (original exceeded target)');
+        }
+      } else {
+        // Fallback: if backend doesn't provide these fields (backward compat or error)
+        console.warn('[PHASE 6b] Backend response missing time budgeting fields, showing fallback message');
+        setEstimatedDurationMinutes(null);
+        setTimeBreakdown(null);
+        setAiDesignReport(null);
       }
       
       setActiveTab('results');
