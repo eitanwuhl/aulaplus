@@ -16,6 +16,7 @@ import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupCont
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { resolveMockGroup } from '@/utils/resolveMockGroup';
+import { SessionMaterialsPanel } from './SessionMaterialsPanel';
 
 interface EditorSesionNuevoProps {
   sesion: SesionClase | null;
@@ -1030,6 +1031,21 @@ export function EditorSesionNuevo({
                   placeholder="Un recurso por línea (ej: Pizarra, Marcadores, Proyector)..."
                 />
                 <Button onClick={handleGuardarRecursos}>Guardar Recursos Adicionales</Button>
+              </CardContent>
+            </Card>
+
+            {/* Card 3: Material Docente (Session-level attachments) */}
+            <Card className="border-l-4 border-purple-500 bg-purple-50 dark:bg-purple-950/20">
+              <CardHeader>
+                <CardTitle className="text-lg">Material Docente (Específico de esta sesión)</CardTitle>
+                <CardDescription>
+                  Adjunta materiales que son relevantes solo para esta sesión en particular.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <SessionMaterialsPanel 
+                  sesionId={sesion?.id}
+                />
               </CardContent>
             </Card>
           </TabsContent>

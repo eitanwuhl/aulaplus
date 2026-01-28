@@ -260,3 +260,4 @@ function getFileIcon(mimeType: string | null) {
   return <File className={iconClass} />;
 }
 
+

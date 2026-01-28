@@ -18,6 +18,7 @@ import { ValidationResult } from '@/types/validation';
 import { mockGroups } from '@/data/mockData';
 import { ModalityDistribution } from './ModalityDistribution';
 import { UnidadDidacticaBuilder } from './UnidadDidacticaBuilder';
+import { PlanMaterialsSection } from './PlanMaterialsSection';
 import { Materia } from '@/data/catalogo';
 import { useToast } from '@/hooks/use-toast';
 
@@ -859,6 +860,15 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
         )}
       </div>
 
+      {/* A/B/C Validation Error */}
+      {getError('generation_requirements') && (
+        <div className="p-4 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+          <p className="text-sm text-amber-900 dark:text-amber-200 font-medium" role="alert">
+            ⚠️ {getError('generation_requirements')}
+          </p>
+        </div>
+      )}
+
       {/* PHASE 3.1: Tema de cada clase (opcional) */}
       {(() => {
         // Calcular número total de sesiones basado en unidades didácticas
@@ -917,6 +927,18 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           </Card>
         );
       })()}
+
+      {/* Material Docente (Plan-level) */}
+      <PlanMaterialsSection
+        attachedMaterialIds={wizardData.enfoque?.attachedPlanMaterialIds || []}
+        onMaterialsChange={(materialIds) =>
+          onUpdateEnfoque({
+            ...wizardData.enfoque,
+            attachedPlanMaterialIds: materialIds
+          })
+        }
+        disabled={isLoading}
+      />
 
       {/* Requerimientos del Docente */}
       <Card>
