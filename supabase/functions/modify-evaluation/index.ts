@@ -231,11 +231,251 @@ serve(async (req) => {
       // PHASE 2.1: unitContext para generación progresiva (opcional para backward compatibility)
       unitContext,
       // PHASE 3: Optional per-session focus override
-      sessionBrief
+      sessionBrief,
+      // PHASE 6b: Session digests + time budgeting + AI design report
+      generation_context
     } = await req.json();
 
-    console.log('Request received:', { type, adaptationLevel, modification });
+    console.log('Request received:', { type, adaptationLevel, modification, hasGenerationContext: !!generation_context });
 
+    // PHASE 6b: Handle evaluation generation with session digests + time budgeting
+    if (generation_context && type === 'modification') {
+      console.log('[PHASE 6b] Processing evaluation with generation_context');
+      console.log('- Sessions:', generation_context.sessions?.length || 0);
+      console.log('- Materials:', generation_context.materials?.length || 0);
+      console.log('- Time Budget:', generation_context.timeBudget);
+      
+      // Build session digests section
+      const sessionsSection = generation_context.sessions && generation_context.sessions.length > 0
+        ? `
+SESIONES DE CLASE A EVALUAR:
+${generation_context.sessions.map((s: any, idx: number) => `
+Sesión ${s.order}: ${s.title || `Sesión ${s.order}`}
+- Contenidos ANEP: ${s.anepContent?.join(', ') || 'No especificados'}
+- Competencias: ${s.competencies?.join(', ') || 'No especificadas'}
+- Objetivos: ${s.objectives || 'No especificados'}
+- Resumen de actividades: ${s.activitiesSummary || 'No disponible'}
+- Recursos: ${s.resources?.join(', ') || 'No especificados'}
+${s.attachedMaterials?.length ? `- Materiales adjuntos: ${s.attachedMaterials.map((m: any) => m.title).join(', ')}` : ''}
+`).join('\n---\n')}
+` : '';
+
+      // Build materials section
+      const materialsSection = generation_context.materials && generation_context.materials.length > 0
+        ? `
+MATERIALES DOCENTES ADJUNTOS:
+${generation_context.materials.map((m: any, idx: number) => `
+${idx + 1}. ${m.title} (${m.mimeType})
+${m.focusText ? `   Enfoque: ${m.focusText}` : ''}
+`).join('\n')}
+` : '';
+
+      // Build evaluation focus section
+      const focusSection = generation_context.evaluationFocus
+        ? `
+ENFOQUE DE EVALUACIÓN (ESPECIFICADO POR EL DOCENTE):
+${generation_context.evaluationFocus}
+
+INSTRUCCIÓN CRÍTICA: La evaluación debe enfocarse específicamente en los aspectos mencionados arriba.
+` : '';
+
+      // Build time budget section
+      const timeBudgetSection = generation_context.timeBudget
+        ? `
+PRESUPUESTO DE TIEMPO:
+- Duración objetivo: ${generation_context.timeBudget.targetMinutes} minutos
+- Tolerancia: ${Math.round((generation_context.timeBudget.flexibilityThreshold || 0.10) * 100)}%
+
+INSTRUCCIÓN CRÍTICA: La evaluación debe completarse dentro del tiempo objetivo.
+Debes incluir en tu respuesta una estimación de tiempo por sección.
+` : '';
+
+      // First generation attempt
+      const systemPrompt = `Eres un experto en evaluación educativa. Tu tarea es generar una evaluación basada en:
+1. Sesiones de clase específicas (con sus contenidos, objetivos, actividades)
+2. Materiales docentes adjuntos
+3. Enfoque evaluativo del docente
+4. Presupuesto de tiempo
+
+FORMATO DE RESPUESTA REQUERIDO (JSON):
+Debes devolver un objeto JSON con la siguiente estructura:
+{
+  "evaluationHTML": "<html>...</html>",
+  "estimatedTotalMinutes": 75,
+  "timeBreakdown": [
+    {"itemType": "multiple_choice", "estimatedMinutes": 20, "description": "10 preguntas de opción múltiple"},
+    {"itemType": "short_answer", "estimatedMinutes": 25, "description": "5 preguntas de respuesta corta"},
+    {"itemType": "essay", "estimatedMinutes": 30, "description": "1 pregunta de desarrollo"}
+  ],
+  "aiDesignReport": {
+    "rationale": "Esta evaluación integra las 3 sesiones trabajadas...",
+    "coverageMapping": [
+      {"sessionId": "uuid-123", "sessionTitle": "Sesión 1", "sectionsIncluded": ["Sección I", "Sección II"]}
+    ],
+    "materialsUsage": [
+      {"materialId": "mat-456", "materialTitle": "Material X", "usageDescription": "Utilizado en pregunta 3..."}
+    ],
+    "adaptationNotes": "Las contemplaciones se aplicaron diferenciadamente..."
+  }
+}
+
+REGLAS CRÍTICAS:
+1. El HTML debe ser válido y renderizable
+2. estimatedTotalMinutes debe ser la suma de timeBreakdown
+3. aiDesignReport.coverageMapping debe mapear cada sesión a secciones específicas de la evaluación
+4. aiDesignReport NO debe incluir recomendaciones por estudiante (eso va en casillas separadas)
+5. Si hay timeBudget, intenta que estimatedTotalMinutes <= targetMinutes`;
+
+      const userPrompt = `${sessionsSection}${materialsSection}${focusSection}${timeBudgetSection}
+
+CONTEXTO DEL GRUPO:
+Materia: ${groupContext?.subject || 'No especificada'}
+Estudiantes: ${groupContext?.students?.length || 0}
+Nivel de adaptación: ${adaptationLevel}
+
+${modification ? `REQUERIMIENTOS ADICIONALES:\n${modification}` : ''}
+
+Genera la evaluación en formato JSON siguiendo la estructura especificada.`;
+
+      console.log('[PHASE 6b] System Prompt:', systemPrompt.substring(0, 500) + '...');
+      console.log('[PHASE 6b] User Prompt:', userPrompt.substring(0, 500) + '...');
+
+      // First generation attempt with JSON mode
+      const result = await retryWithBackoff(async () => {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openAIApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4.1-2025-04-14',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            response_format: { type: 'json_object' },
+            max_completion_tokens: 4000,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`OpenAI API error ${response.status}:`, errorText);
+          throw new Error(`OpenAI API error: ${response.status}`);
+        }
+
+        return await response.json();
+      });
+
+      let generatedContent = result.choices[0]?.message?.content;
+      let parsed: any;
+
+      try {
+        parsed = JSON.parse(generatedContent || '{}');
+      } catch (e) {
+        console.error('[PHASE 6b] Failed to parse JSON response:', e);
+        // Fallback: return content as-is
+        return new Response(JSON.stringify({
+          success: true,
+          content: generatedContent,
+          type: type,
+          warning: 'Time budgeting no disponible (respuesta no estructurada)'
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Check if time budget exceeded
+      const targetMinutes = generation_context.timeBudget?.targetMinutes || Infinity;
+      const threshold = generation_context.timeBudget?.flexibilityThreshold || 0.10;
+      const maxAllowedMinutes = targetMinutes * (1 + threshold);
+      const estimatedMinutes = parsed.estimatedTotalMinutes || 0;
+
+      let wasTimeRefined = false;
+
+      if (estimatedMinutes > maxAllowedMinutes && generation_context.timeBudget) {
+        console.log(`[PHASE 6b] Time budget exceeded: ${estimatedMinutes} > ${maxAllowedMinutes}`);
+        console.log('[PHASE 6b] Running refinement pass...');
+
+        // Refinement pass
+        const refinementPrompt = `La evaluación generada excede el presupuesto de tiempo:
+- Tiempo estimado: ${estimatedMinutes} minutos
+- Tiempo objetivo: ${targetMinutes} minutos
+- Máximo permitido: ${maxAllowedMinutes} minutos
+
+TAREA: Refina la evaluación para que se ajuste al tiempo objetivo, manteniendo:
+1. Cobertura de todos los temas/sesiones
+2. Contemplaciones aplicadas (no eliminar adaptaciones)
+3. Calidad pedagógica
+
+ESTRATEGIAS PERMITIDAS:
+- Reducir número de preguntas (ej: 10 → 7 preguntas de opción múltiple)
+- Acortar preguntas de desarrollo (pedir respuestas más concisas)
+- Combinar secciones similares
+- Simplificar instrucciones sin perder claridad
+
+DEVUELVE: El mismo formato JSON con evaluationHTML refinada, estimatedTotalMinutes actualizado, y timeBreakdown actualizado.`;
+
+        const refinementResult = await retryWithBackoff(async () => {
+          const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${openAIApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'gpt-4.1-2025-04-14',
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+                { role: 'assistant', content: generatedContent },
+                { role: 'user', content: refinementPrompt }
+              ],
+              response_format: { type: 'json_object' },
+              max_completion_tokens: 4000,
+            }),
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`OpenAI API error ${response.status}:`, errorText);
+            throw new Error(`OpenAI API error: ${response.status}`);
+          }
+
+          return await response.json();
+        });
+
+        const refinedContent = refinementResult.choices[0]?.message?.content;
+        try {
+          parsed = JSON.parse(refinedContent || '{}');
+          wasTimeRefined = true;
+          console.log(`[PHASE 6b] Refinement successful. New estimated time: ${parsed.estimatedTotalMinutes}`);
+        } catch (e) {
+          console.error('[PHASE 6b] Failed to parse refined JSON, using original');
+        }
+      }
+
+      // Return structured response
+      return new Response(JSON.stringify({
+        success: true,
+        content: parsed.evaluationHTML || '',
+        type: type,
+        // PHASE 6b fields
+        estimatedTotalMinutes: parsed.estimatedTotalMinutes,
+        timeBreakdown: parsed.timeBreakdown,
+        aiDesignReport: parsed.aiDesignReport,
+        wasTimeRefined,
+        metadata: {
+          tokensUsed: result.usage?.total_tokens || 0,
+          model: result.model || 'gpt-4.1-2025-04-14'
+        }
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Legacy path (backward compatibility)
     let systemPrompt = '';
     let userPrompt = '';
 
