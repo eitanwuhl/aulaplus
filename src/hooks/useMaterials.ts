@@ -269,6 +269,7 @@ export function useUploadMaterial() {
 export function useUploadAndCreateMaterial() {
   const uploadMutation = useUploadMaterial();
   const createMutation = useCreateMaterial();
+  const queryClient = useQueryClient(); // ✅ FIX: Move hook call to top level
 
   return useMutation({
     mutationFn: async ({
@@ -308,7 +309,6 @@ export function useUploadAndCreateMaterial() {
     },
     onSuccess: ({ material }) => {
       // Invalidate materials list
-      const queryClient = useQueryClient();
       queryClient.invalidateQueries({ queryKey: materialsKeys.lists() });
       
       toast({
