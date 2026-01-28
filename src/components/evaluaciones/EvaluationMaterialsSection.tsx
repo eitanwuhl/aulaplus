@@ -83,14 +83,15 @@ export function EvaluationMaterialsSection({
     loadSessionMaterialsCount();
   }, [selectedSessionIds]);
   
-  const handleSelectMaterials = (selectedIds: string[]) => {
+  const handleSelectMaterials = (selectedMaterials: any[]) => {
+    // Extract IDs from materials objects
+    const selectedIds = selectedMaterials.map(m => m.id);
     // Add new materials (merge with existing)
     const newIds = [...new Set([...config.directMaterialIds, ...selectedIds])];
     onChange({
       ...config,
       directMaterialIds: newIds
     });
-    setIsLibraryOpen(false);
   };
   
   const handleRemoveMaterial = (materialId: string) => {
@@ -212,15 +213,13 @@ export function EvaluationMaterialsSection({
         )}
 
         {/* Materials library dialog */}
-        {isLibraryOpen && (
-          <MaterialsLibraryDialog
-            open={isLibraryOpen}
-            onClose={() => setIsLibraryOpen(false)}
-            onSelectMaterials={handleSelectMaterials}
-            multiSelect={true}
-            preSelectedIds={config.directMaterialIds}
-          />
-        )}
+        <MaterialsLibraryDialog
+          open={isLibraryOpen}
+          onOpenChange={setIsLibraryOpen}
+          onSelect={handleSelectMaterials}
+          multiSelect={true}
+          selectedMaterialIds={config.directMaterialIds}
+        />
       </CardContent>
     </Card>
   );

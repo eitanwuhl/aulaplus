@@ -37,11 +37,12 @@ export function PlanMaterialsSection({
     attachedMaterialIds.includes(m.id)
   );
   
-  const handleSelectMaterials = (selectedIds: string[]) => {
+  const handleSelectMaterials = (selectedMaterials: any[]) => {
+    // Extract IDs from materials objects
+    const selectedIds = selectedMaterials.map(m => m.id);
     // Add new materials (merge with existing)
     const newIds = [...new Set([...attachedMaterialIds, ...selectedIds])];
     onMaterialsChange(newIds);
-    setIsLibraryOpen(false);
   };
   
   const handleRemoveMaterial = (materialId: string) => {
@@ -120,15 +121,13 @@ export function PlanMaterialsSection({
         )}
         
         {/* Materials library dialog */}
-        {isLibraryOpen && (
-          <MaterialsLibraryDialog
-            open={isLibraryOpen}
-            onClose={() => setIsLibraryOpen(false)}
-            onSelectMaterials={handleSelectMaterials}
-            multiSelect={true}
-            preSelectedIds={attachedMaterialIds}
-          />
-        )}
+        <MaterialsLibraryDialog
+          open={isLibraryOpen}
+          onOpenChange={setIsLibraryOpen}
+          onSelect={handleSelectMaterials}
+          multiSelect={true}
+          selectedMaterialIds={attachedMaterialIds}
+        />
       </CardContent>
     </Card>
   );
