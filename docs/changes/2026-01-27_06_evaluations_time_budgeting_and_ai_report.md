@@ -700,9 +700,9 @@ WHERE evaluacion_generada ? 'targetDurationMinutes';
 feat(evaluations): digests + time budgeting enforcement + AI design report
 ```
 
-**Commit Hash**: (Se agregará después del commit)
+**Commit Hash**: `39349b5`
 
-**Git Status**: (Se verificará después del commit)
+**Git Status**: ✅ Clean (nothing to commit, working tree clean)
 
 ---
 
