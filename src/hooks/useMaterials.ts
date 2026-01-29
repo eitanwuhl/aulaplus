@@ -307,14 +307,55 @@ export function useUploadAndCreateMaterial() {
         uploadResult
       };
     },
-    onSuccess: ({ material }) => {
+    onSuccess: async ({ material }) => {
       // Invalidate materials list
       queryClient.invalidateQueries({ queryKey: materialsKeys.lists() });
       
-      toast({
-        title: 'Material creado',
-        description: `Material "${material.title}" creado exitosamente`,
-      });
+      // If it's a PDF, trigger text extraction
+      if (material.mime_type && material.mime_type.includes('pdf')) {
+        // Show processing toast
+        toast({
+          title: 'Procesando PDF...',
+          description: 'Extrayendo texto del documento',
+        });
+
+        try {
+          const { extractMaterialText } = await import('@/services/materials');
+          const extractResult = await extractMaterialText(material.id);
+
+          if (extractResult.success) {
+            // Invalidate again to refresh with extracted_text
+            queryClient.invalidateQueries({ queryKey: materialsKeys.lists() });
+            queryClient.invalidateQueries({ queryKey: materialsKeys.detail(material.id) });
+            
+            toast({
+              title: 'Material creado',
+              description: `Material "${material.title}" creado exitosamente. Texto extraído: ${extractResult.extractedChars} caracteres.`,
+            });
+          } else {
+            // Extraction failed, but material was created
+            toast({
+              title: 'Material creado',
+              description: `Material "${material.title}" creado exitosamente. No se pudo extraer texto del PDF.`,
+              variant: 'default',
+            });
+          }
+        } catch (extractError) {
+          console.error('[useUploadAndCreateMaterial] Extraction error:', extractError);
+          // Material was created, just extraction failed
+          toast({
+            title: 'Material creado',
+            description: `Material "${material.title}" creado exitosamente. Error al extraer texto.`,
+            variant: 'default',
+          });
+        }
+      } else {
+        // Not a PDF, just show success
+        toast({
+          title: 'Material creado',
+          description: `Material "${material.title}" creado exitosamente`,
+        });
+      }
     },
     onError: (error: Error) => {
       toast({

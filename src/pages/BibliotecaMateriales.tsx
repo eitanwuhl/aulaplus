@@ -230,6 +230,11 @@ const BibliotecaMateriales: React.FC = () => {
                   <Badge variant="secondary" className="text-xs">
                     {getMimeTypeLabel(material.mime_type)}
                   </Badge>
+                  {material.extracted_text && (
+                    <Badge variant="outline" className="text-xs bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300">
+                      Texto extraído
+                    </Badge>
+                  )}
                   <span className="text-xs">
                     {formatDistanceToNow(new Date(material.created_at), {
                       addSuffix: true,

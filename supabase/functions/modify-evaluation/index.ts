@@ -267,7 +267,8 @@ MATERIALES DOCENTES ADJUNTOS:
 ${generation_context.materials.map((m: any, idx: number) => `
 ${idx + 1}. ${m.title} (${m.mimeType})
 ${m.focusText ? `   Enfoque: ${m.focusText}` : ''}
-`).join('\n')}
+${m.extractedText ? `   Contenido extraído del PDF:\n   ${m.extractedText}` : '   (No hay texto extraído disponible)'}
+`).join('\n---\n')}
 ` : '';
 
       // Build evaluation focus section
