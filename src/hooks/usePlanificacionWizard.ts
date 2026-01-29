@@ -233,27 +233,21 @@ export const usePlanificacionWizard = () => {
         // Note: Material attachments (B) will be checked at generation time since they're DB-based
         // For wizard validation, we only check A and C here
         
-        if (!hasAnepContent && !hasSufficientFocusText) {
+        // PHASE A: Check for unit materials (B condition)
+        const hasUnitMaterials = unidades.some(u => u.unit_material_plan && u.unit_material_plan.length > 0);
+        
+        if (!hasAnepContent && !hasSufficientFocusText && !hasUnitMaterials) {
           errors.push({
             fieldId: 'generation_requirements',
-            message: 'Para generar planes necesitas al menos: (A) contenido ANEP en unidades didácticas, O (B) materiales adjuntos, O (C) texto de foco/tema suficientemente informativo (ej: temas de las clases o requerimientos del docente)',
+            message: 'Para generar planes necesitas al menos: (A) contenido ANEP en unidades didácticas, O (B) materiales adjuntos (puedes adjuntar materiales por unidad), O (C) texto de foco/tema suficientemente informativo (ej: temas de las clases o requerimientos del docente). Podés generar usando solo materiales docentes.',
             type: 'custom'
           });
           if (!firstInvalidField) firstInvalidField = 'generation_requirements';
         }
 
-        // If ANEP content is provided, validate competencies
-        if (hasAnepContent) {
-          const tieneCompetencias = unidades.some(u => u.competencias_ids && u.competencias_ids.length > 0);
-          if (!tieneCompetencias) {
-            errors.push({
-              fieldId: 'competencias_especificas',
-              message: 'Si usas contenido ANEP, debes seleccionar al menos una competencia específica en tus unidades',
-              type: 'required'
-            });
-            if (!firstInvalidField) firstInvalidField = 'competencias_especificas';
-          }
-        }
+        // PHASE A: Competencies are always optional (no blocking based on ANEP)
+        // If ANEP content is provided, we may suggest competencies but don't require them
+        // Teachers can select competencies regardless of ANEP content selection
 
         // Validar distribucion_modalidades (suma = 100%)
         const distribucion = wizardData.enfoque?.distribucion_modalidades;
