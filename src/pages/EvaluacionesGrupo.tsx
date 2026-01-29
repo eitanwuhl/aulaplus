@@ -551,6 +551,8 @@ const EvaluacionesGrupo = () => {
           timeBreakdown,
           aiDesignReport: aiDesignReport ? JSON.parse(aiDesignReport) : null
         },
+        // PHASE C: Persist AI design report in DB column
+        ai_design_report: aiDesignReport ? JSON.parse(aiDesignReport) : null,
         // PHASE 5: Evaluation sources (sessions + materials)
         source_planificacion_id: evaluationSourceConfig.planificacionId || null,
         source_session_ids: evaluationSourceConfig.sessionIds,
