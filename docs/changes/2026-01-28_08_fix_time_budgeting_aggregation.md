@@ -198,7 +198,7 @@ Each variant:
 ## Commit Information
 
 **Branch**: `Uso-material-docente-y-nexo-clases-evaluaciones`  
-**Commit**: `[will be added after commit]`  
+**Commit**: `05ba380`  
 **Commit Message**: `fix(evaluations): aggregate time budgeting across all variants`
 
 ---
