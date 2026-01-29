@@ -181,10 +181,10 @@ REGLAS CRÍTICAS PARA MATERIALES-ONLY:
 
 ---
 
-## Commit
+## Commits
 
-**Commit**: `[will be added]`  
-**Message**: `feat(planning): use materials extracted_text in generation + materials-only mode`
+1. **`ec80418`** - `feat(planning): use materials extracted_text in generation + materials-only mode`
+2. **`f4ef026`** - `docs: planning materials extracted text fix report`
 
 ---
 

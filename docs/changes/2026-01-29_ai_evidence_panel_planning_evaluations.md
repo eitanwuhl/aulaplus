@@ -199,7 +199,8 @@ function adaptPlanningReportToEvaluationFormat(planningReport: any): AIDesignRep
 
 ## Commits
 
-1. **`[will be added]`** - `feat(planning): AI evidence panel + ai_design_report persistence`
+1. **`75161dc`** - `feat(planning): AI evidence panel + ai_design_report persistence`
+2. **`83635a5`** - `docs: AI evidence panel implementation report`
 
 ---
 
