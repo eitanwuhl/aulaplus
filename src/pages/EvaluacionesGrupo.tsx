@@ -407,6 +407,11 @@ const EvaluacionesGrupo = () => {
     directMaterialIds: [],
     includeSessionMaterials: false
   });
+
+  // PHASE A: Compute generation conditions (used in multiple places)
+  const hasAnepContent = selectedSubtemas.length > 0;
+  const hasSessions = evaluationSourceConfig.sessionIds.length > 0;
+  const hasMaterials = evaluationMaterialsConfig.directMaterialIds.length > 0;
   
   // PHASE 6: Time budgeting
   const [targetDurationMinutes, setTargetDurationMinutes] = useState<number>(80);  // Default: 80 minutes
@@ -795,13 +800,10 @@ const EvaluacionesGrupo = () => {
   };
 
   const handleGenerateEvaluations = async () => {
-    // PHASE 6: Allow generation if EITHER ANEP OR sessions are selected
-    const hasAnepContent = selectedSubtemas.length > 0;
-    const hasSessions = evaluationSourceConfig.sessionIds.length > 0;
-    
+    // PHASE A: Allow generation if ANY of: ANEP content, sessions, OR materials
     if (!selectedGroup || (!materia && !esInterdisciplinaria)) return;
     if (esInterdisciplinaria && materiasSeleccionadas.length === 0) return;
-    if (!hasAnepContent && !hasSessions) return;
+    if (!hasAnepContent && !hasSessions && !hasMaterials) return;
     
     setIsGenerating(true);
     
@@ -1708,6 +1710,15 @@ const EvaluacionesGrupo = () => {
               selectedSessionIds={evaluationSourceConfig.sessionIds}
               disabled={isGenerating || requestInProgress}
             />
+
+            {/* PHASE A: Help text for materials-only generation */}
+            {!hasAnepContent && evaluationMaterialsConfig.directMaterialIds.length > 0 && (
+              <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-md p-3">
+                <p className="text-sm text-blue-800 dark:text-blue-200">
+                  💡 Podés generar evaluaciones usando solo materiales docentes. No es necesario seleccionar contenido ANEP.
+                </p>
+              </div>
+            )}
             
             {/* PHASE 6: Time budgeting */}
             <TimeBudgetingSection

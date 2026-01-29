@@ -18,6 +18,7 @@ import {
 } from '@/data/competencias';
 import { COMPETENCIAS_LITERATURA } from '@/data/competenciasLiteratura';
 import { COMPETENCIAS_CIUDADANIA } from '@/data/competenciasCiudadania';
+import { UnitMaterialsSection } from './UnitMaterialsSection';
 
 interface UnidadCardProps {
   unidad: UnidadDidactica;
@@ -275,6 +276,20 @@ export const UnidadCard: React.FC<UnidadCardProps> = ({
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* PHASE A: Unit Materials Section */}
+            <div className="mt-4">
+              <UnitMaterialsSection
+                unitId={unidad.id}
+                materials={unidad.unit_material_plan || []}
+                onChange={(materials) => {
+                  onActualizar({
+                    ...unidad,
+                    unit_material_plan: materials
+                  });
+                }}
+              />
             </div>
           </div>
         </CardContent>

@@ -96,6 +96,13 @@ export interface UnidadDidactica {
   competencias_ids: string[];
   clases_estimadas: number;
   orden: number;
+  // PHASE A: Unit material plan (optional)
+  unit_material_plan?: Array<{
+    materialId: string;
+    materialTitle: string;
+    classCount: number;
+    perClassGuidance: string[];
+  }>;
 }
 
 // Metadata de asignación de unidad a sesión (Phase 1 - en memoria)
