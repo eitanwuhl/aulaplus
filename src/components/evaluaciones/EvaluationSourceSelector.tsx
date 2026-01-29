@@ -48,27 +48,51 @@ export function EvaluationSourceSelector({
   const [isLoadingPlanificaciones, setIsLoadingPlanificaciones] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
 
-  // Load saved planificaciones for the selected group
+  // PHASE B: Load saved planificaciones for the selected group
+  // RLS automatically filters by auth.uid() = user_id
   useEffect(() => {
-    if (!grupoId) return;
+    if (!grupoId) {
+      setSavedPlanificaciones([]);
+      return;
+    }
 
     const loadPlanificaciones = async () => {
       setIsLoadingPlanificaciones(true);
       try {
-        const { data, error } = await supabase
+        // PHASE B: Query planificaciones - RLS handles user isolation automatically
+        // Filter by grupo_id, is_saved (if exists), and deleted_at
+        let query = supabase
           .from('planificaciones')
           .select('*')
           .eq('grupo_id', grupoId)
-          .eq('is_saved', true)
           .is('deleted_at', null)
           .order('created_at', { ascending: false });
 
+        // Only filter by is_saved if the column exists (backward compat)
+        // RLS already ensures we only see our own planificaciones
+        const { data, error } = await query;
+
         if (error) {
           console.error('[EvaluationSourceSelector] Error loading planificaciones:', error);
+          // PHASE B: Debug log for zero results
+          if (import.meta.env.DEV) {
+            console.log('[EvaluationSourceSelector] Query filters:', {
+              grupoId,
+              filters: 'grupo_id, deleted_at IS NULL, ordered by created_at DESC'
+            });
+          }
+          setSavedPlanificaciones([]);
           return;
         }
 
-        setSavedPlanificaciones(data || []);
+        // PHASE B: Filter by is_saved in memory if column exists (for backward compat)
+        const filtered = (data || []).filter(p => p.is_saved === true);
+        
+        if (import.meta.env.DEV && filtered.length === 0 && (data || []).length > 0) {
+          console.warn('[EvaluationSourceSelector] Found planificaciones but none are saved (is_saved=false)');
+        }
+        
+        setSavedPlanificaciones(filtered);
       } finally {
         setIsLoadingPlanificaciones(false);
       }
@@ -140,11 +164,11 @@ export function EvaluationSourceSelector({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <BookOpen className="h-5 w-5" />
-          Fuente de Evaluación (Alternativa a ANEP)
+          Selecciona tu clase como fuente
         </CardTitle>
         <CardDescription>
           Selecciona una planificación guardada y las sesiones que quieres evaluar. 
-          Esto es opcional - también puedes usar solo contenido ANEP.
+          Esto es opcional - también puedes usar solo contenido ANEP o materiales docentes.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -165,13 +189,32 @@ export function EvaluationSourceSelector({
                     : "Selecciona una planificación"
               } />
             </SelectTrigger>
-            <SelectContent className="bg-white">
-              {savedPlanificaciones.map(plan => (
-                <SelectItem key={plan.id} value={plan.id}>
-                  {plan.materia} - {plan.fecha_inicio ? new Date(plan.fecha_inicio).toLocaleDateString('es-UY') : 'Sin fecha'}
-                  {plan.cantidad_sesiones && ` (${plan.cantidad_sesiones} sesiones)`}
-                </SelectItem>
-              ))}
+            <SelectContent className="bg-white max-h-[300px]">
+              {savedPlanificaciones.length === 0 ? (
+                <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+                  {isLoadingPlanificaciones 
+                    ? 'Cargando...' 
+                    : 'No hay planificaciones guardadas para este grupo'}
+                </div>
+              ) : (
+                savedPlanificaciones.map(plan => (
+                  <SelectItem key={plan.id} value={plan.id}>
+                    <div className="flex flex-col">
+                      <span className="font-medium">
+                        {plan.nombre || `${plan.materia}${plan.nivel ? ` - ${plan.nivel}` : ''}`}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {plan.fecha_inicio && plan.fecha_fin 
+                          ? `${new Date(plan.fecha_inicio).toLocaleDateString('es-UY')} - ${new Date(plan.fecha_fin).toLocaleDateString('es-UY')}`
+                          : plan.fecha_inicio 
+                            ? new Date(plan.fecha_inicio).toLocaleDateString('es-UY')
+                            : 'Sin fecha'}
+                        {plan.cantidad_sesiones && ` • ${plan.cantidad_sesiones} sesiones`}
+                      </span>
+                    </div>
+                  </SelectItem>
+                ))
+              )}
             </SelectContent>
           </Select>
           {!grupoId && (
