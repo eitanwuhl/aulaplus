@@ -52,7 +52,9 @@ serve(async (req) => {
       // PHASE 2: unitContext para generación progresiva (opcional para backward compatibility)
       unitContext,
       // PHASE 3: Optional per-session focus override
-      sessionBrief
+      sessionBrief,
+      // FIX: Materials context (includes extracted_text for materials-only generation)
+      materialsContext
     } = await req.json();
 
     // PHASE 2.1: Construir sección de contexto de secuencia didáctica si unitContext está presente
@@ -174,6 +176,43 @@ No inventes una secuencia distinta si el docente ya la definió.
 
 ` : '';
 
+    // FIX: Build materials section with special instructions for materials-only generation
+    const hasAnepContent = Array.isArray(contenidos) ? contenidos.length > 0 && contenidos.some((c: any) => c && c.trim()) : contenidos && String(contenidos).trim();
+    const hasMaterials = materialsContext && materialsContext.trim().length > 0;
+    
+    const materialsSection = hasMaterials ? `
+${materialsContext}
+
+${!hasAnepContent ? `
+⚠️ MODO MATERIALES-ONLY (SIN ANEP):
+NO hay contenido ANEP especificado. Los materiales docentes adjuntos son la ÚNICA fuente de contenido.
+
+REGLAS CRÍTICAS PARA MATERIALES-ONLY:
+1. El contenido del plan DEBE basarse EXCLUSIVAMENTE en el texto extraído de los PDFs proporcionados.
+2. NO uses plantillas genéricas ni contenido de relleno.
+3. DEBES incluir conceptos, vocabulario, eventos, nombres y detalles ESPECÍFICOS del material.
+4. Si el material menciona "Batllismo", "Batlle", "reformas sociales", etc., el plan DEBE usar esos términos exactos.
+5. Si el material describe eventos históricos, personajes, o procesos, el plan DEBE referenciarlos específicamente.
+6. Las actividades DEBEN trabajar con el contenido real del material, no con abstracciones genéricas.
+7. Las preguntas guía DEBEN referenciar conceptos específicos del material.
+8. El título H1 DEBE reflejar el tema específico del material, no un título genérico.
+
+EJEMPLO INCORRECTO (genérico):
+- "Análisis de un período histórico"
+- "Discusión sobre reformas"
+- "Actividad de comprensión lectora"
+
+EJEMPLO CORRECTO (específico del material):
+- "El Batllismo y las reformas sociales de José Batlle y Ordóñez"
+- "Análisis del texto sobre la Ley de 8 horas"
+- "Debate sobre el impacto de las reformas batllistas en la sociedad uruguaya"
+
+Si el material no tiene suficiente contenido extraído, indica esto claramente en el plan.
+` : `
+Los materiales docentes son complementarios al contenido ANEP. Úsalos para enriquecer y contextualizar, pero el contenido ANEP sigue siendo la base principal.
+`}
+` : '';
+
     const prompt = `
 Sos un asistente pedagógico experto en planificación de clases para el sistema educativo uruguayo (ANEP).
 ${modo === 'regenerar' ? 'Modificá' : 'Generá'} el plan de la sesión ${orden} con duración ${duracionMin} minutos.
@@ -184,7 +223,7 @@ CONTEXTO DE LA CLASE:
 - Contenidos ANEP (macro): ${Array.isArray(contenidos) ? contenidos.join(', ') : contenidos || 'Sin especificar'}
 - Competencias: ${Array.isArray(competencias) ? competencias.join(', ') : competencias || 'Sin especificar'}
 - Criterios de logro: ${Array.isArray(criterios) ? criterios.join(', ') : criterios || 'Sin especificar'}
-${sessionBriefSection}${secuenciaContext}${groupProfileSection}${instruccionesDocenteSection}${planActual ? `\nPLAN ACTUAL A MODIFICAR:\n${planActual}` : ''}
+${sessionBriefSection}${secuenciaContext}${groupProfileSection}${instruccionesDocenteSection}${materialsSection}${planActual ? `\nPLAN ACTUAL A MODIFICAR:\n${planActual}` : ''}
 
 ESTRUCTURA OBLIGATORIA - DEVOLVER SOLO HTML VÁLIDO:
 <section id="plan">
@@ -260,7 +299,23 @@ DEVOLVER JSON EXACTO:
   "plan_html": "<section id=\\"plan\\">...</section>",
   "argumento_competencias": "<p>Explicación de cómo las actividades desarrollan las competencias seleccionadas</p>",
   "recursos": ["Proyector", "Pizarrón", "Marcadores", "Material específico"],
-  "titulo": "${sessionBrief?.trim() || 'Título extraído del H1 generado'}"
+  "titulo": "${sessionBrief?.trim() || 'Título extraído del H1 generado'}",
+  "ai_design_report": {
+    "inputsUsed": {
+      "anepContent": ${hasAnepContent ? 'true' : 'false'},
+      "materials": ${hasMaterials ? 'true' : 'false'},
+      "sessionBrief": ${sessionBrief?.trim() ? 'true' : 'false'},
+      "unitContext": ${unitContext ? 'true' : 'false'}
+    },
+    "decisions": {
+      "structure": "Estructura estándar: Inicio-Desarrollo-Cierre con adaptaciones",
+      "timeAllocation": "Distribución de tiempo según duración total (${duracionMin} min)"
+    },
+    "assumptions": [
+      "Estudiantes tienen conocimientos previos básicos del tema",
+      "Recursos básicos disponibles (pizarra, proyector)"
+    ]
+  }
 }
 `;
 
@@ -305,8 +360,32 @@ DEVOLVER JSON EXACTO:
       parsed = {
         plan_html: content,
         argumento_competencias: '',
-        recursos: []
+        recursos: [],
+        ai_design_report: null // FIX: Include ai_design_report even in fallback
       };
+    }
+    
+    // FIX: Ensure ai_design_report exists (add if missing)
+    if (!parsed.ai_design_report) {
+      parsed.ai_design_report = {
+        inputsUsed: {
+          anepContent: !!hasAnepContent,
+          materials: hasMaterials,
+          sessionBrief: !!sessionBrief?.trim(),
+          unitContext: !!unitContext
+        },
+        decisions: {
+          structure: 'Estructura estándar: Inicio-Desarrollo-Cierre',
+          timeAllocation: `Distribución según duración total (${duracionMin} min)`
+        },
+        assumptions: [
+          'Estudiantes tienen conocimientos previos básicos',
+          'Recursos básicos disponibles'
+        ]
+      };
+      console.log('[FIX] Added default ai_design_report to planning response');
+    } else {
+      console.log('[FIX] ai_design_report found in AI response:', Object.keys(parsed.ai_design_report || {}));
     }
 
     // Extract title from HTML (either from parsed JSON or from sessionBrief)

@@ -357,6 +357,9 @@ const generarPlanesAutomaticamente = async (
     console.log('Esperando 2 segundos antes de iniciar la generación...');
     await new Promise(resolve => setTimeout(resolve, 2000));
 
+    // FIX: Accumulate ai_design_report from all sessions
+    const accumulatedAiDesignReports: any[] = [];
+    
     // Generar plan para cada sesión con reintentos
     for (let i = 0; i < sesiones.length; i++) {
       const sesion = sesiones[i];
@@ -409,13 +412,57 @@ const generarPlanesAutomaticamente = async (
             console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: NO hay sessionBrief en wizard state (índice ${i})`);
           }
           
-          // PHASE 4: Load attached materials (plan-level + session-level)
+          // FIX: Load attached materials (plan-level + session-level) with extracted_text
           const { loadAttachedMaterialsForSession, formatMaterialsForAI } = await import('@/utils/loadAttachedMaterials');
           const attachedMaterials = await loadAttachedMaterialsForSession(planificacionId, sesion.id);
-          const materialsContext = formatMaterialsForAI(attachedMaterials);
           
-          if (attachedMaterials.length > 0) {
-            console.log(`[MATERIALS] Sesión ${sesion.orden}: ${attachedMaterials.length} material(es) adjunto(s)`);
+          // FIX: Also load unit-level materials for this session's unit
+          const unitMaterials: typeof attachedMaterials = [];
+          if (assignment.unidadId && unidadesDidacticas) {
+            const unidad = unidadesDidacticas.find(u => u.id === assignment.unidadId);
+            if (unidad?.unit_material_plan && unidad.unit_material_plan.length > 0) {
+              // Check if this session (claseEnUnidad) should include materials from this unit
+              for (const unitMaterial of unidad.unit_material_plan) {
+                // Include if this session falls within the classCount range for this material
+                if (assignment.claseEnUnidad <= unitMaterial.classCount) {
+                  // Fetch full material data including extracted_text
+                  const { data: materialData } = await supabase
+                    .from('teacher_materials')
+                    .select('id, title, extracted_text, mime_type')
+                    .eq('id', unitMaterial.materialId)
+                    .maybeSingle();
+                  
+                  if (materialData && !materialData.deleted_at) {
+                    // Get per-class guidance for this specific class
+                    const guidance = unitMaterial.perClassGuidance[assignment.claseEnUnidad - 1] || '';
+                    
+                    unitMaterials.push({
+                      material_id: unitMaterial.materialId,
+                      title: unitMaterial.materialTitle,
+                      focus_text: guidance || undefined,
+                      extracted_text: materialData.extracted_text || undefined,
+                      mime_type: materialData.mime_type || undefined,
+                      source: 'session' // Unit materials are session-specific
+                    });
+                  }
+                }
+              }
+            }
+          }
+          
+          // Combine all materials (plan + session + unit)
+          const allMaterials = [...attachedMaterials, ...unitMaterials];
+          const materialsContext = formatMaterialsForAI(allMaterials);
+          
+          if (allMaterials.length > 0) {
+            console.log(`[MATERIALS] Sesión ${sesion.orden}: ${allMaterials.length} material(es) (${attachedMaterials.length} adjuntos + ${unitMaterials.length} de unidad)`);
+            if (import.meta.env.DEV) {
+              console.log(`[MATERIALS] Detalle:`, allMaterials.map(m => ({
+                title: m.title,
+                hasExtractedText: !!m.extracted_text,
+                extractedTextLength: m.extracted_text?.length || 0
+              })));
+            }
           }
           
           const payload = {
@@ -516,6 +563,17 @@ const generarPlanesAutomaticamente = async (
             .update(updatePayload)
             .eq('id', sesion.id);
           
+          // FIX: Accumulate ai_design_report from this session
+          if (data.ai_design_report) {
+            accumulatedAiDesignReports.push({
+              sessionOrder: sesion.orden,
+              report: data.ai_design_report
+            });
+            if (import.meta.env.DEV) {
+              console.log(`[FIX] Sesión ${sesion.orden}: ai_design_report acumulado`);
+            }
+          }
+          
           if (!updateError) {
             console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: DB actualizada exitosamente con titulo`);
           } else {
@@ -554,6 +612,49 @@ const generarPlanesAutomaticamente = async (
     }
 
     console.log('Generación automática de planes completada');
+    
+    // FIX: Persist aggregated ai_design_report to planificacion
+    if (accumulatedAiDesignReports.length > 0) {
+      // Aggregate reports: use the most comprehensive one (or combine)
+      const aggregatedReport = accumulatedAiDesignReports.length === 1
+        ? accumulatedAiDesignReports[0].report
+        : {
+            inputsUsed: {
+              anepContent: accumulatedAiDesignReports.some(r => r.report?.inputsUsed?.anepContent),
+              materials: accumulatedAiDesignReports.some(r => r.report?.inputsUsed?.materials),
+              sessionBrief: accumulatedAiDesignReports.some(r => r.report?.inputsUsed?.sessionBrief),
+              unitContext: accumulatedAiDesignReports.some(r => r.report?.inputsUsed?.unitContext),
+              sessionsCount: accumulatedAiDesignReports.length
+            },
+            decisions: {
+              structure: 'Estructura estándar aplicada a múltiples sesiones',
+              timeAllocation: `Distribución de tiempo para ${accumulatedAiDesignReports.length} sesiones`
+            },
+            assumptions: [
+              'Estudiantes tienen conocimientos previos básicos',
+              'Recursos básicos disponibles',
+              `Planificación generada para ${accumulatedAiDesignReports.length} sesiones`
+            ],
+            sessionsGenerated: accumulatedAiDesignReports.length
+          };
+      
+      const { error: reportUpdateError } = await supabase
+        .from('planificaciones')
+        .update({ ai_design_report: aggregatedReport })
+        .eq('id', planificacionId);
+      
+      if (reportUpdateError) {
+        console.error('[FIX] Error persistiendo ai_design_report:', reportUpdateError);
+      } else {
+        if (import.meta.env.DEV) {
+          console.log('[FIX] ai_design_report persistido en planificación:', planificacionId);
+        }
+      }
+    } else {
+      if (import.meta.env.DEV) {
+        console.warn('[FIX] No se acumuló ningún ai_design_report de las sesiones generadas');
+      }
+    }
     
     // Verificar que todas las sesiones tengan planes generados
     const { data: sesionesVerificacion, error: verificacionError } = await supabase
