@@ -20,6 +20,22 @@ import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupCont
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { resolveMockGroup } from '@/utils/resolveMockGroup';
+import { AIDesignReport } from '@/components/evaluaciones/AIDesignReport';
+import type { AIDesignReportData } from '@/components/evaluaciones/AIDesignReport';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+
+// FIX: Helper to adapt planning ai_design_report format to evaluation format
+function adaptPlanningReportToEvaluationFormat(planningReport: any): AIDesignReportData | null {
+  if (!planningReport) return null;
+  
+  // Planning reports have a different structure, adapt it
+  return {
+    rationale: planningReport.decisions?.structure || planningReport.assumptions?.join('. ') || 'Reporte de diseño de la planificación',
+    coverageMapping: [], // Planning doesn't have session-to-section mapping like evaluations
+    materialsUsage: [], // Could be extracted from inputsUsed.materials if available
+    adaptationNotes: planningReport.assumptions?.join('. ') || 'Sin notas de adaptación'
+  };
+}
 
 export default function PlanificacionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -55,6 +71,41 @@ export default function PlanificacionWorkspace() {
     marcarExcepcion,
     cambiarMes
   } = useCalendarioSesiones(id);
+
+  // FIX: Function to reload planificacion (including ai_design_report)
+  const recargarPlanificacion = useCallback(async () => {
+    if (!id) return;
+    
+    try {
+      const { data, error } = await supabase
+        .from('planificaciones')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+      
+      if (error) throw error;
+      if (!data) return;
+      
+      // Update planificacion state with fresh data (including ai_design_report)
+      const planificacionConverted = {
+        ...data,
+        distribucion_modalidades: data.distribucion_modalidades as unknown as DistribucionModalidades,
+        unidades_didacticas: Array.isArray(data.unidades_didacticas) ? data.unidades_didacticas : [],
+        configuracion_horario: data.configuracion_horario as unknown as ConfiguracionHorario[],
+        fecha_inicio: data.fecha_inicio || undefined,
+        fecha_fin: data.fecha_fin || undefined,
+        ai_design_report: (data as any).ai_design_report || null
+      };
+      
+      setPlanificacion(planificacionConverted as unknown as Planificacion);
+      
+      if (import.meta.env.DEV && (data as any).ai_design_report) {
+        console.log('[FIX] Planificación recargada con ai_design_report');
+      }
+    } catch (error) {
+      console.error('[FIX] Error recargando planificación:', error);
+    }
+  }, [id]);
 
   // Cargar planificaci?n
   useEffect(() => {
@@ -109,7 +160,9 @@ export default function PlanificacionWorkspace() {
           unidades_didacticas: unidadesDidacticasSafe,
           configuracion_horario: data.configuracion_horario as unknown as ConfiguracionHorario[],
           fecha_inicio: data.fecha_inicio || undefined,
-          fecha_fin: data.fecha_fin || undefined
+          fecha_fin: data.fecha_fin || undefined,
+          // FIX: Include ai_design_report from database
+          ai_design_report: (data as any).ai_design_report || null
         };
         
         // Calcular competencias del per?odo desde unidades did?cticas
@@ -575,6 +628,9 @@ export default function PlanificacionWorkspace() {
   const handleActualizarSesion = async (updates: Partial<SesionClase>) => {
     if (!sesionSeleccionada?.id) return;
     await actualizarSesion(sesionSeleccionada.id, updates);
+    // FIX: Reload planificacion after session update (in case ai_design_report was updated)
+    // This ensures the AI evidence panel updates after regeneration
+    await recargarPlanificacion();
   };
 
   const handleExportarExcel = () => {
@@ -791,6 +847,16 @@ export default function PlanificacionWorkspace() {
                 nivel={planificacion?.nivel}
               />
             </div>
+
+            {/* FIX: AI Design Report Panel (Row 3) */}
+            {planificacion?.ai_design_report && (
+              <div className="col-span-12 order-4 mt-4">
+                <AIDesignReport
+                  reportData={adaptPlanningReportToEvaluationFormat(planificacion.ai_design_report)}
+                  className="mt-6"
+                />
+              </div>
+            )}
           </div>
         </div>
 
