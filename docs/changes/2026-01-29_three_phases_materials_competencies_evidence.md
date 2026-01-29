@@ -164,7 +164,8 @@ Implemented three critical product requirements:
 
 1. **`b3133d0`** - `feat(planning): materials-only generation + unit materials + remove competencies blocking`
 2. **`64a4724`** - `fix(evaluations): planificaciones dropdown query + title update`
-3. **`[will be added]`** - `feat(ai): design evidence panel for planning and evaluation`
+3. **`901f283`** - `feat(ai): design evidence panel for planning and evaluation`
+4. **`01cee9c`** - `docs: three phases implementation report`
 
 ---
 
