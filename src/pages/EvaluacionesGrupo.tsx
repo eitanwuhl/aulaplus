@@ -924,9 +924,6 @@ const EvaluacionesGrupo = () => {
 
       const evaluationsData = await Promise.all(evaluationPromises);
       
-      // PHASE 6b: Extract backend responses (data objects) before mapping to evaluations
-      const firstBackendResponse = evaluationsData[0];  // Already awaited by Promise.all
-      
       // Map to evaluation format
       const evaluations = evaluationsData.map((item, idx) => {
         const evalConfig = evaluationConfigs[idx];
@@ -960,38 +957,60 @@ const EvaluacionesGrupo = () => {
       
       setGeneratedEvaluations(evaluations);
       
-      // PHASE 6b: Use REAL backend values (from first evaluation response)
-      // All evaluation versions share the same time budgeting and design report (global, not per-version)
-      const firstData = firstBackendResponse?.data;
+      // PHASE 6b: Aggregate time budgeting data across all evaluation variants
+      // Process all backend responses to compute aggregated values
+      const backendResponses = evaluationsData
+        .map((item, idx) => ({
+          data: item.data,
+          config: evaluationConfigs[idx]
+        }))
+        .filter(item => item.data); // Only include responses with data
       
-      if (firstData) {
-        // Extract time budgeting from backend
-        if (firstData.estimatedTotalMinutes !== undefined) {
-          setEstimatedDurationMinutes(firstData.estimatedTotalMinutes);
-          console.log('[PHASE 6b] Real estimated time from backend:', firstData.estimatedTotalMinutes);
+      if (backendResponses.length > 0) {
+        // Find max estimatedTotalMinutes across all variants
+        const maxEstimatedMinutes = Math.max(
+          ...backendResponses
+            .map(r => r.data.estimatedTotalMinutes)
+            .filter((val): val is number => typeof val === 'number')
+        );
+        
+        if (maxEstimatedMinutes > 0) {
+          setEstimatedDurationMinutes(maxEstimatedMinutes);
+          console.log('[PHASE 6b] Aggregated estimated time (max across variants):', maxEstimatedMinutes);
         }
         
-        if (firstData.timeBreakdown) {
+        // Find variant with max estimatedTotalMinutes for timeBreakdown
+        const maxVariant = backendResponses.reduce((max, current) => {
+          const maxVal = max.data.estimatedTotalMinutes || 0;
+          const currentVal = current.data.estimatedTotalMinutes || 0;
+          return currentVal > maxVal ? current : max;
+        });
+        
+        if (maxVariant.data.timeBreakdown) {
           setTimeBreakdown({
-            sections: firstData.timeBreakdown,
+            sections: maxVariant.data.timeBreakdown,
             heuristicAssumptions: 'Estimación generada por IA basada en el tipo y cantidad de items'
           });
-          console.log('[PHASE 6b] Real time breakdown from backend:', firstData.timeBreakdown);
+          console.log('[PHASE 6b] Time breakdown from max variant:', maxVariant.config.title);
         }
         
-        // Extract AI Design Report from backend
-        if (firstData.aiDesignReport) {
-          setAiDesignReport(JSON.stringify(firstData.aiDesignReport));
-          console.log('[PHASE 6b] Real AI Design Report from backend');
+        // Compute wasTimeRefined: OR across all variants
+        const anyRefined = backendResponses.some(r => r.data.wasTimeRefined === true);
+        if (anyRefined) {
+          console.log('[PHASE 6b] ⚠️ Time budget was refined by backend in at least one variant');
         }
         
-        // Log if time was refined
-        if (firstData.wasTimeRefined) {
-          console.log('[PHASE 6b] ⚠️ Time budget was refined by backend (original exceeded target)');
+        // Extract AI Design Report: prefer "moderate" variant, else max variant
+        const moderateVariant = backendResponses.find(r => r.config.adaptationLevel === 'moderate');
+        const reportVariant = moderateVariant || maxVariant;
+        
+        if (reportVariant.data.aiDesignReport) {
+          setAiDesignReport(JSON.stringify(reportVariant.data.aiDesignReport));
+          console.log('[PHASE 6b] AI Design Report from variant:', reportVariant.config.title);
         }
       } else {
         // Fallback: if backend doesn't provide these fields (backward compat or error)
-        console.warn('[PHASE 6b] Backend response missing time budgeting fields, showing fallback message');
+        console.warn('[PHASE 6b] Backend responses missing time budgeting fields, showing fallback message');
         setEstimatedDurationMinutes(null);
         setTimeBreakdown(null);
         setAiDesignReport(null);
