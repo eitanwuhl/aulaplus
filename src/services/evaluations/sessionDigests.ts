@@ -41,6 +41,7 @@ export interface MaterialDigest {
   mimeType: string;
   metadata: Record<string, any>;
   focusText: string | null;  // Focus text from attachment (if evaluation-level)
+  extractedText: string | null;  // Extracted PDF text (truncated for context)
 }
 
 export interface EvaluationGenerationContext {
@@ -136,7 +137,7 @@ function extractResourcesList(recursos: string | null): string[] {
 }
 
 /**
- * Build material digest including focus text
+ * Build material digest including focus text and extracted text
  */
 async function buildMaterialDigest(
   materialId: string, 
@@ -150,13 +151,26 @@ async function buildMaterialDigest(
     .single();
   
   if (!material) return null;
+
+  // Get extracted text (if available) and truncate for context
+  let extractedText: string | null = null;
+  if (material.extracted_text) {
+    // Truncate to ~2000 chars for generation context (to keep prompt size bounded)
+    const maxContextChars = 2000;
+    if (material.extracted_text.length > maxContextChars) {
+      extractedText = material.extracted_text.substring(0, maxContextChars) + '...';
+    } else {
+      extractedText = material.extracted_text;
+    }
+  }
   
   return {
     materialId: material.id,
     title: material.title,
     mimeType: material.mime_type || 'application/octet-stream',
     metadata: material.metadata || {},
-    focusText
+    focusText,
+    extractedText
   };
 }
 
@@ -247,7 +261,8 @@ export function serializeGenerationContext(context: EvaluationGenerationContext)
       id: m.materialId,
       title: m.title,
       mimeType: m.mimeType,
-      focusText: m.focusText
+      focusText: m.focusText,
+      extractedText: m.extractedText  // Include extracted PDF text (already truncated)
     })),
     includeSessionMaterials: context.includeSessionMaterials,
     

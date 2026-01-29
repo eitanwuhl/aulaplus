@@ -270,4 +270,65 @@ export async function deleteMaterial(id: string): Promise<{ success: boolean; er
   }
 }
 
+/**
+ * Extract text from a PDF material
+ * 
+ * Calls the edge function to extract text from a PDF file.
+ * Only works for PDF files (mime_type includes 'pdf').
+ * 
+ * @param materialId - Material ID
+ * @returns Extraction result with character count
+ */
+export async function extractMaterialText(materialId: string): Promise<{
+  success: boolean;
+  extractedChars?: number;
+  pagesProcessed?: number;
+  error?: string;
+}> {
+  try {
+    if (!materialId) {
+      return { success: false, error: 'ID de material inválido' };
+    }
+
+    // Get authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return { success: false, error: 'Usuario no autenticado' };
+    }
+
+    // Get Supabase URL and anon key from environment
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return { success: false, error: 'Configuración de Supabase faltante' };
+    }
+
+    // Call edge function
+    const { data, error } = await supabase.functions.invoke('extract-material-text', {
+      body: { materialId }
+    });
+
+    if (error) {
+      console.error('[extractMaterialText] Edge function error:', error);
+      return { success: false, error: error.message || 'Error al extraer texto del PDF' };
+    }
+
+    if (!data || !data.ok) {
+      return { success: false, error: data?.error || 'Error desconocido al extraer texto' };
+    }
+
+    return {
+      success: true,
+      extractedChars: data.extractedChars,
+      pagesProcessed: data.pagesProcessed
+    };
+
+  } catch (error) {
+    console.error('[extractMaterialText] Unexpected error:', error);
+    return { success: false, error: 'Error inesperado al extraer texto' };
+  }
+}
+
 
