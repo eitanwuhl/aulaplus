@@ -479,6 +479,7 @@ MATERIALES DOCENTES ADJUNTOS:
 ## Commit Information
 
 **Branch**: `Uso-material-docente-y-nexo-clases-evaluaciones`  
+**Commit**: `d7cda09`  
 **Commit Message**: `feat(materials): pdf text extraction + include in generation context`
 
 **Files Changed**: 7
