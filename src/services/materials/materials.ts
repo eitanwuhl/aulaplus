@@ -167,6 +167,8 @@ export async function updateMaterial(
 /**
  * Archive a material (soft delete)
  * 
+ * Uses RPC function to bypass RLS edge-cases while maintaining security.
+ * 
  * @param id - Material ID
  * @returns Success status or error
  */
@@ -176,7 +178,7 @@ export async function archiveMaterial(id: string): Promise<{ success: boolean; e
       return { success: false, error: 'ID de material inválido' };
     }
 
-    // Get authenticated user first
+    // Get authenticated user for debug logging (optional)
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
     if (authError || !user) {
@@ -184,67 +186,51 @@ export async function archiveMaterial(id: string): Promise<{ success: boolean; e
       return { success: false, error: 'Usuario no autenticado' };
     }
 
-    // Verify ownership before attempting update (for debugging)
-    // This helps identify if the issue is ownership mismatch
-    const { data: material, error: fetchError } = await supabase
-      .from('teacher_materials')
-      .select('id, user_id, deleted_at')
-      .eq('id', id)
-      .maybeSingle();
-
-    if (fetchError) {
-      console.error('[archiveMaterial] Fetch error:', fetchError);
-      return { success: false, error: 'Error al verificar material: ' + fetchError.message };
-    }
-
-    if (!material) {
-      return { success: false, error: 'Material no encontrado' };
-    }
-
     // Debug logging in development
     if (import.meta.env.DEV) {
-      console.log('[archiveMaterial] Debug info:', {
+      console.log('[archiveMaterial] Attempting archive via RPC:', {
         materialId: id,
-        materialUserId: material.user_id,
-        currentUserId: user.id,
-        ownershipMatch: material.user_id === user.id,
-        alreadyDeleted: !!material.deleted_at
-      });
-    }
-
-    // Verify ownership
-    if (material.user_id !== user.id) {
-      console.error('[archiveMaterial] Ownership mismatch:', {
-        materialUserId: material.user_id,
         currentUserId: user.id
       });
-      return { success: false, error: 'No tienes permiso para archivar este material' };
     }
 
-    // Check if already deleted
-    if (material.deleted_at) {
-      return { success: false, error: 'El material ya está archivado' };
-    }
-
-    // Perform the update
-    const { error } = await supabase
-      .from('teacher_materials')
-      .update({ deleted_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('user_id', user.id); // Extra safety: ensure we only update own materials
+    // Use RPC function to archive (bypasses RLS but enforces ownership internally)
+    const { data, error } = await supabase.rpc('archive_teacher_material', {
+      material_id: id
+    });
 
     if (error) {
-      console.error('[archiveMaterial] Update error:', error);
+      console.error('[archiveMaterial] RPC error:', error);
       console.error('[archiveMaterial] Error details:', {
         code: error.code,
         message: error.message,
         details: error.details,
         hint: error.hint
       });
-      return { success: false, error: error.message || 'Error al archivar material' };
+
+      // Map common error codes to user-friendly messages
+      let errorMessage = error.message || 'Error al archivar material';
+      
+      if (error.code === '42501') {
+        errorMessage = 'No tienes permiso para archivar este material';
+      } else if (error.message?.includes('not found')) {
+        errorMessage = 'Material no encontrado';
+      } else if (error.message?.includes('already archived')) {
+        errorMessage = 'El material ya está archivado';
+      }
+
+      return { success: false, error: errorMessage };
     }
 
-    return { success: true };
+    // RPC returns success
+    if (data?.success) {
+      if (import.meta.env.DEV) {
+        console.log('[archiveMaterial] Archive successful:', data);
+      }
+      return { success: true };
+    }
+
+    return { success: false, error: 'Error desconocido al archivar material' };
 
   } catch (error) {
     console.error('[archiveMaterial] Unexpected error:', error);
