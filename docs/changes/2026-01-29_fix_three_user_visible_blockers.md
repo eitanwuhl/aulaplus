@@ -204,10 +204,10 @@ if (import.meta.env.DEV) {
 
 ---
 
-## Commit
+## Commits
 
-**Commit**: `[will be added]`  
-**Message**: `fix: materials-only generation + AI evidence panel + planificaciones dropdown`
+1. **`36ec890`** - `fix: materials-only generation + AI evidence panel + planificaciones dropdown`
+2. **`b1b1c4d`** - `docs: three user-visible blockers fix report`
 
 ---
 
