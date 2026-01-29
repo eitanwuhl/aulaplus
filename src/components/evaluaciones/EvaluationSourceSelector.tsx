@@ -59,37 +59,39 @@ export function EvaluationSourceSelector({
     const loadPlanificaciones = async () => {
       setIsLoadingPlanificaciones(true);
       try {
-        // PHASE B: Query planificaciones - RLS handles user isolation automatically
-        // Filter by grupo_id, is_saved (if exists), and deleted_at
-        let query = supabase
+        // FIX: Query planificaciones - RLS handles user isolation automatically
+        // Filter: (grupo_id = selectedGroupId OR grupo_id IS NULL) AND deleted_at IS NULL
+        // Then filter by is_saved in memory
+        const { data, error } = await supabase
           .from('planificaciones')
           .select('*')
-          .eq('grupo_id', grupoId)
+          .or(`grupo_id.eq.${grupoId},grupo_id.is.null`)
           .is('deleted_at', null)
           .order('created_at', { ascending: false });
 
-        // Only filter by is_saved if the column exists (backward compat)
-        // RLS already ensures we only see our own planificaciones
-        const { data, error } = await query;
-
         if (error) {
           console.error('[EvaluationSourceSelector] Error loading planificaciones:', error);
-          // PHASE B: Debug log for zero results
           if (import.meta.env.DEV) {
-            console.log('[EvaluationSourceSelector] Query filters:', {
+            console.log('[EvaluationSourceSelector] Query error details:', {
               grupoId,
-              filters: 'grupo_id, deleted_at IS NULL, ordered by created_at DESC'
+              error: error.message,
+              code: error.code
             });
           }
           setSavedPlanificaciones([]);
           return;
         }
 
-        // PHASE B: Filter by is_saved in memory if column exists (for backward compat)
+        // Filter by is_saved in memory (for backward compat if column doesn't exist)
         const filtered = (data || []).filter(p => p.is_saved === true);
         
-        if (import.meta.env.DEV && filtered.length === 0 && (data || []).length > 0) {
-          console.warn('[EvaluationSourceSelector] Found planificaciones but none are saved (is_saved=false)');
+        if (import.meta.env.DEV) {
+          console.log('[EvaluationSourceSelector] Query results:', {
+            grupoId,
+            totalResults: (data || []).length,
+            savedResults: filtered.length,
+            filters: 'grupo_id OR NULL, deleted_at IS NULL, is_saved=true'
+          });
         }
         
         setSavedPlanificaciones(filtered);

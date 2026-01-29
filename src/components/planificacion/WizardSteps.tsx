@@ -834,6 +834,13 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
               {getError('unidades_didacticas')}
             </p>
           )}
+          
+          {/* FIX: Helper text for materials-only generation */}
+          <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-md p-3 mt-4">
+            <p className="text-sm text-blue-800 dark:text-blue-200">
+              💡 Podés generar usando solo materiales docentes (sin ANEP). Adjunta materiales por unidad usando el botón "Material Docente" en cada unidad.
+            </p>
+          </div>
         </div>
       )}
 

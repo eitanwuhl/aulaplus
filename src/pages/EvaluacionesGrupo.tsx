@@ -1010,7 +1010,20 @@ const EvaluacionesGrupo = () => {
         
         if (reportVariant.data.aiDesignReport) {
           setAiDesignReport(JSON.stringify(reportVariant.data.aiDesignReport));
-          console.log('[PHASE 6b] AI Design Report from variant:', reportVariant.config.title);
+          if (import.meta.env.DEV) {
+            console.log('[FIX] AI Design Report found:', {
+              variant: reportVariant.config.title,
+              hasReport: true,
+              reportKeys: Object.keys(reportVariant.data.aiDesignReport || {})
+            });
+          }
+        } else {
+          if (import.meta.env.DEV) {
+            console.warn('[FIX] AI Design Report missing in backend response:', {
+              variant: reportVariant.config.title,
+              responseKeys: Object.keys(reportVariant.data || {})
+            });
+          }
         }
       } else {
         // Fallback: if backend doesn't provide these fields (backward compat or error)
@@ -1713,14 +1726,12 @@ const EvaluacionesGrupo = () => {
               disabled={isGenerating || requestInProgress}
             />
 
-            {/* PHASE A: Help text for materials-only generation */}
-            {!hasAnepContent && evaluationMaterialsConfig.directMaterialIds.length > 0 && (
-              <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-md p-3">
-                <p className="text-sm text-blue-800 dark:text-blue-200">
-                  💡 Podés generar evaluaciones usando solo materiales docentes. No es necesario seleccionar contenido ANEP.
-                </p>
-              </div>
-            )}
+            {/* FIX: Help text for materials-only generation */}
+            <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-md p-3">
+              <p className="text-sm text-blue-800 dark:text-blue-200">
+                💡 Podés generar usando solo materiales docentes (sin ANEP). También podés combinar: ANEP + materiales, o sesiones + materiales.
+              </p>
+            </div>
             
             {/* PHASE 6: Time budgeting */}
             <TimeBudgetingSection
@@ -1790,9 +1801,8 @@ const EvaluacionesGrupo = () => {
                   isGenerating || requestInProgress || !selectedGroupId || 
                   (!esInterdisciplinaria && !materia) || 
                   (esInterdisciplinaria && materiasSeleccionadas.length === 0) || 
-                  // A/B/C-like validation: Allow generation if EITHER ANEP OR sessions selected
-                  (selectedSubtemas.length === 0 && evaluationSourceConfig.sessionIds.length === 0) ||
-                  (selectedCriteriosLogro.length === 0 && evaluationSourceConfig.sessionIds.length === 0)
+                  // FIX: Allow generation if ANY of: ANEP content, sessions, OR materials
+                  (!hasAnepContent && !hasSessions && !hasMaterials)
                 }
                 className="w-full"
               >
@@ -1878,12 +1888,25 @@ const EvaluacionesGrupo = () => {
                   />
                 ))}
                 
-                {/* PHASE 6: AI Design Report */}
-                {aiDesignReport && (
+                {/* FIX: AI Design Report with fallback */}
+                {aiDesignReport ? (
                   <AIDesignReport 
                     reportData={JSON.parse(aiDesignReport)} 
                     className="mt-6"
                   />
+                ) : (
+                  <Card className="mt-6 border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+                    <CardHeader>
+                      <CardTitle className="text-sm text-amber-800 dark:text-amber-200">
+                        Evidencia de diseño de la IA
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-sm text-amber-700 dark:text-amber-300">
+                        El reporte de diseño de la IA no está disponible. Esto puede ocurrir si la generación fue realizada antes de implementar esta característica.
+                      </p>
+                    </CardContent>
+                  </Card>
                 )}
                 
                 {selectedCriteriosLogro.length > 0 && (
