@@ -311,21 +311,33 @@ export async function extractMaterialText(materialId: string): Promise<{
     // Get session to extract access token for Authorization header
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
     
+    // CRITICAL: Log BEFORE invoking to confirm auth state
+    const hasSession = !!session;
+    const accessTokenLength = session?.access_token?.length || 0;
+    
+    console.log('[extractMaterialText] BEFORE invoke:', {
+      materialId,
+      hasSession,
+      accessTokenLength,
+      headersSent: {
+        hasAuth: !!session?.access_token,
+        hasContentType: true
+      }
+    });
+    
     if (sessionError || !session?.access_token) {
-      return { success: false, error: 'No session token' };
+      console.error('[extractMaterialText] ❌ No session token:', {
+        sessionError: sessionError?.message,
+        hasSession,
+        accessTokenLength
+      });
+      return { success: false, error: 'No session token available. Please log in again.' };
     }
 
     // Use fetch directly to guarantee a real body is sent
     const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/extract-material-text`;
     const anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
     const bodyJson = JSON.stringify({ materialId });
-
-    console.log('[extractMaterialText] sending', { 
-      materialId, 
-      json: bodyJson,
-      url,
-      hasAnonKey: !!anon
-    });
 
     const res = await fetch(url, {
       method: 'POST',
@@ -338,10 +350,17 @@ export async function extractMaterialText(materialId: string): Promise<{
     });
 
     const json = await res.json().catch(() => ({}));
-    console.log('[extractMaterialText] response', { 
-      status: res.status, 
+    
+    // CRITICAL: Log AFTER invoking to confirm response
+    console.log('[extractMaterialText] AFTER invoke:', {
+      status: res.status,
       statusText: res.statusText,
-      json 
+      data: {
+        ok: json.ok,
+        extractedChars: json.extractedChars,
+        pagesProcessed: json.pagesProcessed,
+        error: json.error
+      }
     });
 
     if (!res.ok) {
