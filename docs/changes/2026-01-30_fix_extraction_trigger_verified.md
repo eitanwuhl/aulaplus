@@ -424,6 +424,7 @@ git commit -m "fix(materials): robust PDF detection + guaranteed extraction trig
 ---
 
 **Commits**:
-- `git log -1 --oneline` - fix(materials): robust PDF detection + guaranteed extraction trigger
+- `32ef206` - fix(materials): robust PDF detection + guaranteed extraction trigger
+- `583ba76` - docs: add extraction trigger fix report
 
 **Status**: ✅ Fix implemented, ready for verification
