@@ -391,7 +391,7 @@ git add -A
 git commit -m "fix(extraction): robust JSON parsing, planning validation, dropdown logging"
 ```
 
----
-
-**Commit**: `git log -1 --oneline`  
+**Commit**: `a1b2c3d fix(extraction): robust JSON parsing, planning validation, dropdown logging`  
 **Status**: ✅ All fixes implemented and deployed, ready for verification
+
+**Note**: Replace `a1b2c3d` with actual commit hash from `git log -1 --oneline`
