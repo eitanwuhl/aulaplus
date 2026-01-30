@@ -326,35 +326,36 @@ export function useUploadAndCreateMaterial() {
         });
 
         // DEV: Log before invoking extraction
-        if (import.meta.env.DEV) {
-          console.log('[materials-upload] invoking extract-material-text', {
-            id: material.id,
-            title: material.title,
-            mime_type: material.mime_type,
-            storage_path: material.storage_path
-          });
-        }
+        console.log('[materials-upload] ✅ PDF detected, triggering extraction', {
+          id: material.id,
+          title: material.title,
+          mime_type: material.mime_type,
+          storage_path: material.storage_path
+        });
 
         try {
           const { extractMaterialText } = await import('@/services/materials');
           
-          // Always invoke extraction (await to ensure request is made)
+          // CRITICAL: Always invoke extraction immediately after DB insert
+          // This ensures the network call is made and extraction happens
+          console.log('[materials-upload] 🔄 Calling extractMaterialText...', {
+            materialId: material.id
+          });
+          
           let extractResult = await extractMaterialText(material.id);
           
-          // DEV: Log extraction result
-          if (import.meta.env.DEV) {
-            console.log('[materials-upload] extraction result', {
-              id: material.id,
-              success: extractResult.success,
-              extractedChars: extractResult.extractedChars,
-              pagesProcessed: extractResult.pagesProcessed,
-              error: extractResult.error
-            });
-          }
+          // Log extraction result (always, not just in DEV)
+          console.log('[materials-upload] 📊 Extraction result:', {
+            id: material.id,
+            success: extractResult.success,
+            extractedChars: extractResult.extractedChars,
+            pagesProcessed: extractResult.pagesProcessed,
+            error: extractResult.error
+          });
           
           // Retry extraction once if it fails
           if (!extractResult.success) {
-            console.log('[materials-upload] First extraction attempt failed, retrying once...', {
+            console.warn('[materials-upload] ⚠️ First extraction attempt failed, retrying once...', {
               id: material.id,
               error: extractResult.error
             });
@@ -362,15 +363,12 @@ export function useUploadAndCreateMaterial() {
             await new Promise(resolve => setTimeout(resolve, 1000));
             extractResult = await extractMaterialText(material.id);
             
-            // DEV: Log retry result
-            if (import.meta.env.DEV) {
-              console.log('[materials-upload] extraction retry result', {
-                id: material.id,
-                success: extractResult.success,
-                extractedChars: extractResult.extractedChars,
-                error: extractResult.error
-              });
-            }
+            console.log('[materials-upload] 📊 Retry result:', {
+              id: material.id,
+              success: extractResult.success,
+              extractedChars: extractResult.extractedChars,
+              error: extractResult.error
+            });
           }
 
           if (extractResult.success) {
@@ -378,25 +376,31 @@ export function useUploadAndCreateMaterial() {
             queryClient.invalidateQueries({ queryKey: materialsKeys.lists() });
             queryClient.invalidateQueries({ queryKey: materialsKeys.detail(material.id) });
             
+            console.log('[materials-upload] ✅ Extraction successful:', {
+              id: material.id,
+              extractedChars: extractResult.extractedChars,
+              pagesProcessed: extractResult.pagesProcessed
+            });
+            
             toast({
               title: 'Material creado',
               description: `Material "${material.title}" creado exitosamente. Texto extraído: ${extractResult.extractedChars} caracteres.`,
             });
           } else {
             // Extraction failed after retry, but material was created
-            console.error('[materials-upload] Extraction failed after retry:', {
+            console.error('[materials-upload] ❌ Extraction failed after retry:', {
               id: material.id,
               error: extractResult.error
             });
             toast({
               title: 'Material creado',
-              description: `Material "${material.title}" creado exitosamente. No se pudo extraer texto del PDF: ${extractResult.error || 'Error desconocido'}.`,
+              description: `Material "${material.title}" creado exitosamente. No se pudo extraer texto del PDF: ${extractResult.error || 'Error desconocido'}. Puedes usar el botón "Re-extraer" en la biblioteca.`,
               variant: 'default',
             });
           }
         } catch (extractError) {
-          // DEV: Log extraction error
-          console.error('[materials-upload] extraction error', {
+          // Log extraction error
+          console.error('[materials-upload] ❌ Extraction exception:', {
             id: material.id,
             error: extractError instanceof Error ? extractError.message : 'Error desconocido',
             stack: extractError instanceof Error ? extractError.stack : undefined
@@ -406,19 +410,17 @@ export function useUploadAndCreateMaterial() {
           const errorMessage = extractError instanceof Error ? extractError.message : 'Error desconocido';
           toast({
             title: 'Material creado',
-            description: `Material "${material.title}" creado exitosamente. Error al extraer texto: ${errorMessage}.`,
+            description: `Material "${material.title}" creado exitosamente. Error al extraer texto: ${errorMessage}. Puedes usar el botón "Re-extraer" en la biblioteca.`,
             variant: 'default',
           });
         }
       } else {
         // Not a PDF, just show success
-        if (import.meta.env.DEV) {
-          console.log('[materials-upload] Not a PDF, skipping extraction', {
-            id: material.id,
-            mime_type: material.mime_type,
-            storage_path: material.storage_path
-          });
-        }
+        console.log('[materials-upload] ℹ️ Not a PDF, skipping extraction', {
+          id: material.id,
+          mime_type: material.mime_type,
+          storage_path: material.storage_path
+        });
         toast({
           title: 'Material creado',
           description: `Material "${material.title}" creado exitosamente`,

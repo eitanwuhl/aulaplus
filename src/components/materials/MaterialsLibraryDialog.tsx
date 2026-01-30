@@ -294,20 +294,41 @@ function MaterialCard({ material, selected, onToggle, multiSelect }: MaterialCar
         {isPDF && (
           <div className="flex items-center gap-2 mt-2">
             {hasExtractedText ? (
-              <Badge variant="outline" className="text-xs text-green-600">
-                Texto extraído
+              <Badge variant="outline" className="text-xs text-green-600 border-green-600">
+                ✓ Texto extraído
               </Badge>
             ) : (
-              <Badge variant="outline" className="text-xs text-amber-600">
-                Sin texto extraído
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-xs text-amber-600 border-amber-600">
+                  ⚠ Sin texto extraído
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleReExtract}
+                  disabled={isExtracting}
+                  className="h-6 text-xs"
+                >
+                  {isExtracting ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                      Extrayendo...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-3 w-3 mr-1" />
+                      Re-extraer
+                    </>
+                  )}
+                </Button>
+              </div>
             )}
           </div>
         )}
       </div>
       
-      {/* Re-extract button for PDFs */}
-      {isPDF && (
+      {/* Re-extract button for PDFs (only if text is already extracted) */}
+      {isPDF && hasExtractedText && (
         <div className="flex-shrink-0">
           <Button
             variant="ghost"
@@ -315,7 +336,7 @@ function MaterialCard({ material, selected, onToggle, multiSelect }: MaterialCar
             onClick={handleReExtract}
             disabled={isExtracting}
             className="h-8 w-8 p-0"
-            title={hasExtractedText ? 'Re-extraer texto' : 'Extraer texto'}
+            title="Re-extraer texto"
           >
             {isExtracting ? (
               <Loader2 className="h-4 w-4 animate-spin" />
