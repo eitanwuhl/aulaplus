@@ -24,31 +24,24 @@ export async function createMaterial(
   material: Omit<TeacherMaterialInsert, 'id' | 'created_at' | 'updated_at'>
 ): Promise<{ data?: TeacherMaterial; error?: string }> {
   try {
-    // Debug: Check session first
+    // CRITICAL: Verify session exists before proceeding
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    console.log('[createMaterial] 🔍 Session check:', {
-      hasSession: !!session,
-      sessionError: sessionError?.message,
-      userId: session?.user?.id,
-      userEmail: session?.user?.email,
-      accessToken: session?.access_token ? 'present' : 'missing'
-    });
+    
+    if (sessionError || !session) {
+      console.error('[createMaterial] ❌ No session available:', {
+        sessionError: sessionError?.message,
+        hasSession: !!session
+      });
+      return { error: 'Sesión no disponible. Recargá la página y volvé a iniciar sesión.' };
+    }
     
     // Get authenticated user
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
-    console.log('[createMaterial] 🔍 User check:', {
-      hasUser: !!user,
-      authError: authError?.message,
-      userId: user?.id,
-      userEmail: user?.email
-    });
-    
     if (authError || !user) {
-      console.error('[createMaterial] ❌ Authentication failed:', {
+      console.error('[createMaterial] ❌ Auth error:', {
         authError: authError?.message,
         hasUser: !!user,
-        hasSession: !!session,
         sessionUserId: session?.user?.id
       });
       return { error: 'Usuario no autenticado' };
@@ -327,12 +320,12 @@ export async function extractMaterialText(materialId: string): Promise<{
       return { success: false, error: 'Sesión no disponible' };
     }
 
-    // Call edge function with explicit Authorization header
-    // CRITICAL: This MUST make a network call to /functions/v1/extract-material-text
+    // CRITICAL: Call edge function - this MUST make a network call to /functions/v1/extract-material-text
     console.log('[extractMaterialText] 🔄 Invoking edge function extract-material-text', {
       materialId,
       hasSession: !!session,
-      hasAccessToken: !!session?.access_token
+      hasAccessToken: !!session?.access_token,
+      accessTokenLength: session?.access_token?.length || 0
     });
     
     const { data, error } = await supabase.functions.invoke('extract-material-text', {
@@ -343,12 +336,15 @@ export async function extractMaterialText(materialId: string): Promise<{
       }
     });
     
+    // ALWAYS log response (not just in DEV)
     console.log('[extractMaterialText] 📊 Edge function response:', {
       materialId,
       hasData: !!data,
       hasError: !!error,
+      status: error ? 'error' : (data?.ok ? 'success' : 'unknown'),
       dataOk: data?.ok,
       extractedChars: data?.extractedChars,
+      pagesProcessed: data?.pagesProcessed,
       errorMessage: error?.message || data?.error
     });
 

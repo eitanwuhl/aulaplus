@@ -338,25 +338,25 @@ export function useUploadAndCreateMaterial() {
           const mod = await import('@/services/materials/materials');
           const { extractMaterialText } = mod;
           
-          // Debug: Verify function exists
-          console.log('[materials-upload] 📦 Materials module keys:', Object.keys(mod));
-          console.log('[materials-upload] ✅ extractMaterialText type:', typeof extractMaterialText);
-          
+          // Verify function exists
           if (typeof extractMaterialText !== 'function') {
-            throw new Error('extractMaterialText is not a function. Module keys: ' + Object.keys(mod).join(', '));
+            const moduleKeys = Object.keys(mod).join(', ');
+            console.error('[materials-upload] ❌ extractMaterialText is not a function. Module keys:', moduleKeys);
+            throw new Error(`extractMaterialText is not a function. Available: ${moduleKeys}`);
           }
           
           // CRITICAL: Always invoke extraction immediately after DB insert
           // This ensures the network call is made and extraction happens
-          console.log('[materials-upload] 🔄 Calling extractMaterialText...', {
-            materialId: material.id
+          console.log('[materials-upload] 🔄 Invoking extract-material-text for material:', {
+            materialId: material.id,
+            title: material.title
           });
           
           let extractResult = await extractMaterialText(material.id);
           
-          // Log extraction result (always, not just in DEV)
-          console.log('[materials-upload] 📊 Extraction result:', {
-            id: material.id,
+          // Log extraction result (ALWAYS, not just in DEV)
+          console.log('[materials-upload] 📊 Extraction response:', {
+            materialId: material.id,
             success: extractResult.success,
             extractedChars: extractResult.extractedChars,
             pagesProcessed: extractResult.pagesProcessed,
