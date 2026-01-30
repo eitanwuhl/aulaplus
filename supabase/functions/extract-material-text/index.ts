@@ -320,6 +320,9 @@ serve(async (req) => {
       }
 
     } catch (parseError: any) {
+      // Reset on error
+      extractedText = '';
+      pagesProcessed = 0;
       console.error('[extract-material-text] PDF parsing error:', {
         error: parseError?.message ?? String(parseError),
         stack: parseError?.stack,
