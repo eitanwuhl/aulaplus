@@ -228,83 +228,37 @@ serve(async (req) => {
       pdfBytesLength: pdfBytes.length
     });
 
-    // Extract text using pdfjs-dist v2.16.105 (compatible with Deno Edge)
+    // Extract text using unpdf (serverless PDF.js bundle for Deno Edge)
     let extractedText = '';
     let pagesProcessed = 0;
     try {
-      console.log('[extract-material-text] start:', {
+      console.log('[extract-material-text] Extraction start:', {
         materialId,
-        userId: user.id
+        library: 'unpdf',
+        dataBytes: pdfBytes.length
       });
       
-      console.log('[extract-material-text] downloaded bytes:', fileBlob.size);
-      console.log('[extract-material-text] storage_path:', material.storage_path);
+      // Import unpdf from esm.sh with Deno target
+      const { extractText } = await import('https://esm.sh/unpdf@1.2.2?target=deno');
       
-      // ---- Runtime polyfills for pdfjs in Deno/Supabase Edge ----
-      // MUST be at the very top before ANY dynamic import
-      const g: any = globalThis as any;
-      if (!g.navigator) g.navigator = { userAgent: 'Deno' };
-      if (!g.window) g.window = g;
-      if (!g.self) g.self = g;
+      console.log('[extract-material-text] unpdf imported, extracting text...', { materialId });
       
-      // Import pdfjs-dist using esm.sh - MUST use pdf.js NOT pdf.mjs
-      // DO NOT use ?target=deno (causes canvas.node dependency error)
-      // DO NOT use /es2022/ paths
-      // DO NOT use 5.x versions
-      const pdfjsLib: any = await import(
-        'https://esm.sh/pdfjs-dist@2.16.105/legacy/build/pdf.js'
-      );
+      // Extract text using unpdf (mergePages: true combines all pages)
+      const result = await extractText(pdfBytes, { mergePages: true });
       
-      console.log('[extract-material-text] pdfjs import ok', {
-        version: pdfjsLib?.version,
-        hasGetDocument: typeof pdfjsLib?.getDocument === 'function',
-      });
+      // Handle result - text can be string or array
+      const rawText = typeof result.text === 'string' 
+        ? result.text 
+        : (result.text || []).join('\n\n');
       
-      // Resolve pdfjs object (handle default export)
-      const pdfjs: any = pdfjsLib?.getDocument ? pdfjsLib : pdfjsLib?.default;
+      extractedText = rawText.trim();
+      pagesProcessed = result.totalPages || 0;
       
-      // Hard guard: verify getDocument exists
-      if (!pdfjs?.getDocument) {
-        throw new Error(`pdfjs getDocument not found. Keys: ${Object.keys(pdfjsLib).join(', ')}`);
-      }
-      
-      console.log('[extract-material-text] pdfjs imported, loading document...');
-      
-      // Load PDF document with worker disabled (required for Edge Functions)
-      // DO NOT touch GlobalWorkerOptions.workerSrc
-      const loadingTask = pdfjs.getDocument({
-        data: pdfBytes,
-        disableWorker: true,
-        verbosity: 0,
-      });
-      
-      const pdf = await loadingTask.promise;
-      
-      console.log('[extract-material-text] pdf.numPages:', pdf.numPages);
-      
-      // Extract text page by page safely
-      let extracted = '';
-      const maxPages = Math.min(pdf.numPages, MAX_PAGES);
-      
-      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-        const page = await pdf.getPage(pageNum);
-        const content = await page.getTextContent();
-        const strings = (content.items || [])
-          .map((it: any) => (it && it.str ? String(it.str) : ''))
-          .filter(Boolean);
-        extracted += strings.join(' ') + '\n\n';
-        if (extracted.length >= MAX_CHARS) {
-          extracted = extracted.slice(0, MAX_CHARS);
-          break;
-        }
-      }
-      
-      extractedText = extracted.trim();
-      pagesProcessed = maxPages;
-      
-      console.log('[extract-material-text] After extraction:', {
+      console.log('[extract-material-text] Extraction done:', {
+        materialId,
+        totalPages: pagesProcessed,
         extractedChars: extractedText.length,
-        pagesProcessed: pagesProcessed
+        preview: extractedText.slice(0, 120).replace(/\s+/g, ' ')
       });
 
       // Clean up: remove binary junk, normalize
@@ -314,12 +268,18 @@ serve(async (req) => {
           .replace(/\s+/g, ' ')  // Normalize whitespace
           .trim();
       }
+      
+      // Enforce sane limits (20k chars max, but keep non-empty)
+      if (extractedText.length > 20000) {
+        extractedText = extractedText.substring(0, 20000) + '...';
+      }
 
     } catch (parseError: any) {
       // Reset on error
       extractedText = '';
       pagesProcessed = 0;
       console.error('[extract-material-text] PDF parsing error:', {
+        materialId,
         error: parseError?.message ?? String(parseError),
         stack: parseError?.stack,
         name: parseError?.name
@@ -340,7 +300,7 @@ serve(async (req) => {
     // If extractedText is EMPTY: return ok=true with extractedChars=0
     // DO NOT write empty string into DB (keep NULL) so the UI blocking logic still works
     if (extractedChars === 0) {
-      console.log('[extract-material-text] extractedChars: 0 (empty text, not updating DB)');
+      console.log('[extract-material-text] extractedChars: 0 (empty text, not updating DB)', { materialId });
       return new Response(
         JSON.stringify({
           ok: true,
@@ -352,18 +312,20 @@ serve(async (req) => {
     }
     
     // Update material with extracted text (only if not empty)
-    console.log('[extract-material-text] Updating database:', {
+    console.log('[extract-material-text] DB update:', {
       materialId,
       userId: user.id,
       extractedChars,
       pagesProcessed
     });
     
-    const { error: updateError } = await supabase
+    const { data: updatedRow, error: updateError } = await supabase
       .from('teacher_materials')
       .update({ extracted_text: extractedText })
       .eq('id', materialId)
-      .eq('user_id', user.id);  // Extra safety
+      .eq('user_id', user.id)  // Extra safety
+      .select('id')
+      .single();
 
     if (updateError) {
       console.error('[extract-material-text] DB update error:', {
@@ -382,8 +344,11 @@ serve(async (req) => {
       );
     }
     
-    console.log('[extract-material-text] DB update result: success');
-    console.log('[extract-material-text] extractedChars persisted:', extractedChars);
+    console.log('[extract-material-text] DB update success:', {
+      materialId,
+      updatedRowId: updatedRow?.id,
+      extractedChars
+    });
 
     // Return success
     return new Response(
