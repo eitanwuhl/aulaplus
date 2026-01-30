@@ -54,20 +54,19 @@ serve(async (req) => {
       );
     }
 
-    console.log('[extract-material-text] ✅ Auth OK:', { userId: user.id, email: user.email });
+    console.log('[extract-material-text] ✅ Auth OK:', {
+      userId: user.id,
+      email: user.email
+    });
 
     // Parse request body with robust error handling
     // CRITICAL: Request bodies are single-read streams - read ONCE only
     let materialId: string | null = null;
     try {
-      // Log request metadata BEFORE reading body
-      console.log('[extract-material-text] Request method:', req.method);
-      console.log('[extract-material-text] Content-Type:', req.headers.get('content-type'));
-      console.log('[extract-material-text] URL:', req.url);
-      
       // Read raw text ONCE - this consumes the stream
       const raw = await req.text();
-      console.log('[extract-material-text] Raw body (first 200 chars):', raw.slice(0, 200));
+      const rawBodyPreview = raw.slice(0, 100);
+      console.log('[extract-material-text] Raw body (first 100 chars):', rawBodyPreview);
       console.log('[extract-material-text] Raw body length:', raw.length);
       
       // Remove BOM and trim
@@ -152,13 +151,6 @@ serve(async (req) => {
       );
     }
 
-    console.log('[extract-material-text] ✅ Material fetched:', {
-      materialId,
-      title: material.title,
-      storage_path: material.storage_path,
-      mime_type: material.mime_type
-    });
-
     // Verify ownership - RLS isolation: only material owner can extract
     if (material.user_id !== user.id) {
       console.error('[extract-material-text] Ownership mismatch:', { 
@@ -172,14 +164,12 @@ serve(async (req) => {
       );
     }
 
-    // Log material info (always log for debugging)
-    console.log('[extract-material-text] Material found:', { 
-      userId: user.id,
-      materialId, 
+    // Log material info after ownership verified
+    console.log('[extract-material-text] Material fetched (ownership ok):', {
+      materialId,
       title: material.title,
-      hasStoragePath: !!material.storage_path,
-      storagePath: material.storage_path,
-      mimeType: material.mime_type
+      mime_type: material.mime_type,
+      storage_path: material.storage_path
     });
 
     // Verify it's a PDF - check mime_type OR file extension in storage_path
@@ -207,10 +197,9 @@ serve(async (req) => {
       );
     }
 
-    console.log('[extract-material-text] Downloading PDF from storage:', {
-      materialId,
-      storage_path: material.storage_path,
-      bucket: 'teacher-materials'
+    console.log('[extract-material-text] Before download:', {
+      bucket: 'teacher-materials',
+      storage_path: material.storage_path
     });
     
     const { data: fileBlob, error: downloadError } = await supabase.storage
@@ -230,11 +219,7 @@ serve(async (req) => {
       );
     }
     
-    console.log('[extract-material-text] ✅ Blob downloaded:', {
-      materialId,
-      blobSize: fileBlob.size,
-      blobType: fileBlob.type
-    });
+    console.log('[extract-material-text] After download: file size bytes:', fileBlob.size);
 
     // Convert blob to Uint8Array for PDF parsing
     const pdfBytes = new Uint8Array(await fileBlob.arrayBuffer());
@@ -264,6 +249,8 @@ serve(async (req) => {
       
       // Import pdfjs-dist using esm.sh - MUST use pdf.js NOT pdf.mjs
       // DO NOT use ?target=deno (causes canvas.node dependency error)
+      // DO NOT use /es2022/ paths
+      // DO NOT use 5.x versions
       const pdfjsLib: any = await import(
         'https://esm.sh/pdfjs-dist@2.16.105/legacy/build/pdf.js'
       );
@@ -315,8 +302,10 @@ serve(async (req) => {
       extractedText = extracted.trim();
       pagesProcessed = maxPages;
       
-      console.log('[extract-material-text] pagesProcessed:', pagesProcessed);
-      console.log('[extract-material-text] extractedChars:', extractedText.length);
+      console.log('[extract-material-text] After extraction:', {
+        extractedChars: extractedText.length,
+        pagesProcessed: pagesProcessed
+      });
 
       // Clean up: remove binary junk, normalize
       if (extractedText.length > 0) {
@@ -394,12 +383,7 @@ serve(async (req) => {
     }
     
     console.log('[extract-material-text] DB update result: success');
-    console.log('[extract-material-text] ✅ Successfully updated material:', {
-      materialId,
-      extractedChars,
-      pagesProcessed,
-      dbUpdateResult: 'success'
-    });
+    console.log('[extract-material-text] extractedChars persisted:', extractedChars);
 
     // Return success
     return new Response(
