@@ -219,9 +219,30 @@ export async function buildEvaluationGenerationContext(config: {
   
   // 2. Build direct material digests
   const directMaterials: MaterialDigest[] = [];
+  const materialsWithoutText: string[] = [];
+  
   for (const materialId of config.directMaterialIds) {
     const digest = await buildMaterialDigest(materialId, null);
-    if (digest) directMaterials.push(digest);
+    if (digest) {
+      directMaterials.push(digest);
+      // Check if PDF lacks extracted_text
+      if (digest.mimeType?.includes('pdf') && !digest.extractedText) {
+        materialsWithoutText.push(digest.title || materialId);
+      }
+    }
+  }
+  
+  // FIX: BLOCK materials-only evaluation if PDFs lack extracted_text
+  const hasAnepContent = (config.selectedSubtemas?.length || 0) > 0;
+  const hasSessions = (config.sessionDigests?.length || 0) > 0;
+  const hasOnlyMaterials = !hasAnepContent && !hasSessions && directMaterials.length > 0;
+  
+  if (hasOnlyMaterials && materialsWithoutText.length > 0) {
+    const missingTitles = materialsWithoutText.join(', ');
+    throw new Error(
+      `No se puede generar evaluación solo con materiales: los siguientes PDFs no tienen texto extraído: ${missingTitles}. ` +
+      `Por favor, espera a que se complete la extracción o usa el botón "Re-extraer" en la biblioteca de materiales.`
+    );
   }
   
   return {

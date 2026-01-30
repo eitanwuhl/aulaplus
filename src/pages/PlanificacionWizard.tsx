@@ -455,14 +455,13 @@ const generarPlanesAutomaticamente = async (
           
           // Combine all materials (plan + session + unit)
           const allMaterials = [...attachedMaterials, ...unitMaterials];
-          const materialsContext = formatMaterialsForAI(allMaterials);
+          let materialsContext = formatMaterialsForAI(allMaterials);
           
-          // FIX: Check if materials-only planning (no ANEP content) and warn if extracted_text is missing
+          // FIX: Check if materials-only planning (no ANEP content) and BLOCK if extracted_text is missing
           const hasAnepContent = contenidosSesion.length > 0;
           const hasMaterials = allMaterials.length > 0;
-          const materialsWithoutText = allMaterials.filter(m => 
-            m.mime_type?.includes('pdf') && !m.extracted_text
-          );
+          const pdfMaterials = allMaterials.filter(m => m.mime_type?.includes('pdf'));
+          const materialsWithoutText = pdfMaterials.filter(m => !m.extracted_text);
           
           if (allMaterials.length > 0) {
             console.log(`[MATERIALS] Sesión ${sesion.orden}: ${allMaterials.length} material(es) (${attachedMaterials.length} adjuntos + ${unitMaterials.length} de unidad)`);
@@ -475,12 +474,70 @@ const generarPlanesAutomaticamente = async (
             }
           }
           
-          // FIX: Warn if materials-only planning without extracted_text
+          // FIX: BLOCK materials-only planning if PDFs lack extracted_text
           if (!hasAnepContent && hasMaterials && materialsWithoutText.length > 0) {
             const missingTitles = materialsWithoutText.map(m => m.title).join(', ');
+            const missingIds = materialsWithoutText.map(m => m.material_id).filter(Boolean) as string[];
+            
             console.warn(`[MATERIALS] ⚠️ Sesión ${sesion.orden}: Planificación solo con materiales pero ${materialsWithoutText.length} PDF(s) sin texto extraído: ${missingTitles}`);
-            // Note: We don't block generation, but the AI will see "no text extracted" note
-            // User should wait for extraction or re-upload
+            
+            // Try to trigger extraction and poll for results
+            const { extractMaterialText } = await import('@/services/materials');
+            const { pollExtractedText } = await import('@/utils/pollExtractedText');
+            
+            // Trigger extraction for all missing materials
+            const extractionPromises = missingIds.map(id => extractMaterialText(id));
+            await Promise.allSettled(extractionPromises);
+            
+            // Poll for extracted_text with progress updates
+            let allExtracted = true;
+            for (const material of materialsWithoutText) {
+              if (!material.material_id) continue;
+              
+              const pollResult = await pollExtractedText({
+                materialId: material.material_id,
+                maxWaitSeconds: 10,
+                pollIntervalMs: 1000,
+                onProgress: (attempt, maxAttempts) => {
+                  if (import.meta.env.DEV) {
+                    console.log(`[MATERIALS] Polling extracted_text for "${material.title}" (${attempt}/${maxAttempts})...`);
+                  }
+                }
+              });
+              
+              if (!pollResult.success) {
+                allExtracted = false;
+                console.error(`[MATERIALS] ❌ Failed to extract text for "${material.title}": ${pollResult.error}`);
+              } else {
+                console.log(`[MATERIALS] ✅ Extracted text available for "${material.title}": ${pollResult.extractedChars} chars`);
+                // Reload material to get updated extracted_text
+                const { loadAttachedMaterialsForSession } = await import('@/utils/loadAttachedMaterials');
+                const updatedMaterials = await loadAttachedMaterialsForSession(planificacionId, sesion.id);
+                const updatedMaterial = updatedMaterials.find(m => m.material_id === material.material_id);
+                if (updatedMaterial?.extracted_text) {
+                  // Update in allMaterials array
+                  const index = allMaterials.findIndex(m => m.material_id === material.material_id);
+                  if (index >= 0) {
+                    allMaterials[index] = updatedMaterial;
+                  }
+                }
+              }
+            }
+            
+            // If still missing after polling, throw error to block generation
+            if (!allExtracted) {
+              const stillMissing = allMaterials.filter(m => 
+                m.mime_type?.includes('pdf') && !m.extracted_text
+              );
+              const stillMissingTitles = stillMissing.map(m => m.title).join(', ');
+              throw new Error(
+                `No se puede generar planificación solo con materiales: los siguientes PDFs no tienen texto extraído: ${stillMissingTitles}. ` +
+                `Por favor, espera a que se complete la extracción o usa el botón "Re-extraer" en la biblioteca de materiales.`
+              );
+            }
+            
+            // Re-format materials context with updated extracted_text
+            materialsContext = formatMaterialsForAI(allMaterials);
           }
           
           const payload = {
