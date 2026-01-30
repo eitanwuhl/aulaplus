@@ -12,9 +12,10 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Search, Upload, FileText, Image, Video, File, Loader2, AlertCircle } from 'lucide-react';
+import { Search, Upload, FileText, Image, Video, File, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { useMaterialsList } from '@/hooks/useMaterials';
 import { UploadMaterialDialog } from './UploadMaterialDialog';
+import { useToast } from '@/hooks/use-toast';
 import type { Database } from '@/integrations/supabase/types';
 
 type TeacherMaterial = Database['public']['Tables']['teacher_materials']['Row'];
@@ -199,21 +200,69 @@ interface MaterialCardProps {
 function MaterialCard({ material, selected, onToggle, multiSelect }: MaterialCardProps) {
   const metadata = material.metadata as any;
   const tags = metadata?.tags || [];
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [isExtracting, setIsExtracting] = React.useState(false);
+  const isPDF = material.mime_type?.includes('pdf');
+  const hasExtractedText = !!material.extracted_text;
+
+  const handleReExtract = async (e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent card selection
+    
+    if (!isPDF) {
+      toast({
+        title: 'No es un PDF',
+        description: 'Solo los archivos PDF pueden tener texto extraído',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    setIsExtracting(true);
+    try {
+      const { extractMaterialText } = await import('@/services/materials');
+      const result = await extractMaterialText(material.id);
+      
+      if (result.success) {
+        toast({
+          title: 'Texto extraído',
+          description: `Se extrajeron ${result.extractedChars} caracteres del PDF`,
+        });
+        // Invalidate queries to refresh material data
+        queryClient.invalidateQueries({ queryKey: materialsKeys.lists() });
+        queryClient.invalidateQueries({ queryKey: materialsKeys.detail(material.id) });
+      } else {
+        toast({
+          title: 'Error al extraer texto',
+          description: result.error || 'No se pudo extraer texto del PDF',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      console.error('[MaterialCard] Re-extract error:', error);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Error inesperado',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsExtracting(false);
+    }
+  };
 
   return (
     <div
       className={`
-        flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors
+        flex items-start gap-3 p-3 rounded-lg border transition-colors
         ${selected ? 'border-primary bg-primary/5' : 'border-border hover:bg-accent'}
       `}
-      onClick={onToggle}
     >
       {/* Checkbox/Icon */}
-      <div className="flex-shrink-0 pt-0.5">
+      <div className="flex-shrink-0 pt-0.5" onClick={onToggle}>
         {multiSelect ? (
           <Checkbox checked={selected} />
         ) : (
-          <div className={`w-4 h-4 rounded-full border-2 ${selected ? 'border-primary bg-primary' : 'border-muted-foreground'}`} />
+          <div className={`w-4 h-4 rounded-full border-2 cursor-pointer ${selected ? 'border-primary bg-primary' : 'border-muted-foreground'}`} />
         )}
       </div>
 
@@ -223,7 +272,7 @@ function MaterialCard({ material, selected, onToggle, multiSelect }: MaterialCar
       </div>
 
       {/* Content */}
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0" onClick={onToggle}>
         <div className="font-medium text-sm truncate">
           {material.title}
         </div>
@@ -241,7 +290,41 @@ function MaterialCard({ material, selected, onToggle, multiSelect }: MaterialCar
             ))}
           </div>
         )}
+        {/* PDF extraction status */}
+        {isPDF && (
+          <div className="flex items-center gap-2 mt-2">
+            {hasExtractedText ? (
+              <Badge variant="outline" className="text-xs text-green-600">
+                Texto extraído
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-xs text-amber-600">
+                Sin texto extraído
+              </Badge>
+            )}
+          </div>
+        )}
       </div>
+      
+      {/* Re-extract button for PDFs */}
+      {isPDF && (
+        <div className="flex-shrink-0">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleReExtract}
+            disabled={isExtracting}
+            className="h-8 w-8 p-0"
+            title={hasExtractedText ? 'Re-extraer texto' : 'Extraer texto'}
+          >
+            {isExtracting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

@@ -314,11 +314,22 @@ export async function extractMaterialText(materialId: string): Promise<{
 
     if (error) {
       console.error('[extractMaterialText] Edge function error:', error);
-      return { success: false, error: error.message || 'Error al extraer texto del PDF' };
+      const errorMessage = error.message || 'Error al extraer texto del PDF';
+      // Include details if available
+      const details = (error as any).details || (error as any).error?.details;
+      return { 
+        success: false, 
+        error: details ? `${errorMessage}: ${details}` : errorMessage
+      };
     }
 
     if (!data || !data.ok) {
-      return { success: false, error: data?.error || 'Error desconocido al extraer texto' };
+      const errorMessage = data?.error || 'Error desconocido al extraer texto';
+      const details = data?.details;
+      return { 
+        success: false, 
+        error: details ? `${errorMessage}: ${details}` : errorMessage
+      };
     }
 
     return {

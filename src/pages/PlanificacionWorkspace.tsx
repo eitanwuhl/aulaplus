@@ -220,13 +220,76 @@ export default function PlanificacionWorkspace() {
 
       // FIX: Load attached materials (plan-level + session-level) with extracted_text
       const { loadAttachedMaterialsForSession, formatMaterialsForAI } = await import('@/utils/loadAttachedMaterials');
-      const attachedMaterials = await loadAttachedMaterialsForSession(planificacion.id, sesion.id);
-      const materialsContext = formatMaterialsForAI(attachedMaterials);
+      let attachedMaterials = await loadAttachedMaterialsForSession(planificacion.id, sesion.id);
+      let materialsContext = formatMaterialsForAI(attachedMaterials);
       
       // FIX: Filter empty contenidos to send [] not [""]
       const contenidos = Array.isArray(sesion.contenidos_anep) 
         ? sesion.contenidos_anep.filter(c => c && c.trim())
         : (sesion.contenidos_anep?.trim() ? [sesion.contenidos_anep.trim()] : []);
+
+      // FIX: BLOCK materials-only planning if PDFs lack extracted_text
+      const hasAnepContent = contenidos.length > 0;
+      const hasMaterials = attachedMaterials.length > 0;
+      const pdfMaterials = attachedMaterials.filter(m => m.mime_type?.includes('pdf'));
+      const materialsWithoutText = pdfMaterials.filter(m => !m.extracted_text);
+      
+      if (!hasAnepContent && hasMaterials && materialsWithoutText.length > 0) {
+        const missingTitles = materialsWithoutText.map(m => m.title).join(', ');
+        const missingIds = materialsWithoutText.map(m => m.material_id).filter(Boolean) as string[];
+        
+        console.warn(`[MATERIALS] ⚠️ Regeneración solo con materiales pero ${materialsWithoutText.length} PDF(s) sin texto extraído: ${missingTitles}`);
+        
+        // Try to trigger extraction and poll for results
+        const { extractMaterialText } = await import('@/services/materials');
+        const { pollExtractedText } = await import('@/utils/pollExtractedText');
+        
+        // Trigger extraction for all missing materials
+        const extractionPromises = missingIds.map(id => extractMaterialText(id));
+        await Promise.allSettled(extractionPromises);
+        
+        // Poll for extracted_text
+        let allExtracted = true;
+        for (const material of materialsWithoutText) {
+          if (!material.material_id) continue;
+          
+          const pollResult = await pollExtractedText({
+            materialId: material.material_id,
+            maxWaitSeconds: 10,
+            pollIntervalMs: 1000
+          });
+          
+          if (!pollResult.success) {
+            allExtracted = false;
+            console.error(`[MATERIALS] ❌ Failed to extract text for "${material.title}": ${pollResult.error}`);
+          } else {
+            // Reload material to get updated extracted_text
+            const updatedMaterials = await loadAttachedMaterialsForSession(planificacion.id, sesion.id);
+            const updatedMaterial = updatedMaterials.find(m => m.material_id === material.material_id);
+            if (updatedMaterial?.extracted_text) {
+              const index = attachedMaterials.findIndex(m => m.material_id === material.material_id);
+              if (index >= 0) {
+                attachedMaterials[index] = updatedMaterial;
+              }
+            }
+          }
+        }
+        
+        // If still missing after polling, throw error to block generation
+        if (!allExtracted) {
+          const stillMissing = attachedMaterials.filter(m => 
+            m.mime_type?.includes('pdf') && !m.extracted_text
+          );
+          const stillMissingTitles = stillMissing.map(m => m.title).join(', ');
+          throw new Error(
+            `No se puede regenerar planificación solo con materiales: los siguientes PDFs no tienen texto extraído: ${stillMissingTitles}. ` +
+            `Por favor, espera a que se complete la extracción o usa el botón "Re-extraer" en la biblioteca de materiales.`
+          );
+        }
+        
+        // Re-format materials context with updated extracted_text
+        materialsContext = formatMaterialsForAI(attachedMaterials);
+      }
 
       const payload = {
         modo: 'generar_plan_html',

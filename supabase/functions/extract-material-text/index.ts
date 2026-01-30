@@ -145,15 +145,15 @@ serve(async (req) => {
       );
     }
 
-    // Log material info in DEV mode
-    if (Deno.env.get('ENVIRONMENT') === 'development' || !Deno.env.get('ENVIRONMENT')) {
-      console.log('[extract-material-text] Material found:', { 
-        materialId, 
-        title: material.title,
-        hasStoragePath: !!material.storage_path,
-        mimeType: material.mime_type
-      });
-    }
+    // Log material info (always log for debugging)
+    console.log('[extract-material-text] Material found:', { 
+      userId: user.id,
+      materialId, 
+      title: material.title,
+      hasStoragePath: !!material.storage_path,
+      storagePath: material.storage_path,
+      mimeType: material.mime_type
+    });
 
     // Verify it's a PDF - check mime_type OR file extension in storage_path
     const isPDF = material.mime_type?.toLowerCase().includes('pdf') || 
@@ -180,6 +180,12 @@ serve(async (req) => {
       );
     }
 
+    console.log('[extract-material-text] Downloading PDF from storage:', {
+      materialId,
+      storage_path: material.storage_path,
+      bucket: 'teacher-materials'
+    });
+    
     const { data: fileData, error: downloadError } = await supabase.storage
       .from('teacher-materials')
       .download(material.storage_path);
@@ -188,13 +194,19 @@ serve(async (req) => {
       console.error('[extract-material-text] Download error:', {
         materialId,
         storage_path: material.storage_path,
-        error: downloadError
+        error: downloadError,
+        errorMessage: downloadError?.message
       });
       return new Response(
         JSON.stringify({ error: 'Failed to download PDF file', details: downloadError?.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+    
+    console.log('[extract-material-text] PDF downloaded successfully:', {
+      materialId,
+      fileSize: fileData.size
+    });
 
     // Convert blob to array buffer for PDF parsing
     const arrayBuffer = await fileData.arrayBuffer();
@@ -259,6 +271,11 @@ serve(async (req) => {
     }
 
     // Update material with extracted text
+    console.log('[extract-material-text] Updating material with extracted text:', {
+      materialId,
+      extractedChars: extractedText.length
+    });
+    
     const { error: updateError } = await supabase
       .from('teacher_materials')
       .update({ extracted_text: extractedText })
@@ -266,12 +283,23 @@ serve(async (req) => {
       .eq('user_id', user.id);  // Extra safety
 
     if (updateError) {
-      console.error('[extract-material-text] Update error:', updateError);
+      console.error('[extract-material-text] Update error:', {
+        materialId,
+        error: updateError,
+        errorMessage: updateError.message,
+        errorCode: updateError.code
+      });
       return new Response(
-        JSON.stringify({ error: 'Failed to save extracted text' }),
+        JSON.stringify({ error: 'Failed to save extracted text', details: updateError.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+    
+    console.log('[extract-material-text] Successfully updated material:', {
+      materialId,
+      extractedChars: extractedText.length,
+      pagesProcessed: Math.min(MAX_PAGES, extractedText.split('\n\n').length)
+    });
 
     // Return success
     return new Response(
