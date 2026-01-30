@@ -232,23 +232,25 @@ serve(async (req) => {
 
     // Convert blob to array buffer for PDF parsing
     const arrayBuffer = await fileData.arrayBuffer();
-    const uint8Array = new Uint8Array(arrayBuffer);
+    const pdfBytes = new Uint8Array(arrayBuffer);
 
-    // Extract text using pdfjs-dist (works in Deno via esm.sh)
+    console.log('[extract-material-text] pdf bytes:', pdfBytes.length);
+
+    // Extract text using pdfjs-dist (Deno-compatible build)
     let extractedText = '';
     try {
-      // Use pdfjs-dist for PDF parsing (works in Deno)
-      const pdfjsLib = await import('https://esm.sh/pdfjs-dist@3.11.174/build/pdf.mjs');
+      // Use npm: specifier for Deno ESM compatibility
+      const pdfjsLib = await import('npm:pdfjs-dist/legacy/build/pdf.mjs');
       
-      // Set worker source (required for pdfjs)
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://esm.sh/pdfjs-dist@3.11.174/build/pdf.worker.mjs';
-      
-      // Load PDF document
-      const loadingTask = pdfjsLib.getDocument({ 
-        data: uint8Array,
-        useSystemFonts: true
+      // Load PDF document with worker disabled (required for Edge Functions)
+      const loadingTask = pdfjsLib.getDocument({
+        data: pdfBytes,
+        disableWorker: true,
       });
+      
       const pdfDocument = await loadingTask.promise;
+      
+      console.log('[extract-material-text] numPages:', pdfDocument.numPages);
       
       const numPages = Math.min(pdfDocument.numPages, MAX_PAGES);
       const extractedPages: string[] = [];
