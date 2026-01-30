@@ -24,7 +24,8 @@ export {
   getMaterial,
   updateMaterial,
   archiveMaterial,
-  deleteMaterial
+  deleteMaterial,
+  extractMaterialText
 } from './materials';
 
 // Material attachments CRUD
