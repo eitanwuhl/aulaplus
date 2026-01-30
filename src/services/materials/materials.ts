@@ -305,11 +305,28 @@ export async function extractMaterialText(materialId: string): Promise<{
     }
 
     // Call edge function with explicit Authorization header
+    // CRITICAL: This MUST make a network call to /functions/v1/extract-material-text
+    console.log('[extractMaterialText] 🔄 Invoking edge function extract-material-text', {
+      materialId,
+      hasSession: !!session,
+      hasAccessToken: !!session?.access_token
+    });
+    
     const { data, error } = await supabase.functions.invoke('extract-material-text', {
       body: { materialId },
       headers: {
-        Authorization: `Bearer ${session.access_token}`
+        Authorization: `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json'
       }
+    });
+    
+    console.log('[extractMaterialText] 📊 Edge function response:', {
+      materialId,
+      hasData: !!data,
+      hasError: !!error,
+      dataOk: data?.ok,
+      extractedChars: data?.extractedChars,
+      errorMessage: error?.message || data?.error
     });
 
     if (error) {
