@@ -290,24 +290,26 @@ export async function extractMaterialText(materialId: string): Promise<{
       return { success: false, error: 'ID de material inválido' };
     }
 
-    // Get authenticated user
+    // Get authenticated user and session
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
     if (authError || !user) {
       return { success: false, error: 'Usuario no autenticado' };
     }
 
-    // Get Supabase URL and anon key from environment
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-    if (!supabaseUrl || !supabaseAnonKey) {
-      return { success: false, error: 'Configuración de Supabase faltante' };
+    // Get session to extract access token for Authorization header
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !session) {
+      return { success: false, error: 'Sesión no disponible' };
     }
 
-    // Call edge function
+    // Call edge function with explicit Authorization header
     const { data, error } = await supabase.functions.invoke('extract-material-text', {
-      body: { materialId }
+      body: { materialId },
+      headers: {
+        Authorization: `Bearer ${session.access_token}`
+      }
     });
 
     if (error) {

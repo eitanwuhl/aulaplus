@@ -373,7 +373,10 @@ const generarPlanesAutomaticamente = async (
         : competencias;
       
       // Usar contenido de la unidad asignada
-      const contenidosSesion = [assignment.contenido_texto];
+      // FIX: Filter empty strings to send [] not [""] when no ANEP content
+      const contenidosSesion = assignment.contenido_texto?.trim() 
+        ? [assignment.contenido_texto.trim()] 
+        : [];
 
       // PHASE 2: Construir unitContext para generación progresiva
       const unitContext = {
@@ -472,7 +475,7 @@ const generarPlanesAutomaticamente = async (
             duracionMin: sesion.duracion_minutos,
             materia: materia || 'Sin especificar',
             nivel: nivel || 'Sin especificar',
-            contenidos: contenidosSesion, // PHASE 1: Usar contenido de unidad asignada
+            contenidos: contenidosSesion, // PHASE 1: Usar contenido de unidad asignada (empty array if no content)
             competencias: competenciasSesion, // PHASE 1: Usar competencias de unidad asignada
             criterios: criterios,
             instruccionesDocente: planificacion.requerimientos_docente || undefined, // PHASE 2: Incluir requerimientos del docente
@@ -483,8 +486,8 @@ const generarPlanesAutomaticamente = async (
             // PHASE 3 (Profile Usage): Include group profile and student adjustments if available
             ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
             ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes }),
-            // PHASE 4: Include attached materials context
-            ...(materialsContext && { materialsContext })
+            // PHASE 4: Include attached materials context (always include if materials exist)
+            ...(allMaterials.length > 0 && { materialsContext })
           };
 
           console.log(`Generando plan para sesión ${sesion.orden} (intento ${intentos + 1}/${maxIntentos}) con payload:`, payload);
@@ -543,6 +546,14 @@ const generarPlanesAutomaticamente = async (
             criterios_logro_anep: normalizeArrayField(criterios)
           };
           
+          // FIX: Persist ai_design_report to session if available
+          if (data.ai_design_report) {
+            updatePayload.ai_design_report = data.ai_design_report;
+            if (import.meta.env.DEV) {
+              console.log(`[FIX] Sesión ${sesion.orden}: ai_design_report incluido en updatePayload`);
+            }
+          }
+          
           // PHASE 3.2.1 FIX: Update titulo if available (from Edge Function response or sessionBrief)
           // Priority: 1) data.titulo (extracted from generated HTML), 2) sessionBrief (teacher input)
           if (data.titulo) {
@@ -576,8 +587,15 @@ const generarPlanesAutomaticamente = async (
           
           if (!updateError) {
             console.log(`[SESSION_BRIEF] Sesión ${sesion.orden}: DB actualizada exitosamente con titulo`);
+            if (import.meta.env.DEV && updatePayload.ai_design_report) {
+              console.log(`[FIX] Sesión ${sesion.orden}: ai_design_report persistido correctamente`);
+            }
           } else {
             console.error(`[SESSION_BRIEF] Sesión ${sesion.orden}: Error actualizando DB:`, updateError);
+            if (import.meta.env.DEV) {
+              console.error(`[FIX] Sesión ${sesion.orden}: updatePayload keys:`, Object.keys(updatePayload));
+              console.error(`[FIX] Sesión ${sesion.orden}: ai_design_report en payload:`, !!updatePayload.ai_design_report);
+            }
           }
 
           if (updateError) {

@@ -63,6 +63,7 @@ serve(async (req) => {
       .single();
 
     if (fetchError || !material) {
+      console.error('[extract-material-text] Material not found:', { materialId, fetchError });
       return new Response(
         JSON.stringify({ error: 'Material not found' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -71,14 +72,23 @@ serve(async (req) => {
 
     // Verify ownership
     if (material.user_id !== user.id) {
+      console.error('[extract-material-text] Ownership mismatch:', { materialUserId: material.user_id, currentUserId: user.id });
       return new Response(
         JSON.stringify({ error: 'Not authorized to extract text from this material' }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Verify it's a PDF
-    if (!material.mime_type || !material.mime_type.includes('pdf')) {
+    // Verify it's a PDF - check mime_type OR file extension in storage_path
+    const isPDF = material.mime_type?.toLowerCase().includes('pdf') || 
+                  material.storage_path?.toLowerCase().endsWith('.pdf');
+    
+    if (!isPDF) {
+      console.error('[extract-material-text] Not a PDF:', {
+        materialId,
+        mime_type: material.mime_type,
+        storage_path: material.storage_path
+      });
       return new Response(
         JSON.stringify({ error: 'Only PDF files can have text extracted' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

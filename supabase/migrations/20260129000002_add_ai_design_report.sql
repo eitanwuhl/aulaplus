@@ -24,5 +24,8 @@ COMMENT ON COLUMN public.planificaciones.ai_design_report IS
 -- CREATE INDEX IF NOT EXISTS idx_planificaciones_ai_design_report_gin 
 --   ON public.planificaciones USING GIN (ai_design_report);
 
-RAISE NOTICE 'Columns ai_design_report added to evaluaciones and planificaciones';
+DO $$
+BEGIN
+  RAISE NOTICE 'Columns ai_design_report added to evaluaciones and planificaciones';
+END $$;
 

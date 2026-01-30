@@ -321,7 +321,16 @@ export function useUploadAndCreateMaterial() {
 
         try {
           const { extractMaterialText } = await import('@/services/materials');
-          const extractResult = await extractMaterialText(material.id);
+          
+          // Retry extraction once if it fails
+          let extractResult = await extractMaterialText(material.id);
+          
+          if (!extractResult.success) {
+            console.log('[useUploadAndCreateMaterial] First extraction attempt failed, retrying once...');
+            // Wait 1 second before retry
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            extractResult = await extractMaterialText(material.id);
+          }
 
           if (extractResult.success) {
             // Invalidate again to refresh with extracted_text
@@ -333,10 +342,11 @@ export function useUploadAndCreateMaterial() {
               description: `Material "${material.title}" creado exitosamente. Texto extraído: ${extractResult.extractedChars} caracteres.`,
             });
           } else {
-            // Extraction failed, but material was created
+            // Extraction failed after retry, but material was created
+            console.error('[useUploadAndCreateMaterial] Extraction failed after retry:', extractResult.error);
             toast({
               title: 'Material creado',
-              description: `Material "${material.title}" creado exitosamente. No se pudo extraer texto del PDF.`,
+              description: `Material "${material.title}" creado exitosamente. No se pudo extraer texto del PDF: ${extractResult.error || 'Error desconocido'}.`,
               variant: 'default',
             });
           }
@@ -345,7 +355,7 @@ export function useUploadAndCreateMaterial() {
           // Material was created, just extraction failed
           toast({
             title: 'Material creado',
-            description: `Material "${material.title}" creado exitosamente. Error al extraer texto.`,
+            description: `Material "${material.title}" creado exitosamente. Error al extraer texto: ${extractError instanceof Error ? extractError.message : 'Error desconocido'}.`,
             variant: 'default',
           });
         }

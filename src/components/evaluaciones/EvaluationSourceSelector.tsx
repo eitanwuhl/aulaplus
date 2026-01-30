@@ -48,26 +48,22 @@ export function EvaluationSourceSelector({
   const [isLoadingPlanificaciones, setIsLoadingPlanificaciones] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
 
-  // PHASE B: Load saved planificaciones for the selected group
+  // PHASE B: Load saved planificaciones for the user
   // RLS automatically filters by auth.uid() = user_id
+  // Show ALL saved planificaciones (not just for selected group) to match "Mis Planificaciones"
   useEffect(() => {
-    if (!grupoId) {
-      setSavedPlanificaciones([]);
-      return;
-    }
-
     const loadPlanificaciones = async () => {
       setIsLoadingPlanificaciones(true);
       try {
-        // FIX: Query planificaciones - RLS handles user isolation automatically
-        // Filter: (grupo_id = selectedGroupId OR grupo_id IS NULL) AND deleted_at IS NULL
-        // Then filter by is_saved in memory
+        // FIX: Query ALL saved planificaciones for the user (same query as MisPlanificaciones)
+        // RLS handles user isolation automatically
+        // Filter: is_saved = true AND deleted_at IS NULL
         const { data, error } = await supabase
           .from('planificaciones')
           .select('*')
-          .or(`grupo_id.eq.${grupoId},grupo_id.is.null`)
+          .eq('is_saved', true)
           .is('deleted_at', null)
-          .order('created_at', { ascending: false });
+          .order('saved_at', { ascending: false });
 
         if (error) {
           console.error('[EvaluationSourceSelector] Error loading planificaciones:', error);
@@ -81,27 +77,23 @@ export function EvaluationSourceSelector({
           setSavedPlanificaciones([]);
           return;
         }
-
-        // Filter by is_saved in memory (for backward compat if column doesn't exist)
-        const filtered = (data || []).filter(p => p.is_saved === true);
         
         if (import.meta.env.DEV) {
           console.log('[EvaluationSourceSelector] Query results:', {
             grupoId,
             totalResults: (data || []).length,
-            savedResults: filtered.length,
-            filters: 'grupo_id OR NULL, deleted_at IS NULL, is_saved=true'
+            filters: 'is_saved=true, deleted_at IS NULL'
           });
         }
         
-        setSavedPlanificaciones(filtered);
+        setSavedPlanificaciones(data || []);
       } finally {
         setIsLoadingPlanificaciones(false);
       }
     };
 
     loadPlanificaciones();
-  }, [grupoId]);
+  }, []); // Load once on mount, not dependent on grupoId
 
   // Load sessions when planificacion is selected
   useEffect(() => {

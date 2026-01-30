@@ -218,6 +218,16 @@ export default function PlanificacionWorkspace() {
         throw new Error('Planificaci?n no disponible');
       }
 
+      // FIX: Load attached materials (plan-level + session-level) with extracted_text
+      const { loadAttachedMaterialsForSession, formatMaterialsForAI } = await import('@/utils/loadAttachedMaterials');
+      const attachedMaterials = await loadAttachedMaterialsForSession(planificacion.id, sesion.id);
+      const materialsContext = formatMaterialsForAI(attachedMaterials);
+      
+      // FIX: Filter empty contenidos to send [] not [""]
+      const contenidos = Array.isArray(sesion.contenidos_anep) 
+        ? sesion.contenidos_anep.filter(c => c && c.trim())
+        : (sesion.contenidos_anep?.trim() ? [sesion.contenidos_anep.trim()] : []);
+
       const payload = {
         modo: 'generar_plan_html',
         sesionId: sesion.id,
@@ -225,10 +235,12 @@ export default function PlanificacionWorkspace() {
         duracionMin: sesion.duracion_minutos,
         materia: planificacion.materia || 'Sin especificar',
         nivel: planificacion.nivel || 'Sin especificar',
-        contenidos: sesion.contenidos_anep || [],
+        contenidos: contenidos, // FIX: Empty array if no content
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
-        instruccionesDocente: undefined
+        instruccionesDocente: undefined,
+        // FIX: Include materials context if materials exist
+        ...(attachedMaterials.length > 0 && { materialsContext })
       };
 
       const { data, error } = await supabase.functions.invoke('generate-plan-completo', {
@@ -275,20 +287,43 @@ export default function PlanificacionWorkspace() {
       // Final merged list: new auto-detected + preserved manual
       const mergedResources = [...autoResources, ...manualResources];
 
+      // FIX: Build update payload with ai_design_report
+      const updatePayload: any = {
+        plan_desarrollo: { html_completo: sanitizedHtml },
+        argumento_competencias: data.argumento_competencias,
+        recursos: mergedResources
+      };
+      
+      // FIX: Persist ai_design_report to session if available
+      if (data.ai_design_report) {
+        updatePayload.ai_design_report = data.ai_design_report;
+      }
+
       const { error: updateError } = await supabase
         .from('sesiones_clase')
-        .update({
-          plan_desarrollo: { html_completo: sanitizedHtml },
-          argumento_competencias: data.argumento_competencias,
-          recursos: mergedResources
-        } as Partial<SesionClase>)
+        .update(updatePayload as Partial<SesionClase>)
         .eq('id', sesion.id);
 
       if (updateError) {
         throw new Error(updateError.message || 'Error guardando plan generado');
       }
+      
+      // FIX: Also persist ai_design_report to planificacion if available
+      if (data.ai_design_report) {
+        const { error: planUpdateError } = await supabase
+          .from('planificaciones')
+          .update({ ai_design_report: data.ai_design_report })
+          .eq('id', planificacion.id);
+        
+        if (planUpdateError) {
+          console.error('[FIX] Error persistiendo ai_design_report en planificación:', planUpdateError);
+        } else {
+          // Reload planificacion to get updated ai_design_report
+          recargarPlanificacion();
+        }
+      }
     },
-    [planificacion]
+    [planificacion, recargarPlanificacion]
   );
 
   // Memoize unassigned sessions for floating tray
@@ -849,14 +884,23 @@ export default function PlanificacionWorkspace() {
             </div>
 
             {/* FIX: AI Design Report Panel (Row 3) */}
-            {planificacion?.ai_design_report && (
-              <div className="col-span-12 order-4 mt-4">
+            <div className="col-span-12 order-4 mt-4">
+              {planificacion?.ai_design_report ? (
                 <AIDesignReport
                   reportData={adaptPlanningReportToEvaluationFormat(planificacion.ai_design_report)}
                   className="mt-6"
                 />
-              </div>
-            )}
+              ) : (
+                <Card className="border-l-4 border-purple-500 bg-purple-50 dark:bg-purple-950/20">
+                  <CardHeader>
+                    <CardTitle className="text-base">Evidencia de diseño de la IA</CardTitle>
+                    <CardDescription className="text-xs">
+                      No hay evidencia de diseño disponible para esta planificación. Se generará después de crear o modificar sesiones.
+                    </CardDescription>
+                  </CardHeader>
+                </Card>
+              )}
+            </div>
           </div>
         </div>
 

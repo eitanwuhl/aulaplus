@@ -13,5 +13,8 @@ COMMENT ON COLUMN public.planificaciones.unit_material_plan IS
 -- CREATE INDEX IF NOT EXISTS idx_planificaciones_unit_material_plan_gin 
 --   ON public.planificaciones USING GIN (unit_material_plan);
 
-RAISE NOTICE 'Column unit_material_plan added to planificaciones';
+DO $$
+BEGIN
+  RAISE NOTICE 'Column unit_material_plan added to planificaciones';
+END $$;
 
