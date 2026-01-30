@@ -23,6 +23,7 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  // CRITICAL: Top-level try/catch to return detailed error info
   try {
     // Get authenticated user from Authorization header
     const authHeader = req.headers.get('Authorization') ?? '';
@@ -53,10 +54,7 @@ serve(async (req) => {
       );
     }
 
-    // Log user info in DEV mode
-    if (Deno.env.get('ENVIRONMENT') === 'development' || !Deno.env.get('ENVIRONMENT')) {
-      console.log('[extract-material-text] Authenticated user:', { userId: user.id, email: user.email });
-    }
+    console.log('[extract-material-text] ✅ Auth OK:', { userId: user.id, email: user.email });
 
     // Parse request body with robust error handling
     // CRITICAL: Request bodies are single-read streams - read ONCE only
@@ -154,6 +152,13 @@ serve(async (req) => {
       );
     }
 
+    console.log('[extract-material-text] ✅ Material fetched:', {
+      materialId,
+      title: material.title,
+      storage_path: material.storage_path,
+      mime_type: material.mime_type
+    });
+
     // Verify ownership - RLS isolation: only material owner can extract
     if (material.user_id !== user.id) {
       console.error('[extract-material-text] Ownership mismatch:', { 
@@ -208,11 +213,11 @@ serve(async (req) => {
       bucket: 'teacher-materials'
     });
     
-    const { data: fileData, error: downloadError } = await supabase.storage
+    const { data: fileBlob, error: downloadError } = await supabase.storage
       .from('teacher-materials')
       .download(material.storage_path);
 
-    if (downloadError || !fileData) {
+    if (downloadError || !fileBlob) {
       console.error('[extract-material-text] Download error:', {
         materialId,
         storage_path: material.storage_path,
@@ -225,32 +230,52 @@ serve(async (req) => {
       );
     }
     
-    console.log('[extract-material-text] PDF downloaded successfully:', {
+    console.log('[extract-material-text] ✅ Blob downloaded:', {
       materialId,
-      fileSize: fileData.size
+      blobSize: fileBlob.size,
+      blobType: fileBlob.type
     });
 
-    // Convert blob to array buffer for PDF parsing
-    const arrayBuffer = await fileData.arrayBuffer();
-    const pdfBytes = new Uint8Array(arrayBuffer);
-
-    console.log('[extract-material-text] pdf bytes:', pdfBytes.length);
+    // Convert blob to Uint8Array for PDF parsing
+    const pdfBytes = new Uint8Array(await fileBlob.arrayBuffer());
+    console.log('[extract-material-text] ✅ PDF bytes:', {
+      materialId,
+      pdfBytesLength: pdfBytes.length
+    });
 
     // Extract text using pdfjs-dist (Deno-compatible build)
     let extractedText = '';
     try {
       // Use npm: specifier for Deno ESM compatibility
-      const pdfjsLib = await import('npm:pdfjs-dist/legacy/build/pdf.mjs');
+      console.log('[extract-material-text] Importing pdfjs...');
+      const pdfjsImport = await import('npm:pdfjs-dist/legacy/build/pdf.mjs');
+      
+      // Resolve pdfjs object (Deno npm modules may export under default)
+      const pdfjs: any = (pdfjsImport as any).getDocument ? pdfjsImport : (pdfjsImport as any).default;
+      
+      // Hard guard: verify getDocument exists
+      if (!pdfjs?.getDocument) {
+        throw new Error(`pdfjs getDocument not found (import mismatch). Keys: ${Object.keys(pdfjsImport).join(', ')}`);
+      }
+      
+      console.log('[extract-material-text] ✅ pdfjs imported:', {
+        hasGetDocument: typeof pdfjs.getDocument === 'function',
+        getDocumentType: typeof pdfjs.getDocument
+      });
       
       // Load PDF document with worker disabled (required for Edge Functions)
-      const loadingTask = pdfjsLib.getDocument({
+      console.log('[extract-material-text] Loading PDF document...');
+      const loadingTask = pdfjs.getDocument({
         data: pdfBytes,
         disableWorker: true,
       });
       
       const pdfDocument = await loadingTask.promise;
       
-      console.log('[extract-material-text] numPages:', pdfDocument.numPages);
+      console.log('[extract-material-text] ✅ PDF loaded:', {
+        materialId,
+        numPages: pdfDocument.numPages
+      });
       
       const numPages = Math.min(pdfDocument.numPages, MAX_PAGES);
       const extractedPages: string[] = [];
@@ -335,10 +360,18 @@ serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
-  } catch (error) {
-    console.error('[extract-material-text] Unexpected error:', error);
+  } catch (err: any) {
+    console.error('[extract-material-text] ❌ Unexpected error:', {
+      error: err?.message ?? String(err),
+      stack: err?.stack,
+      name: err?.name
+    });
     return new Response(
-      JSON.stringify({ error: 'Internal server error', details: error.message }),
+      JSON.stringify({
+        error: 'Internal server error',
+        details: err?.message ?? String(err),
+        stack: err?.stack ?? null
+      }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
