@@ -334,7 +334,17 @@ export function useUploadAndCreateMaterial() {
         });
 
         try {
-          const { extractMaterialText } = await import('@/services/materials');
+          // Use direct import path to avoid barrel export issues
+          const mod = await import('@/services/materials/materials');
+          const { extractMaterialText } = mod;
+          
+          // Debug: Verify function exists
+          console.log('[materials-upload] 📦 Materials module keys:', Object.keys(mod));
+          console.log('[materials-upload] ✅ extractMaterialText type:', typeof extractMaterialText);
+          
+          if (typeof extractMaterialText !== 'function') {
+            throw new Error('extractMaterialText is not a function. Module keys: ' + Object.keys(mod).join(', '));
+          }
           
           // CRITICAL: Always invoke extraction immediately after DB insert
           // This ensures the network call is made and extraction happens

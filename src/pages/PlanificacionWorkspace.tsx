@@ -241,8 +241,14 @@ export default function PlanificacionWorkspace() {
         console.warn(`[MATERIALS] ⚠️ Regeneración solo con materiales pero ${materialsWithoutText.length} PDF(s) sin texto extraído: ${missingTitles}`);
         
         // Try to trigger extraction and poll for results
-        const { extractMaterialText } = await import('@/services/materials');
+        // Use direct import path to avoid barrel export issues
+        const mod = await import('@/services/materials/materials');
+        const { extractMaterialText } = mod;
         const { pollExtractedText } = await import('@/utils/pollExtractedText');
+        
+        if (typeof extractMaterialText !== 'function') {
+          throw new Error('extractMaterialText is not a function. Cannot trigger extraction.');
+        }
         
         // Trigger extraction for all missing materials
         const extractionPromises = missingIds.map(id => extractMaterialText(id));

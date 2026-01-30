@@ -220,7 +220,14 @@ function MaterialCard({ material, selected, onToggle, multiSelect }: MaterialCar
 
     setIsExtracting(true);
     try {
-      const { extractMaterialText } = await import('@/services/materials');
+      // Use direct import path to avoid barrel export issues
+      const mod = await import('@/services/materials/materials');
+      const { extractMaterialText } = mod;
+      
+      if (typeof extractMaterialText !== 'function') {
+        throw new Error('extractMaterialText is not a function');
+      }
+      
       const result = await extractMaterialText(material.id);
       
       if (result.success) {
