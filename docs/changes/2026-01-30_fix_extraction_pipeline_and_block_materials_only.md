@@ -676,5 +676,8 @@ git add -A
 git commit -m "fix(extraction): robust JSON parsing, blocking guard, re-extract button, polling"
 ```
 
-**Commit**: `git log -1 --oneline`  
+**Commits**:
+- `8cb8b26` - fix(extraction): robust JSON parsing, blocking guard, re-extract button, polling
+- `bdeb3e2` - docs: add extraction pipeline fix report
+
 **Status**: ✅ All fixes implemented and deployed, ready for verification
