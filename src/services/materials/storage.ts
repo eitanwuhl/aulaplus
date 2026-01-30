@@ -42,10 +42,29 @@ export async function uploadMaterialFile(
       };
     }
 
+    // CRITICAL: Verify session exists before proceeding
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !session) {
+      console.error('[uploadMaterialFile] ❌ No session available:', {
+        sessionError: sessionError?.message,
+        hasSession: !!session
+      });
+      return {
+        success: false,
+        error: 'Sesión no disponible. Recargá la página y volvé a iniciar sesión.'
+      };
+    }
+
     // Get authenticated user
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
     if (authError || !user) {
+      console.error('[uploadMaterialFile] ❌ Auth error:', {
+        authError: authError?.message,
+        hasUser: !!user,
+        sessionUserId: session?.user?.id
+      });
       return {
         success: false,
         error: 'Usuario no autenticado'
