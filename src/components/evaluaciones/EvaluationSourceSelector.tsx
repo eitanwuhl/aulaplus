@@ -82,7 +82,8 @@ export function EvaluationSourceSelector({
           console.log('[EvaluationSourceSelector] Query results:', {
             grupoId,
             totalResults: (data || []).length,
-            filters: 'is_saved=true, deleted_at IS NULL'
+            filters: 'is_saved=true, deleted_at IS NULL',
+            planificaciones: (data || []).map(p => ({ id: p.id, nombre: p.nombre || p.materia }))
           });
         }
         

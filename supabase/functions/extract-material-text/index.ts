@@ -58,11 +58,59 @@ serve(async (req) => {
       console.log('[extract-material-text] Authenticated user:', { userId: user.id, email: user.email });
     }
 
-    // Parse request body
-    const { materialId } = await req.json();
-    if (!materialId) {
+    // Parse request body with robust error handling
+    let materialId: string | null = null;
+    try {
+      // Read raw text once
+      const raw = await req.text();
+      console.log('[extract-material-text] Raw body received:', raw.slice(0, 200));
+      
+      // Remove BOM and trim
+      const cleaned = raw.replace(/^\uFEFF/, '').trim();
+      
+      // Try to parse JSON
+      let body: any = {};
+      if (cleaned) {
+        try {
+          body = JSON.parse(cleaned);
+        } catch (parseError) {
+          console.error('[extract-material-text] JSON parse error:', {
+            error: parseError.message,
+            received: cleaned.slice(0, 200)
+          });
+          return new Response(
+            JSON.stringify({ 
+              error: 'Invalid JSON body', 
+              details: parseError.message,
+              received: cleaned.slice(0, 200)
+            }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+      
+      materialId = body.materialId || null;
+      
+      // Fallback: check query parameter if body doesn't have materialId
+      if (!materialId) {
+        try {
+          const url = new URL(req.url);
+          materialId = url.searchParams.get('materialId');
+        } catch (urlError) {
+          console.error('[extract-material-text] URL parse error:', urlError);
+        }
+      }
+      
+      if (!materialId) {
+        return new Response(
+          JSON.stringify({ error: 'materialId is required in body or query parameter' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    } catch (bodyError) {
+      console.error('[extract-material-text] Body reading error:', bodyError);
       return new Response(
-        JSON.stringify({ error: 'materialId is required' }),
+        JSON.stringify({ error: 'Failed to read request body', details: bodyError.message }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }

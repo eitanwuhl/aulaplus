@@ -457,6 +457,13 @@ const generarPlanesAutomaticamente = async (
           const allMaterials = [...attachedMaterials, ...unitMaterials];
           const materialsContext = formatMaterialsForAI(allMaterials);
           
+          // FIX: Check if materials-only planning (no ANEP content) and warn if extracted_text is missing
+          const hasAnepContent = contenidosSesion.length > 0;
+          const hasMaterials = allMaterials.length > 0;
+          const materialsWithoutText = allMaterials.filter(m => 
+            m.mime_type?.includes('pdf') && !m.extracted_text
+          );
+          
           if (allMaterials.length > 0) {
             console.log(`[MATERIALS] Sesión ${sesion.orden}: ${allMaterials.length} material(es) (${attachedMaterials.length} adjuntos + ${unitMaterials.length} de unidad)`);
             if (import.meta.env.DEV) {
@@ -466,6 +473,14 @@ const generarPlanesAutomaticamente = async (
                 extractedTextLength: m.extracted_text?.length || 0
               })));
             }
+          }
+          
+          // FIX: Warn if materials-only planning without extracted_text
+          if (!hasAnepContent && hasMaterials && materialsWithoutText.length > 0) {
+            const missingTitles = materialsWithoutText.map(m => m.title).join(', ');
+            console.warn(`[MATERIALS] ⚠️ Sesión ${sesion.orden}: Planificación solo con materiales pero ${materialsWithoutText.length} PDF(s) sin texto extraído: ${missingTitles}`);
+            // Note: We don't block generation, but the AI will see "no text extracted" note
+            // User should wait for extraction or re-upload
           }
           
           const payload = {
