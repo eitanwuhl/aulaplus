@@ -262,9 +262,10 @@ serve(async (req) => {
       if (!g.window) g.window = g;
       if (!g.self) g.self = g;
       
-      // Import pdfjs-dist using esm.sh with deno target - MUST use pdf.js NOT pdf.mjs
+      // Import pdfjs-dist using esm.sh - MUST use pdf.js NOT pdf.mjs
+      // DO NOT use ?target=deno (causes canvas.node dependency error)
       const pdfjsLib: any = await import(
-        'https://esm.sh/pdfjs-dist@2.16.105/legacy/build/pdf.js?target=deno'
+        'https://esm.sh/pdfjs-dist@2.16.105/legacy/build/pdf.js'
       );
       
       console.log('[extract-material-text] pdfjs import ok', {
