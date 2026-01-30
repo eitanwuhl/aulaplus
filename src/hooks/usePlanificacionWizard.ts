@@ -233,13 +233,14 @@ export const usePlanificacionWizard = () => {
         // Note: Material attachments (B) will be checked at generation time since they're DB-based
         // For wizard validation, we only check A and C here
         
-        // PHASE A: Check for unit materials (B condition)
-        const hasUnitMaterials = unidades.some(u => u.unit_material_plan && u.unit_material_plan.length > 0);
+        // PHASE B: Check for plan-level materials (B condition)
+        const hasPlanMaterials = (wizardData.enfoque?.attachedPlanMaterialIds || []).length > 0;
         
-        if (!hasAnepContent && !hasSufficientFocusText && !hasUnitMaterials) {
+        // Allow generation if at least ONE is true: A (ANEP), B (plan materials), or C (focus text)
+        if (!hasAnepContent && !hasSufficientFocusText && !hasPlanMaterials) {
           errors.push({
             fieldId: 'generation_requirements',
-            message: 'Para generar planes necesitas al menos: (A) contenido ANEP en unidades didácticas, O (B) materiales adjuntos (puedes adjuntar materiales por unidad), O (C) texto de foco/tema suficientemente informativo (ej: temas de las clases o requerimientos del docente). Podés generar usando solo materiales docentes.',
+            message: 'Para generar planes necesitas al menos: (A) contenido ANEP en unidades didácticas, O (B) materiales adjuntos a nivel planificación (usa "Adjuntar materiales" arriba), O (C) texto de foco/tema suficientemente informativo (ej: temas de las clases o requerimientos del docente). Podés generar usando solo materiales docentes.',
             type: 'custom'
           });
           if (!firstInvalidField) firstInvalidField = 'generation_requirements';

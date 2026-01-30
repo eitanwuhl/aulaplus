@@ -16,6 +16,7 @@ import { Search, Upload, FileText, Image, Video, File, Loader2, AlertCircle, Ref
 import { useMaterialsList } from '@/hooks/useMaterials';
 import { UploadMaterialDialog } from './UploadMaterialDialog';
 import { useToast } from '@/hooks/use-toast';
+import { useQueryClient } from '@tanstack/react-query';
 import type { Database } from '@/integrations/supabase/types';
 
 type TeacherMaterial = Database['public']['Tables']['teacher_materials']['Row'];
