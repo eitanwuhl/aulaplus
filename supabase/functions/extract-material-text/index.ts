@@ -247,16 +247,16 @@ serve(async (req) => {
     let extractedText = '';
     let extractedPages: string[] = [];
     try {
-      console.log('[extract-material-text] Starting PDF extraction:', {
+      console.log('[extract-material-text] EXTRACT start:', {
         materialId,
         userId: user.id,
         storage_path: material.storage_path,
-        downloadSize: fileBlob.size,
+        downloadedBytes: fileBlob.size,
         pdfBytesLength: pdfBytes.length
       });
       
-      // Use pdfjs-dist v2.16.105 - compatible version that does NOT require DOMMatrix
-      const pdfjsLib: any = await import('npm:pdfjs-dist@2.16.105/legacy/build/pdf.mjs');
+      // Use pdfjs-dist v2.16.105 via ESM CDN (compatible with Supabase Edge)
+      const pdfjsLib: any = await import('https://esm.sh/pdfjs-dist@2.16.105/legacy/build/pdf.js');
       
       // Resolve pdfjs object (handle default export)
       const pdfjs: any = pdfjsLib?.getDocument ? pdfjsLib : pdfjsLib?.default;
@@ -269,7 +269,7 @@ serve(async (req) => {
       console.log('[extract-material-text] pdfjs imported, loading document...');
       
       // Load PDF document with worker disabled (required for Edge Functions)
-      // DO NOT set GlobalWorkerOptions.workerSrc - not needed with disableWorker:true
+      // DO NOT set GlobalWorkerOptions.workerSrc at all
       const loadingTask = pdfjs.getDocument({
         data: pdfBytes,
         disableWorker: true,
@@ -342,6 +342,8 @@ serve(async (req) => {
     const extractedChars = extractedText.length;
     const pagesProcessed = extractedPages.length;
     
+    console.log('[extract-material-text] extractedChars:', extractedChars);
+    console.log('[extract-material-text] pagesProcessed:', pagesProcessed);
     console.log('[extract-material-text] Updating database:', {
       materialId,
       userId: user.id,
@@ -372,6 +374,7 @@ serve(async (req) => {
       );
     }
     
+    console.log('[extract-material-text] DB update result: success');
     console.log('[extract-material-text] ✅ Successfully updated material:', {
       materialId,
       extractedChars,
