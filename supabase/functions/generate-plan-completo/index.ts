@@ -58,22 +58,35 @@ serve(async (req) => {
     } = await req.json();
 
     // PHASE 2.1: Construir sección de contexto de secuencia didáctica si unitContext está presente
-    const secuenciaContext = unitContext ? `
+    let secuenciaContext = '';
+    if (unitContext) {
+      const claseInfo = `- Esta es la clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad} de esta unidad.`;
+      let instruccionesPosicion = '';
+      
+      if (unitContext.claseEnUnidad === 1) {
+        instruccionesPosicion = '- Esta es la PRIMERA clase: Enfócate en introducción, contextualización y exploración inicial. El título debe reflejar este propósito introductorio.';
+      } else if (unitContext.claseEnUnidad > 1 && unitContext.claseEnUnidad < unitContext.totalClasesUnidad) {
+        instruccionesPosicion = `- Esta es una clase INTERMEDIA (${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}): Comienza con una breve activación de conocimientos previos conectando con la clase anterior, sin repetir explicaciones largas. Profundiza y complejiza el contenido. Evita introducir nuevos conceptos centrales. El título debe reflejar este enfoque de profundización.`;
+      } else if (unitContext.claseEnUnidad === unitContext.totalClasesUnidad && !unitContext.isExtraSlot) {
+        instruccionesPosicion = '- Esta es la ÚLTIMA clase: Evita introducir nuevos conceptos centrales. Enfócate en integración, transferencia, debate o actividades aplicadas. El título debe reflejar este propósito de síntesis/aplicación.';
+      } else if (unitContext.isExtraSlot) {
+        instruccionesPosicion = `- Esta es una clase ADICIONAL más allá de la secuencia original (clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}): Úsala preferentemente para repaso guiado, actividades integradoras, evaluación formativa o un proyecto aplicado. El título debe reflejar claramente este propósito (ej: "Repaso Integrador", "Proyecto Aplicado", "Evaluación Formativa").`;
+      }
+      
+      secuenciaContext = `
 CONTEXTO DE SECUENCIA DIDÁCTICA:
 Esta clase forma parte de una unidad temática llamada "${unitContext.contenido}".
 
-- Esta es la clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad} de esta unidad.
+${claseInfo}
 - El contenido debe ser progresivo y no repetitivo.
 - No repitas explicaciones ya dadas en clases anteriores.
 - El título de la clase debe reflejar el enfoque específico de esta sesión y debe ser diferente de otras clases en la misma unidad.
 
 INSTRUCCIONES ESPECÍFICAS SEGÚN POSICIÓN:
-${unitContext.claseEnUnidad === 1 ? '- Esta es la PRIMERA clase: Enfócate en introducción, contextualización y exploración inicial. El título debe reflejar este propósito introductorio.' : ''}
-${unitContext.claseEnUnidad > 1 && unitContext.claseEnUnidad < unitContext.totalClasesUnidad ? `- Esta es una clase INTERMEDIA (${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}): Comienza con una breve activación de conocimientos previos conectando con la clase anterior, sin repetir explicaciones largas. Profundiza y complejiza el contenido. Evita introducir nuevos conceptos centrales. El título debe reflejar este enfoque de profundización.' : ''}
-${unitContext.claseEnUnidad === unitContext.totalClasesUnidad && !unitContext.isExtraSlot ? '- Esta es la ÚLTIMA clase: Evita introducir nuevos conceptos centrales. Enfócate en integración, transferencia, debate o actividades aplicadas. El título debe reflejar este propósito de síntesis/aplicación.' : ''}
-${unitContext.isExtraSlot ? `- Esta es una clase ADICIONAL más allá de la secuencia original (clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}): Úsala preferentemente para repaso guiado, actividades integradoras, evaluación formativa o un proyecto aplicado. El título debe reflejar claramente este propósito (ej: "Repaso Integrador", "Proyecto Aplicado", "Evaluación Formativa").` : ''}
+${instruccionesPosicion}
 
-` : '';
+`;
+    }
 
     // PHASE 3.2.1: Build sessionBrief section if provided - PEDAGOGICALLY BINDING
     const sessionBriefSection = sessionBrief?.trim() ? `
@@ -361,7 +374,22 @@ DEVOLVER JSON EXACTO:
         plan_html: content,
         argumento_competencias: '',
         recursos: [],
-        ai_design_report: null // FIX: Include ai_design_report even in fallback
+        ai_design_report: {
+          inputsUsed: {
+            anepContent: !!hasAnepContent,
+            materials: hasMaterials,
+            sessionBrief: !!sessionBrief?.trim(),
+            unitContext: !!unitContext
+          },
+          decisions: {
+            structure: 'Estructura extraída de HTML generado',
+            timeAllocation: `Distribución según duración total (${duracionMin} min)`
+          },
+          assumptions: [
+            'Estudiantes tienen conocimientos previos básicos',
+            'Recursos básicos disponibles'
+          ]
+        }
       };
     }
     
@@ -470,7 +498,24 @@ DEVOLVER JSON EXACTO:
   </ul>
 </section>`,
         argumento_competencias: `<p>Las actividades propuestas favorecen el desarrollo de competencias mediante la construcción colaborativa de conocimientos y la aplicación práctica de conceptos.</p>`,
-        recursos: ["Pizarra", "Marcadores", "Proyector", "Material didáctico"]
+        recursos: ["Pizarra", "Marcadores", "Proyector", "Material didáctico"],
+        ai_design_report: {
+          inputsUsed: {
+            anepContent: !!hasAnepContent,
+            materials: hasMaterials,
+            sessionBrief: !!sessionBrief?.trim(),
+            unitContext: !!unitContext
+          },
+          decisions: {
+            structure: 'Estructura fallback: Inicio-Desarrollo-Cierre estándar',
+            timeAllocation: `Distribución según duración total (${duracionMin} min)`,
+            reason: 'HTML generado no tenía estructura válida, usando plan de respaldo'
+          },
+          assumptions: [
+            'Estudiantes tienen conocimientos previos básicos',
+            'Recursos básicos disponibles'
+          ]
+        }
       };
     }
 
@@ -491,12 +536,29 @@ DEVOLVER JSON EXACTO:
       ? 'Rate limit exceeded. Please wait a moment and try again.'
       : error.message || 'Unknown error';
     
-    return new Response(JSON.stringify({ 
+    // FIX: Always include ai_design_report even in error responses
+    const errorResponse: any = {
       error: errorMessage,
       error_code: isRateLimit ? 'RATE_LIMIT' : (error.code || 'FUNCTION_ERROR'),
       error_status: isRateLimit ? 429 : (error.status || 500),
-      isRateLimit: isRateLimit
-    }), {
+      isRateLimit: isRateLimit,
+      ai_design_report: {
+        inputsUsed: {
+          anepContent: false,
+          materials: false,
+          sessionBrief: false,
+          unitContext: false
+        },
+        decisions: {
+          structure: 'Error: no se pudo generar plan',
+          timeAllocation: 'N/A'
+        },
+        assumptions: [],
+        error: errorMessage
+      }
+    };
+    
+    return new Response(JSON.stringify(errorResponse), {
       status: isRateLimit ? 429 : (error.status || 500),
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

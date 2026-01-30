@@ -1891,7 +1891,7 @@ const EvaluacionesGrupo = () => {
                 {/* FIX: AI Design Report with fallback */}
                 {aiDesignReport ? (
                   <AIDesignReport 
-                    reportData={JSON.parse(aiDesignReport)} 
+                    reportData={JSON.parse(aiDesignReport) as AIDesignReportData} 
                     className="mt-6"
                   />
                 ) : (

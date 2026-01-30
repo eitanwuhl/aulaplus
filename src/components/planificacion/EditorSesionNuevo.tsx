@@ -329,6 +329,16 @@ export function EditorSesionNuevo({
 
     setIsModificando(true);
     try {
+      // FIX: Load attached materials (plan-level + session-level) with extracted_text
+      const { loadAttachedMaterialsForSession, formatMaterialsForAI } = await import('@/utils/loadAttachedMaterials');
+      const attachedMaterials = await loadAttachedMaterialsForSession(planificacionId, sesion.id);
+      const materialsContext = formatMaterialsForAI(attachedMaterials);
+      
+      // FIX: Filter empty contenidos to send [] not [""]
+      const contenidos = Array.isArray(sesion.contenidos_anep) 
+        ? sesion.contenidos_anep.filter(c => c && c.trim())
+        : (sesion.contenidos_anep?.trim() ? [sesion.contenidos_anep.trim()] : []);
+
       const payload = {
         modo: 'regenerar',
         sesionId: sesion.id,
@@ -336,11 +346,13 @@ export function EditorSesionNuevo({
         duracionMin: sesion.duracion_minutos,
         materia: materia || 'Sin especificar',
         nivel: nivel || 'Sin especificar',
-        contenidos: sesion.contenidos_anep || [],
+        contenidos: contenidos, // FIX: Empty array if no content
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
         instruccionesDocente: instruccionesModificacion,
-        planActual: planHtml
+        planActual: planHtml,
+        // FIX: Include materials context if materials exist
+        ...(attachedMaterials.length > 0 && { materialsContext })
       };
 
       console.log('Solicitando modificación con payload:', payload);
@@ -390,12 +402,31 @@ export function EditorSesionNuevo({
       setArgumentoCompetencias(data.argumento_competencias || '');
       setRecursos(mergedResources);
 
-      // Persistir en DB
-      await onActualizar({
+      // FIX: Persistir en DB con ai_design_report
+      const updatePayload: any = {
         plan_desarrollo: { html_completo: sanitizedHtml },
         argumento_competencias: data.argumento_competencias,
         recursos: mergedResources
-      });
+      };
+      
+      // FIX: Persist ai_design_report to session if available
+      if (data.ai_design_report) {
+        updatePayload.ai_design_report = data.ai_design_report;
+      }
+      
+      await onActualizar(updatePayload);
+      
+      // FIX: Also persist ai_design_report to planificacion if available
+      if (data.ai_design_report && planificacionId) {
+        const { error: planUpdateError } = await supabase
+          .from('planificaciones')
+          .update({ ai_design_report: data.ai_design_report })
+          .eq('id', planificacionId);
+        
+        if (planUpdateError) {
+          console.error('[FIX] Error persistiendo ai_design_report en planificación:', planUpdateError);
+        }
+      }
 
       toast({
         title: "Plan modificado",
