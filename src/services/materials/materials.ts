@@ -48,13 +48,14 @@ export async function createMaterial(
     }
 
     // Insert material (user_id auto-populated by RLS)
+    // CRITICAL: Use .select('*').single() to ensure material.id is always present
     const { data, error } = await supabase
       .from('teacher_materials')
       .insert([{
         ...material,
         user_id: user.id
       }])
-      .select()
+      .select('*')
       .single();
 
     if (error) {
@@ -302,81 +303,66 @@ export async function extractMaterialText(materialId: string): Promise<{
   error?: string;
 }> {
   try {
-    if (!materialId) {
-      return { success: false, error: 'ID de material inválido' };
-    }
-
-    // Get authenticated user and session
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (authError || !user) {
-      return { success: false, error: 'Usuario no autenticado' };
+    // Hard guard: validate materialId
+    if (!materialId || typeof materialId !== 'string' || materialId.trim().length < 10) {
+      return { success: false, error: `Invalid materialId: ${String(materialId)}` };
     }
 
     // Get session to extract access token for Authorization header
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
     
-    if (sessionError || !session) {
-      return { success: false, error: 'Sesión no disponible' };
+    if (sessionError || !session?.access_token) {
+      return { success: false, error: 'No session token' };
     }
 
-    // CRITICAL: Call edge function - this MUST make a network call to /functions/v1/extract-material-text
-    console.log('[extractMaterialText] 🔄 Invoking edge function extract-material-text', {
-      materialId,
-      hasSession: !!session,
-      hasAccessToken: !!session?.access_token,
-      accessTokenLength: session?.access_token?.length || 0
+    // Use fetch directly to guarantee a real body is sent
+    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/extract-material-text`;
+    const anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    const bodyJson = JSON.stringify({ materialId });
+
+    console.log('[extractMaterialText] sending', { 
+      materialId, 
+      json: bodyJson,
+      url,
+      hasAnonKey: !!anon
     });
-    
-    const { data, error } = await supabase.functions.invoke('extract-material-text', {
-      body: { materialId },
+
+    const res = await fetch(url, {
+      method: 'POST',
       headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        'Content-Type': 'application/json'
-      }
-    });
-    
-    // ALWAYS log response (not just in DEV)
-    console.log('[extractMaterialText] 📊 Edge function response:', {
-      materialId,
-      hasData: !!data,
-      hasError: !!error,
-      status: error ? 'error' : (data?.ok ? 'success' : 'unknown'),
-      dataOk: data?.ok,
-      extractedChars: data?.extractedChars,
-      pagesProcessed: data?.pagesProcessed,
-      errorMessage: error?.message || data?.error
+        'Content-Type': 'application/json',
+        'apikey': anon,
+        'Authorization': `Bearer ${session.access_token}`,
+      },
+      body: bodyJson,
     });
 
-    if (error) {
-      console.error('[extractMaterialText] Edge function error:', error);
-      const errorMessage = error.message || 'Error al extraer texto del PDF';
-      // Include details if available
-      const details = (error as any).details || (error as any).error?.details;
-      return { 
-        success: false, 
-        error: details ? `${errorMessage}: ${details}` : errorMessage
-      };
-    }
+    const json = await res.json().catch(() => ({}));
+    console.log('[extractMaterialText] response', { 
+      status: res.status, 
+      statusText: res.statusText,
+      json 
+    });
 
-    if (!data || !data.ok) {
-      const errorMessage = data?.error || 'Error desconocido al extraer texto';
-      const details = data?.details;
-      return { 
-        success: false, 
-        error: details ? `${errorMessage}: ${details}` : errorMessage
+    if (!res.ok) {
+      return {
+        success: false,
+        error: json?.error || json?.details || `HTTP ${res.status}`
       };
     }
 
     return {
       success: true,
-      extractedChars: data.extractedChars,
-      pagesProcessed: data.pagesProcessed
+      extractedChars: json.extractedChars,
+      pagesProcessed: json.pagesProcessed
     };
 
   } catch (error) {
     console.error('[extractMaterialText] Unexpected error:', error);
-    return { success: false, error: 'Error inesperado al extraer texto' };
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Error inesperado al extraer texto' 
+    };
   }
 }
 

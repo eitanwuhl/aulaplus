@@ -312,6 +312,13 @@ export function useUploadAndCreateMaterial() {
       // Invalidate materials list
       queryClient.invalidateQueries({ queryKey: materialsKeys.lists() });
       
+      // Ensure we have the correct id
+      const id = material?.id ?? (material as any)?.material_id;
+      console.log('[materials-upload] created material id', { id, material });
+      if (!id) {
+        throw new Error('Material created but no id returned');
+      }
+      
       // Robust PDF detection: check mime_type, storage_path, or file name
       const isPdf = 
         (material.mime_type && material.mime_type.toLowerCase().includes('pdf')) ||
@@ -325,9 +332,8 @@ export function useUploadAndCreateMaterial() {
           description: 'Extrayendo texto del documento',
         });
 
-        // DEV: Log before invoking extraction
         console.log('[materials-upload] ✅ PDF detected, triggering extraction', {
-          id: material.id,
+          id,
           title: material.title,
           mime_type: material.mime_type,
           storage_path: material.storage_path
@@ -348,15 +354,15 @@ export function useUploadAndCreateMaterial() {
           // CRITICAL: Always invoke extraction immediately after DB insert
           // This ensures the network call is made and extraction happens
           console.log('[materials-upload] 🔄 Invoking extract-material-text for material:', {
-            materialId: material.id,
+            materialId: id,
             title: material.title
           });
           
-          let extractResult = await extractMaterialText(material.id);
+          let extractResult = await extractMaterialText(id);
           
           // Log extraction result (ALWAYS, not just in DEV)
           console.log('[materials-upload] 📊 Extraction response:', {
-            materialId: material.id,
+            materialId: id,
             success: extractResult.success,
             extractedChars: extractResult.extractedChars,
             pagesProcessed: extractResult.pagesProcessed,
@@ -366,15 +372,15 @@ export function useUploadAndCreateMaterial() {
           // Retry extraction once if it fails
           if (!extractResult.success) {
             console.warn('[materials-upload] ⚠️ First extraction attempt failed, retrying once...', {
-              id: material.id,
+              id,
               error: extractResult.error
             });
             // Wait 1 second before retry
             await new Promise(resolve => setTimeout(resolve, 1000));
-            extractResult = await extractMaterialText(material.id);
+            extractResult = await extractMaterialText(id);
             
             console.log('[materials-upload] 📊 Retry result:', {
-              id: material.id,
+              id,
               success: extractResult.success,
               extractedChars: extractResult.extractedChars,
               error: extractResult.error
@@ -384,10 +390,10 @@ export function useUploadAndCreateMaterial() {
           if (extractResult.success) {
             // Invalidate again to refresh with extracted_text
             queryClient.invalidateQueries({ queryKey: materialsKeys.lists() });
-            queryClient.invalidateQueries({ queryKey: materialsKeys.detail(material.id) });
+            queryClient.invalidateQueries({ queryKey: materialsKeys.detail(id) });
             
             console.log('[materials-upload] ✅ Extraction successful:', {
-              id: material.id,
+              id,
               extractedChars: extractResult.extractedChars,
               pagesProcessed: extractResult.pagesProcessed
             });
@@ -399,7 +405,7 @@ export function useUploadAndCreateMaterial() {
           } else {
             // Extraction failed after retry, but material was created
             console.error('[materials-upload] ❌ Extraction failed after retry:', {
-              id: material.id,
+              id,
               error: extractResult.error
             });
             toast({
@@ -411,7 +417,7 @@ export function useUploadAndCreateMaterial() {
         } catch (extractError) {
           // Log extraction error
           console.error('[materials-upload] ❌ Extraction exception:', {
-            id: material.id,
+            id,
             error: extractError instanceof Error ? extractError.message : 'Error desconocido',
             stack: extractError instanceof Error ? extractError.stack : undefined
           });
@@ -427,7 +433,7 @@ export function useUploadAndCreateMaterial() {
       } else {
         // Not a PDF, just show success
         console.log('[materials-upload] ℹ️ Not a PDF, skipping extraction', {
-          id: material.id,
+          id,
           mime_type: material.mime_type,
           storage_path: material.storage_path
         });
