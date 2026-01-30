@@ -243,42 +243,33 @@ serve(async (req) => {
       pdfBytesLength: pdfBytes.length
     });
 
-    // Extract text using pdfjs-dist (Deno-compatible build)
+    // Extract text using pdfjs-dist v2.16.105 (compatible with Deno Edge, no DOMMatrix required)
     let extractedText = '';
+    let extractedPages: string[] = [];
     try {
-      // CRITICAL: Polyfill DOMMatrix before loading pdfjs (required for Deno Edge)
-      const ensureDomMatrix = async () => {
-        if (!(globalThis as any).DOMMatrix) {
-          console.log('[extract-material-text] Polyfilling DOMMatrix...');
-          const dm = await import('npm:dommatrix');
-          (globalThis as any).DOMMatrix = (dm as any).DOMMatrix ?? (dm as any).default?.DOMMatrix;
-          (globalThis as any).DOMMatrixReadOnly =
-            (dm as any).DOMMatrixReadOnly ?? (dm as any).default?.DOMMatrixReadOnly ?? (globalThis as any).DOMMatrix;
-        }
-      };
+      console.log('[extract-material-text] Starting PDF extraction:', {
+        materialId,
+        userId: user.id,
+        storage_path: material.storage_path,
+        downloadSize: fileBlob.size,
+        pdfBytesLength: pdfBytes.length
+      });
       
-      await ensureDomMatrix();
-      console.log('[extract-material-text] ✅ DOMMatrix present:', !!(globalThis as any).DOMMatrix);
+      // Use pdfjs-dist v2.16.105 - compatible version that does NOT require DOMMatrix
+      const pdfjsLib: any = await import('npm:pdfjs-dist@2.16.105/legacy/build/pdf.mjs');
       
-      // Dynamically import pdfjs AFTER polyfills
-      console.log('[extract-material-text] Importing pdfjs...');
-      const pdfjsImport: any = await import('npm:pdfjs-dist/legacy/build/pdf.mjs');
-      
-      // Resolve pdfjs object (Deno npm modules may export under default)
-      const pdfjs: any = pdfjsImport?.getDocument ? pdfjsImport : pdfjsImport?.default;
+      // Resolve pdfjs object (handle default export)
+      const pdfjs: any = pdfjsLib?.getDocument ? pdfjsLib : pdfjsLib?.default;
       
       // Hard guard: verify getDocument exists
       if (!pdfjs?.getDocument) {
-        throw new Error(`pdfjs getDocument not found (import mismatch). Keys: ${Object.keys(pdfjsImport).join(', ')}`);
+        throw new Error(`pdfjs getDocument not found. Keys: ${Object.keys(pdfjsLib).join(', ')}`);
       }
       
-      console.log('[extract-material-text] ✅ pdfjs imported:', {
-        hasGetDocument: typeof pdfjs.getDocument === 'function',
-        getDocumentType: typeof pdfjs.getDocument
-      });
+      console.log('[extract-material-text] pdfjs imported, loading document...');
       
       // Load PDF document with worker disabled (required for Edge Functions)
-      console.log('[extract-material-text] Loading PDF document...');
+      // DO NOT set GlobalWorkerOptions.workerSrc - not needed with disableWorker:true
       const loadingTask = pdfjs.getDocument({
         data: pdfBytes,
         disableWorker: true,
@@ -286,16 +277,22 @@ serve(async (req) => {
       
       const pdfDocument = await loadingTask.promise;
       
-      console.log('[extract-material-text] ✅ PDF loaded:', {
+      console.log('[extract-material-text] PDF document loaded:', {
         materialId,
         numPages: pdfDocument.numPages
       });
       
-      const numPages = Math.min(pdfDocument.numPages, MAX_PAGES);
+      const numPagesToExtract = Math.min(pdfDocument.numPages, MAX_PAGES);
       const extractedPages: string[] = [];
 
+      console.log('[extract-material-text] Extracting text from pages:', {
+        materialId,
+        totalPages: pdfDocument.numPages,
+        pagesToExtract: numPagesToExtract
+      });
+
       // Extract text from first N pages
-      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+      for (let pageNum = 1; pageNum <= numPagesToExtract; pageNum++) {
         const page = await pdfDocument.getPage(pageNum);
         const textContent = await page.getTextContent();
         
@@ -342,9 +339,14 @@ serve(async (req) => {
     }
 
     // Update material with extracted text
-    console.log('[extract-material-text] Updating material with extracted text:', {
+    const extractedChars = extractedText.length;
+    const pagesProcessed = extractedPages.length;
+    
+    console.log('[extract-material-text] Updating database:', {
       materialId,
-      extractedChars: extractedText.length
+      userId: user.id,
+      extractedChars,
+      pagesProcessed
     });
     
     const { error: updateError } = await supabase
@@ -354,30 +356,35 @@ serve(async (req) => {
       .eq('user_id', user.id);  // Extra safety
 
     if (updateError) {
-      console.error('[extract-material-text] Update error:', {
+      console.error('[extract-material-text] DB update error:', {
         materialId,
         error: updateError,
         errorMessage: updateError.message,
         errorCode: updateError.code
       });
       return new Response(
-        JSON.stringify({ error: 'Failed to save extracted text', details: updateError.message }),
+        JSON.stringify({
+          error: 'Failed to save extracted text',
+          details: updateError.message,
+          stack: null
+        }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
     
-    console.log('[extract-material-text] Successfully updated material:', {
+    console.log('[extract-material-text] ✅ Successfully updated material:', {
       materialId,
-      extractedChars: extractedText.length,
-      pagesProcessed: Math.min(MAX_PAGES, extractedText.split('\n\n').length)
+      extractedChars,
+      pagesProcessed,
+      dbUpdateResult: 'success'
     });
 
     // Return success
     return new Response(
       JSON.stringify({
         ok: true,
-        extractedChars: extractedText.length,
-        pagesProcessed: Math.min(MAX_PAGES, extractedText.split('\n\n').length)
+        extractedChars,
+        pagesProcessed
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
