@@ -3,7 +3,9 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
 const supabaseServiceKey = Deno.env.get('SERVICE_ROLE_KEY')!;
+// Service role client for storage and DB operations that need elevated privileges
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 const corsHeaders = {
@@ -23,26 +25,37 @@ serve(async (req) => {
 
   try {
     // Get authenticated user from Authorization header
-    const authHeader = req.headers.get('Authorization');
+    const authHeader = req.headers.get('Authorization') ?? '';
     if (!authHeader) {
+      console.error('[extract-material-text] Missing Authorization header');
       return new Response(
         JSON.stringify({ error: 'Missing authorization header' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Create authenticated client
-    const authSupabase = createClient(supabaseUrl, supabaseServiceKey, {
+    // Create authenticated client using ANON_KEY (not service role) so Authorization header is respected
+    const userClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } }
     });
 
-    // Get current user
-    const { data: { user }, error: authError } = await authSupabase.auth.getUser();
+    // Get current user - this validates the JWT token
+    const { data: { user }, error: authError } = await userClient.auth.getUser();
     if (authError || !user) {
+      console.error('[extract-material-text] Auth error:', { 
+        error: authError?.message, 
+        hasUser: !!user,
+        authHeaderPresent: !!authHeader 
+      });
       return new Response(
-        JSON.stringify({ error: 'Not authenticated' }),
+        JSON.stringify({ error: 'Not authenticated', details: authError?.message }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Log user info in DEV mode
+    if (Deno.env.get('ENVIRONMENT') === 'development' || !Deno.env.get('ENVIRONMENT')) {
+      console.log('[extract-material-text] Authenticated user:', { userId: user.id, email: user.email });
     }
 
     // Parse request body
@@ -54,7 +67,8 @@ serve(async (req) => {
       );
     }
 
-    // Fetch material and verify ownership
+    // Fetch material using service role client (bypasses RLS for ownership check)
+    // We'll verify ownership manually before proceeding
     const { data: material, error: fetchError } = await supabase
       .from('teacher_materials')
       .select('id, user_id, storage_path, mime_type, title')
@@ -70,13 +84,27 @@ serve(async (req) => {
       );
     }
 
-    // Verify ownership
+    // Verify ownership - RLS isolation: only material owner can extract
     if (material.user_id !== user.id) {
-      console.error('[extract-material-text] Ownership mismatch:', { materialUserId: material.user_id, currentUserId: user.id });
+      console.error('[extract-material-text] Ownership mismatch:', { 
+        materialUserId: material.user_id, 
+        currentUserId: user.id,
+        materialId 
+      });
       return new Response(
         JSON.stringify({ error: 'Not authorized to extract text from this material' }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Log material info in DEV mode
+    if (Deno.env.get('ENVIRONMENT') === 'development' || !Deno.env.get('ENVIRONMENT')) {
+      console.log('[extract-material-text] Material found:', { 
+        materialId, 
+        title: material.title,
+        hasStoragePath: !!material.storage_path,
+        mimeType: material.mime_type
+      });
     }
 
     // Verify it's a PDF - check mime_type OR file extension in storage_path
@@ -95,15 +123,27 @@ serve(async (req) => {
       );
     }
 
-    // Download PDF from storage
+    // Download PDF from storage using service role client (elevated privileges)
+    if (!material.storage_path) {
+      console.error('[extract-material-text] Missing storage_path:', { materialId, material });
+      return new Response(
+        JSON.stringify({ error: 'Material has no storage path' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     const { data: fileData, error: downloadError } = await supabase.storage
       .from('teacher-materials')
       .download(material.storage_path);
 
     if (downloadError || !fileData) {
-      console.error('[extract-material-text] Download error:', downloadError);
+      console.error('[extract-material-text] Download error:', {
+        materialId,
+        storage_path: material.storage_path,
+        error: downloadError
+      });
       return new Response(
-        JSON.stringify({ error: 'Failed to download PDF file' }),
+        JSON.stringify({ error: 'Failed to download PDF file', details: downloadError?.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
