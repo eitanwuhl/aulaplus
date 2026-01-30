@@ -154,6 +154,179 @@ console.log('[extractMaterialText] 📊 Edge function response:', {
 
 ---
 
+## Real Verification Evidence
+
+**REQUIRED**: The following evidence must be collected for ONE real uploaded PDF material to prove the fix works:
+
+### Material ID Used for Verification
+```
+Material ID: <TO_BE_FILLED>
+Title: <TO_BE_FILLED>
+Upload Date: <TO_BE_FILLED>
+```
+
+---
+
+### Evidence 1: Network Call Proof
+
+**Location**: Browser DevTools → Network tab → Filter: `extract-material-text`
+
+**Required Evidence**:
+- ✅ Request: `POST /functions/v1/extract-material-text`
+- ✅ Status: `200 OK`
+- ✅ Request Body: `{"materialId":"<materialId>"}`
+- ✅ Response Body: `{"ok":true,"extractedChars":<number>,"pagesProcessed":<number>}`
+
+**Screenshot/Data**:
+```
+Request URL: https://<supabase-url>/functions/v1/extract-material-text
+Request Method: POST
+Status Code: 200 OK
+Request Headers:
+  Authorization: Bearer <token>
+  Content-Type: application/json
+Request Payload:
+  {
+    "materialId": "<materialId>"
+  }
+Response:
+  {
+    "ok": true,
+    "extractedChars": 3456,
+    "pagesProcessed": 3
+  }
+```
+
+---
+
+### Evidence 2: SQL Proof
+
+**Location**: Supabase Dashboard → SQL Editor
+
+**Query**:
+```sql
+SELECT 
+  id, 
+  title, 
+  mime_type,
+  extracted_text IS NOT NULL AS has_text,
+  length(extracted_text) AS chars,
+  storage_path IS NOT NULL AS has_storage_path,
+  created_at
+FROM public.teacher_materials
+WHERE id = '<materialId>';
+```
+
+**Required Result**:
+- ✅ `has_text = true`
+- ✅ `chars > 0` (typically 100-10000)
+- ✅ `has_storage_path = true`
+
+**Expected Output**:
+```
+id                                   | title              | mime_type        | has_text | chars  | has_storage_path | created_at
+-------------------------------------|--------------------|------------------|----------|--------|------------------|------------------
+<materialId>                         | <title>            | application/pdf  | true     | 3456   | true             | 2026-01-30 10:00:00
+```
+
+---
+
+### Evidence 3: Edge Function Logs
+
+**Location**: Supabase Dashboard → Edge Functions → `extract-material-text` → Logs
+
+**Required Log Excerpt** (for the SAME materialId):
+```
+[extract-material-text] Authenticated user: { userId: '<userId>', email: '<email>' }
+[extract-material-text] Material found: { 
+  userId: '<userId>',
+  materialId: '<materialId>', 
+  title: '<title>',
+  hasStoragePath: true,
+  storagePath: '<storage_path>',
+  mimeType: 'application/pdf'
+}
+[extract-material-text] Downloading PDF from storage: {
+  materialId: '<materialId>',
+  storage_path: '<storage_path>',
+  bucket: 'teacher-materials'
+}
+[extract-material-text] PDF downloaded successfully: {
+  materialId: '<materialId>',
+  fileSize: <bytes>
+}
+[extract-material-text] Updating material with extracted text: {
+  materialId: '<materialId>',
+  extractedChars: <number>
+}
+[extract-material-text] Successfully updated material: {
+  materialId: '<materialId>',
+  extractedChars: <number>,
+  pagesProcessed: <number>
+}
+```
+
+**Status**: ⚠️ **PENDING** - Requires access to Supabase Edge Functions logs
+
+---
+
+## How to Collect Verification Evidence
+
+### Step 1: Upload a PDF and Get Material ID
+
+1. Go to "Biblioteca de Materiales" in the app
+2. Upload a 2-page PDF file
+3. Open browser DevTools → Console tab
+4. Look for log: `[materials-upload] ✅ PDF detected, triggering extraction`
+5. Copy the `id` from the log (this is your `materialId`)
+
+**Alternative**: Run this SQL to get the latest PDF material:
+```sql
+SELECT 
+  id, 
+  title, 
+  mime_type,
+  created_at
+FROM public.teacher_materials
+WHERE mime_type LIKE '%pdf%'
+  AND deleted_at IS NULL
+ORDER BY created_at DESC
+LIMIT 1;
+```
+
+### Step 2: Capture Network Evidence
+
+1. Open DevTools → Network tab
+2. Filter by: `extract-material-text`
+3. Find the POST request to `/functions/v1/extract-material-text`
+4. Click on the request
+5. Copy:
+   - Request URL
+   - Status Code
+   - Request Payload (body)
+   - Response (Preview or Response tab)
+
+### Step 3: Run SQL Query
+
+1. Go to Supabase Dashboard → SQL Editor
+2. Run the SQL query from "Evidence 2" above
+3. Replace `<materialId>` with your actual material ID
+4. Copy the full result row
+
+### Step 4: Get Edge Function Logs
+
+1. Go to Supabase Dashboard → Edge Functions
+2. Click on `extract-material-text`
+3. Go to "Logs" tab
+4. Filter by your `materialId` or search for the timestamp
+5. Copy the relevant log lines showing:
+   - Material found
+   - PDF downloaded
+   - Text extracted
+   - DB update successful
+
+---
+
 ## Verification Steps
 
 ### 1. Verify Extraction Trigger on Upload
@@ -418,3 +591,49 @@ WHERE id = '<materialId>';
 ---
 
 **Status**: ✅ Code changes complete. Ready for verification testing.
+
+---
+
+## ⚠️ CRITICAL: Real Verification Evidence Required
+
+**The fix is NOT complete until all 3 pieces of evidence are provided for ONE real uploaded PDF material.**
+
+### Template for Evidence Collection
+
+Copy and fill this template with real data from your testing:
+
+```markdown
+### Material ID Used for Verification
+Material ID: <PASTE_MATERIAL_ID_HERE>
+Title: <PASTE_TITLE_HERE>
+Upload Date: <PASTE_DATE_HERE>
+
+### Evidence 1: Network Call Proof
+Request URL: <PASTE_URL_HERE>
+Status Code: <PASTE_STATUS_HERE>
+Request Payload:
+<PASTE_JSON_BODY_HERE>
+Response:
+<PASTE_JSON_RESPONSE_HERE>
+
+### Evidence 2: SQL Proof
+Query Result:
+<PASTE_SQL_RESULT_HERE>
+has_text: <true/false>
+chars: <NUMBER>
+
+### Evidence 3: Edge Function Logs
+<PASTE_LOG_EXCERPT_HERE>
+```
+
+### Instructions
+
+1. **Upload a PDF** in "Biblioteca de Materiales"
+2. **Get Material ID**: From console logs or SQL query
+3. **Capture Network**: DevTools → Network → `extract-material-text` → Copy request/response
+4. **Run SQL**: Supabase SQL Editor → Run query → Copy result
+5. **Get Logs**: Supabase Dashboard → Edge Functions → `extract-material-text` → Logs → Copy relevant lines
+6. **Fill Template**: Replace all `<PLACEHOLDERS>` with real data
+7. **Update Report**: Replace the "Real Verification Evidence" section above with filled template
+
+**If any of the 3 evidences cannot be produced, the fix is NOT complete and must be debugged further.**
