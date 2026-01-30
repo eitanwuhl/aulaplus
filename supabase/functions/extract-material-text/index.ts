@@ -246,12 +246,26 @@ serve(async (req) => {
     // Extract text using pdfjs-dist (Deno-compatible build)
     let extractedText = '';
     try {
-      // Use npm: specifier for Deno ESM compatibility
+      // CRITICAL: Polyfill DOMMatrix before loading pdfjs (required for Deno Edge)
+      const ensureDomMatrix = async () => {
+        if (!(globalThis as any).DOMMatrix) {
+          console.log('[extract-material-text] Polyfilling DOMMatrix...');
+          const dm = await import('npm:dommatrix');
+          (globalThis as any).DOMMatrix = (dm as any).DOMMatrix ?? (dm as any).default?.DOMMatrix;
+          (globalThis as any).DOMMatrixReadOnly =
+            (dm as any).DOMMatrixReadOnly ?? (dm as any).default?.DOMMatrixReadOnly ?? (globalThis as any).DOMMatrix;
+        }
+      };
+      
+      await ensureDomMatrix();
+      console.log('[extract-material-text] ✅ DOMMatrix present:', !!(globalThis as any).DOMMatrix);
+      
+      // Dynamically import pdfjs AFTER polyfills
       console.log('[extract-material-text] Importing pdfjs...');
-      const pdfjsImport = await import('npm:pdfjs-dist/legacy/build/pdf.mjs');
+      const pdfjsImport: any = await import('npm:pdfjs-dist/legacy/build/pdf.mjs');
       
       // Resolve pdfjs object (Deno npm modules may export under default)
-      const pdfjs: any = (pdfjsImport as any).getDocument ? pdfjsImport : (pdfjsImport as any).default;
+      const pdfjs: any = pdfjsImport?.getDocument ? pdfjsImport : pdfjsImport?.default;
       
       // Hard guard: verify getDocument exists
       if (!pdfjs?.getDocument) {
@@ -311,10 +325,18 @@ serve(async (req) => {
         .replace(/\s+/g, ' ')  // Normalize whitespace
         .trim();
 
-    } catch (parseError) {
-      console.error('[extract-material-text] PDF parsing error:', parseError);
+    } catch (parseError: any) {
+      console.error('[extract-material-text] PDF parsing error:', {
+        error: parseError?.message ?? String(parseError),
+        stack: parseError?.stack,
+        name: parseError?.name
+      });
       return new Response(
-        JSON.stringify({ error: 'Failed to extract text from PDF', details: parseError.message }),
+        JSON.stringify({
+          error: 'Failed to extract text from PDF',
+          details: parseError?.message ?? String(parseError),
+          stack: parseError?.stack ?? null
+        }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
