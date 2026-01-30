@@ -59,11 +59,18 @@ serve(async (req) => {
     }
 
     // Parse request body with robust error handling
+    // CRITICAL: Request bodies are single-read streams - read ONCE only
     let materialId: string | null = null;
     try {
-      // Read raw text once
+      // Log request metadata BEFORE reading body
+      console.log('[extract-material-text] Request method:', req.method);
+      console.log('[extract-material-text] Content-Type:', req.headers.get('content-type'));
+      console.log('[extract-material-text] URL:', req.url);
+      
+      // Read raw text ONCE - this consumes the stream
       const raw = await req.text();
-      console.log('[extract-material-text] Raw body received:', raw.slice(0, 200));
+      console.log('[extract-material-text] Raw body (first 200 chars):', raw.slice(0, 200));
+      console.log('[extract-material-text] Raw body length:', raw.length);
       
       // Remove BOM and trim
       const cleaned = raw.replace(/^\uFEFF/, '').trim();
@@ -73,6 +80,7 @@ serve(async (req) => {
       if (cleaned) {
         try {
           body = JSON.parse(cleaned);
+          console.log('[extract-material-text] Parsed body:', JSON.stringify(body));
         } catch (parseError) {
           console.error('[extract-material-text] JSON parse error:', {
             error: parseError.message,
@@ -87,23 +95,37 @@ serve(async (req) => {
             { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
+      } else {
+        console.warn('[extract-material-text] Empty or whitespace-only body');
       }
       
-      materialId = body.materialId || null;
+      // Try multiple possible field names
+      materialId = body.materialId || body.material_id || body.id || null;
+      console.log('[extract-material-text] Extracted materialId from body:', materialId);
       
       // Fallback: check query parameter if body doesn't have materialId
       if (!materialId) {
         try {
           const url = new URL(req.url);
-          materialId = url.searchParams.get('materialId');
+          materialId = url.searchParams.get('materialId') || url.searchParams.get('material_id');
+          console.log('[extract-material-text] Extracted materialId from query:', materialId);
         } catch (urlError) {
           console.error('[extract-material-text] URL parse error:', urlError);
         }
       }
       
       if (!materialId) {
+        console.error('[extract-material-text] materialId missing:', {
+          bodyKeys: Object.keys(body),
+          bodyValue: JSON.stringify(body),
+          url: req.url
+        });
         return new Response(
-          JSON.stringify({ error: 'materialId is required in body or query parameter' }),
+          JSON.stringify({ 
+            error: 'materialId is required in body or query parameter',
+            receivedBody: body,
+            bodyKeys: Object.keys(body)
+          }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
