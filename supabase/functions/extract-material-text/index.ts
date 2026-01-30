@@ -256,15 +256,21 @@ serve(async (req) => {
       console.log('[extract-material-text] storage_path:', material.storage_path);
       
       // ---- Runtime polyfills for pdfjs in Deno/Supabase Edge ----
+      // MUST be at the very top before ANY dynamic import
       const g: any = globalThis as any;
       if (!g.navigator) g.navigator = { userAgent: 'Deno' };
       if (!g.window) g.window = g;
       if (!g.self) g.self = g;
       
-      // Import pdfjs-dist using esm.sh (Deno-compatible)
+      // Import pdfjs-dist using esm.sh with deno target - MUST use pdf.js NOT pdf.mjs
       const pdfjsLib: any = await import(
-        'https://esm.sh/pdfjs-dist@2.16.105/legacy/build/pdf.js'
+        'https://esm.sh/pdfjs-dist@2.16.105/legacy/build/pdf.js?target=deno'
       );
+      
+      console.log('[extract-material-text] pdfjs import ok', {
+        version: pdfjsLib?.version,
+        hasGetDocument: typeof pdfjsLib?.getDocument === 'function',
+      });
       
       // Resolve pdfjs object (handle default export)
       const pdfjs: any = pdfjsLib?.getDocument ? pdfjsLib : pdfjsLib?.default;
