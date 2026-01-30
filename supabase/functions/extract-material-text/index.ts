@@ -261,9 +261,9 @@ serve(async (req) => {
       if (!g.window) g.window = g;
       if (!g.self) g.self = g;
       
-      // Import pdfjs-dist using esm.sh with deno target
+      // Import pdfjs-dist using esm.sh (Deno-compatible)
       const pdfjsLib: any = await import(
-        'https://esm.sh/pdfjs-dist@2.16.105/legacy/build/pdf.js?target=deno'
+        'https://esm.sh/pdfjs-dist@2.16.105/legacy/build/pdf.js'
       );
       
       // Resolve pdfjs object (handle default export)
