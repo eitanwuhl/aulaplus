@@ -252,5 +252,5 @@ git commit -m "fix(extract-material-text): use ANON_KEY for auth, fix 401 error"
 
 ---
 
-**Commit**: `git log -1 --oneline`  
+**Commit**: `910bea4 fix(extract-material-text): use ANON_KEY for auth, fix 401 error`  
 **Status**: ✅ Fix implemented and deployed, ready for verification
