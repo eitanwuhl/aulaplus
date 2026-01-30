@@ -24,10 +24,33 @@ export async function createMaterial(
   material: Omit<TeacherMaterialInsert, 'id' | 'created_at' | 'updated_at'>
 ): Promise<{ data?: TeacherMaterial; error?: string }> {
   try {
+    // Debug: Check session first
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    console.log('[createMaterial] 🔍 Session check:', {
+      hasSession: !!session,
+      sessionError: sessionError?.message,
+      userId: session?.user?.id,
+      userEmail: session?.user?.email,
+      accessToken: session?.access_token ? 'present' : 'missing'
+    });
+    
     // Get authenticated user
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
+    console.log('[createMaterial] 🔍 User check:', {
+      hasUser: !!user,
+      authError: authError?.message,
+      userId: user?.id,
+      userEmail: user?.email
+    });
+    
     if (authError || !user) {
+      console.error('[createMaterial] ❌ Authentication failed:', {
+        authError: authError?.message,
+        hasUser: !!user,
+        hasSession: !!session,
+        sessionUserId: session?.user?.id
+      });
       return { error: 'Usuario no autenticado' };
     }
 
