@@ -336,7 +336,8 @@ git add -A
 git commit -m "fix(materials): auth header, extraction retry, planning payload, ai reports, dropdown"
 ```
 
+**Commit**: `55d7031 fix(materials): auth header, extraction retry, planning payload, ai reports, dropdown`
+
 ---
 
-**Commit**: `git log -1 --oneline`  
 **Status**: ✅ All fixes implemented, ready for verification
