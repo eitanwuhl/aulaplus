@@ -804,6 +804,18 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
         </CardHeader>
       </Card>
 
+      {/* Material Docente (Plan-level) - SINGLE materials attach section - BEFORE Resumen */}
+      <PlanMaterialsSection
+        attachedMaterialIds={wizardData.enfoque?.attachedPlanMaterialIds || []}
+        onMaterialsChange={(materialIds) =>
+          onUpdateEnfoque({
+            ...wizardData.enfoque,
+            attachedPlanMaterialIds: materialIds
+          })
+        }
+        disabled={isLoading}
+      />
+
       {/* Unidades Didácticas */}
       {wizardData.contexto?.materia && (
         <div className="space-y-2">
@@ -838,7 +850,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           {/* FIX: Helper text for materials-only generation */}
           <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-md p-3 mt-4">
             <p className="text-sm text-blue-800 dark:text-blue-200">
-              💡 Podés generar usando solo materiales docentes (sin ANEP). Adjunta materiales por unidad usando el botón "Material Docente" en cada unidad.
+              💡 Podés generar usando solo materiales docentes (sin ANEP). Adjunta materiales usando la sección "Material Docente" más abajo.
             </p>
           </div>
         </div>
@@ -934,18 +946,6 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           </Card>
         );
       })()}
-
-      {/* Material Docente (Plan-level) */}
-      <PlanMaterialsSection
-        attachedMaterialIds={wizardData.enfoque?.attachedPlanMaterialIds || []}
-        onMaterialsChange={(materialIds) =>
-          onUpdateEnfoque({
-            ...wizardData.enfoque,
-            attachedPlanMaterialIds: materialIds
-          })
-        }
-        disabled={isLoading}
-      />
 
       {/* Requerimientos del Docente */}
       <Card>
