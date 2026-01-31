@@ -529,9 +529,7 @@ export interface PerfilGrupo {
   tamanio: number;
   dominante: string;
   distribucion?: Record<string, number>;
-}
-
-/**
+}/**
  * @deprecated Use StudentForAI from types instead
  */
 export interface EstudianteAjuste {
