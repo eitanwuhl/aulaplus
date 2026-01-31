@@ -515,3 +515,125 @@ export async function getGroupContextForAI(
   }
 }
 
+// ============================================================================
+// Backward Compatibility Wrappers
+// ============================================================================
+// These functions are provided for backward compatibility with legacy UI code.
+// New code should use getGroupContextForAI() directly.
+
+/**
+ * @deprecated Use getGroupContextForAI() instead
+ * Legacy wrapper that converts GroupContextForAI to old GroupContextData format
+ */
+export interface PerfilGrupo {
+  tamanio: number;
+  dominante: string;
+  distribucion?: Record<string, number>;
+}
+
+/**
+ * @deprecated Use StudentForAI from types instead
+ */
+export interface EstudianteAjuste {
+  perfil?: string;
+  ajustes?: string;
+  contemplaciones?: string[];
+}
+
+/**
+ * @deprecated Use GroupContextForAI from types instead
+ */
+export interface GroupContextData {
+  perfilGrupo?: PerfilGrupo;
+  estudiantes?: EstudianteAjuste[];
+  teacherSugerencias?: TeacherSugerenciasForAI;
+}
+
+/**
+ * Load group context data (DEPRECATED - wrapper for backward compatibility)
+ * 
+ * @deprecated Use getGroupContextForAI() from this module instead
+ * 
+ * This function wraps the new unified provider and converts the response
+ * to the old GroupContextData format for backward compatibility.
+ */
+export async function loadGroupContext(grupoId: string | undefined): Promise<GroupContextData> {
+  // Backward compatibility: if no grupoId, return empty
+  if (!grupoId) {
+    console.log('[loadGroupContext] No grupoId provided, returning empty context');
+    return {};
+  }
+  
+  console.log('[loadGroupContext] DEPRECATED: Use getGroupContextForAI() instead');
+  
+  try {
+    // Use new unified provider
+    const context = await getGroupContextForAI(grupoId, { purpose: 'planning' });
+    
+    // Convert to old format for backward compatibility
+    const result: GroupContextData = {
+      perfilGrupo: context.groupProfile ? {
+        tamanio: context.groupProfile.tamanio,
+        dominante: context.groupProfile.dominante,
+        distribucion: context.groupProfile.distribucion
+      } : undefined,
+      estudiantes: context.anonymizedStudentsForPrompt.length > 0
+        ? context.anonymizedStudentsForPrompt.map(s => ({
+            perfil: s.learningStyle,
+            ajustes: s.adjustments,
+            contemplaciones: s.contemplaciones
+          }))
+        : undefined,
+      teacherSugerencias: context.teacherSugerencias
+    };
+    
+    // Only return if there's meaningful data
+    const hasData = !!(
+      result.perfilGrupo || 
+      (result.estudiantes && result.estudiantes.length > 0) ||
+      (result.teacherSugerencias && (
+        result.teacherSugerencias.aula || 
+        result.teacherSugerencias.evaluaciones || 
+        result.teacherSugerencias.otras
+      ))
+    );
+    
+    if (!hasData) {
+      return {};
+    }
+    
+    return result;
+    
+  } catch (error) {
+    console.error('[loadGroupContext] Error loading group context:', error);
+    return {};
+  }
+}
+
+/**
+ * Helper to extract grupo_id from a planificacion
+ * Useful for components that only have planificacionId
+ */
+export async function getGrupoIdFromPlanificacion(planificacionId: string | undefined): Promise<string | undefined> {
+  if (!planificacionId) {
+    return undefined;
+  }
+  
+  try {
+    const { data, error } = await supabase
+      .from('planificaciones')
+      .select('grupo_id')
+      .eq('id', planificacionId)
+      .maybeSingle();
+    
+    if (error) {
+      console.error('[getGrupoIdFromPlanificacion] Error fetching planificacion:', error);
+      return undefined;
+    }
+    
+    return data?.grupo_id;
+  } catch (error) {
+    console.error('[getGrupoIdFromPlanificacion] Unexpected error:', error);
+    return undefined;
+  }
+}
