@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -698,51 +698,6 @@ const EvaluacionesGrupo = () => {
     return materia ? contenidosPorMateria(materia as Materia) : [];
   }, [materia, materiasSeleccionadas, esInterdisciplinaria]);
 
-  // Función para obtener datos de versión (using unified provider as source of truth)
-  const getVersionData = useCallback(async () => {
-    if (!selectedGroup) return null;
-
-    // Use unified provider instead of direct mock access
-    const { getGroupContextForAI } = await import('@/services/groupContext/provider');
-    const groupContext = await getGroupContextForAI(selectedGroup.id, { purpose: 'evaluation' });
-    
-    // Classify students using explicit flags from provider (deterministic, no inference)
-    // V3 (Content-adapted): Only students with hasDeclaredContentAdaptation === true
-    const conAdecuacionContenido = groupContext.students.filter(s => 
-      s.hasDeclaredContentAdaptation
-    );
-    
-    // V2 (Moderate support): Students with acceso accommodations but NOT content adaptation
-    // Note: acceso accommodations are determined by contemplaciones, not explicit flags
-    // For now, we use contemplaciones that indicate acceso needs (not content changes)
-    const conAdecuacionAcceso = groupContext.students.filter(s => 
-      !s.hasDeclaredContentAdaptation && 
-      (s.contemplacionesEvaluaciones.length > 0 || s.ajustes)
-    );
-    
-    // V1 (Standard): All remaining students
-    const sinAdecuacionesExplicitas = groupContext.students.filter(s => 
-      !s.hasDeclaredContentAdaptation && 
-      s.contemplacionesEvaluaciones.length === 0 && 
-      !s.ajustes
-    );
-
-    // Helper to create student details (for UI display - uses display names from provider)
-    const detalles = (students: typeof groupContext.students) =>
-      students.map(s => ({
-        nombre: s.displayName,
-        contemplaciones: s.contemplacionesEvaluaciones,
-        id: s.studentId
-      }));
-
-    return {
-      v1: detalles(sinAdecuacionesExplicitas),
-      v2: detalles(conAdecuacionAcceso),
-      v3: detalles(conAdecuacionContenido),
-      hasContentAdaptation: groupContext.hasContentAdaptation  // From provider (deterministic)
-    };
-  }, [selectedGroup]);
-
   // Funciones del generador unificado
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -831,9 +786,6 @@ const EvaluacionesGrupo = () => {
       ]);
     }
     
-    // Obtener la clasificación de estudiantes (using unified provider)
-    const versionStudentData = await getVersionData();
-    
     // PHASE 6: Build session digests if sessions are selected
     let generationContext = null;
     if (hasSessions || evaluationMaterialsConfig.directMaterialIds.length > 0) {
@@ -883,170 +835,102 @@ const EvaluacionesGrupo = () => {
         })
       };
 
-      // Generate evaluations using explicit flags as source of truth
-      // V3 (highly adapted) is ONLY generated if there are students with content adaptation
-      const hasContentAdaptation = versionStudentData?.hasContentAdaptation ?? false;
-      
-      const evaluationConfigs = [
-        {
-          id: '1',
-          title: 'Versión Estándar',
-          adaptationLevel: 'standard' as const,
-          adaptations: ['Formato estándar', 'Tiempo regular (80 min)', 'Instrucciones claras'],
-          assignedStudents: versionStudentData?.v1.map(s => s.nombre) || [],
-          assignedStudentIds: versionStudentData?.v1.map(s => s.id) || []
-        },
-        {
-          id: '2', 
-          title: 'Versión con Apoyos Moderados',
-          adaptationLevel: 'moderate' as const,
-          adaptations: ['Tiempo extendido 50%', 'Apoyo visual', 'Estructura guiada', 'Lectura de enunciados'],
-          assignedStudents: versionStudentData?.v2.map(s => s.nombre) || [],
-          assignedStudentIds: versionStudentData?.v2.map(s => s.id) || []
-        },
-        // V3 only generated if there are students with content adaptation
-        ...(hasContentAdaptation ? [{
-          id: '3',
-          title: 'Versión Altamente Adaptada', 
-          adaptationLevel: 'high' as const,
-          adaptations: ['Evaluación oral', 'Materiales concretos', 'Tiempo flexible', 'Acompañamiento 1:1'],
-          assignedStudents: versionStudentData?.v3.map(s => s.nombre) || [],
-          assignedStudentIds: versionStudentData?.v3.map(s => s.id) || []
-        }] : [])
-      ];
-
-      const evaluationPromises = evaluationConfigs.map(async (evalConfig) => {
-        // PHASE 6b: Build request with generation_context if available
-        const requestBody: any = {
-          originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, parseInt(evalConfig.id)),
-          modification: requerimientos || `Genera una evaluación adaptada para nivel ${evalConfig.adaptationLevel}`,
-          groupContext,
-          type: 'modification',
-          adaptationLevel: evalConfig.adaptationLevel
-        };
-        
-        // Add generation_context if session digests were built
-        if (generationContext) {
-          const { serializeGenerationContext } = await import('@/services/evaluations');
-          requestBody.generation_context = serializeGenerationContext(generationContext);
-        }
-        
-        const { data, error } = await supabase.functions.invoke('modify-evaluation', {
-          body: requestBody
-        });
-
-        if (error) throw error;
-
-        // Return raw response data (will be processed after Promise.all)
-        return { data, error };
+      const { buildEvaluationDesignPlan } = await import('@/services/evaluations');
+      const { getEvaluationDesignRuleTemplate } = await import('@/lib/contemplaciones/enforcement');
+      const plan = buildEvaluationDesignPlan({
+        groupContext: groupContextData,
+        teacherRequirementsText: requerimientos
       });
 
-      const evaluationsData = await Promise.all(evaluationPromises);
-      
-      // Map to evaluation format
-      const evaluations = evaluationsData.map((item, idx) => {
-        const evalConfig = evaluationConfigs[idx];
-        const data = item.data;
-        
-        // Validate AI response content
-        if (!data?.content || data.content.trim().length === 0) {
-          console.warn(`AI returned empty content for evaluation ${evalConfig.id}`);
-          const fallbackContent = basePrototype || generatePrototipo(selectedSubtemas, requerimientos, parseInt(evalConfig.id));
-          return {
-            id: evalConfig.id,
-            version: 1,
-            title: evalConfig.title,
-            content: fallbackContent,
-            adaptations: evalConfig.adaptations,
-            assignedStudents: evalConfig.assignedStudents,
-            assignedStudentIds: evalConfig.assignedStudentIds
-          };
-        }
+      const instrumentDesignRules = plan.instrumentDesignContemplacionIds
+        .map(id => getEvaluationDesignRuleTemplate(id))
+        .filter((rule): rule is string => Boolean(rule));
 
-        return {
-          id: evalConfig.id,
-          version: 1,
-          title: evalConfig.title,
-          content: data.content,
-          adaptations: evalConfig.adaptations,
-          assignedStudents: evalConfig.assignedStudents,
-          assignedStudentIds: evalConfig.assignedStudentIds
-        };
-      });
-      
-      setGeneratedEvaluations(evaluations);
-      setEvaluationBundle(null);
-      setEvaluationDesignPlan(null);
-      
-      // PHASE 6b: Aggregate time budgeting data across all evaluation variants
-      // Process all backend responses to compute aggregated values
-      const backendResponses = evaluationsData
-        .map((item, idx) => ({
-          data: item.data,
-          config: evaluationConfigs[idx]
-        }))
-        .filter(item => item.data); // Only include responses with data
-      
-      if (backendResponses.length > 0) {
-        // Find max estimatedTotalMinutes across all variants
-        const maxEstimatedMinutes = Math.max(
-          ...backendResponses
-            .map(r => r.data.estimatedTotalMinutes)
-            .filter((val): val is number => typeof val === 'number')
-        );
-        
-        if (maxEstimatedMinutes > 0) {
-          setEstimatedDurationMinutes(maxEstimatedMinutes);
-          console.log('[PHASE 6b] Aggregated estimated time (max across variants):', maxEstimatedMinutes);
-        }
-        
-        // Find variant with max estimatedTotalMinutes for timeBreakdown
-        const maxVariant = backendResponses.reduce((max, current) => {
-          const maxVal = max.data.estimatedTotalMinutes || 0;
-          const currentVal = current.data.estimatedTotalMinutes || 0;
-          return currentVal > maxVal ? current : max;
-        });
-        
-        if (maxVariant.data.timeBreakdown) {
-          setTimeBreakdown({
-            sections: maxVariant.data.timeBreakdown,
-            heuristicAssumptions: 'Estimación generada por IA basada en el tipo y cantidad de items'
-          });
-          console.log('[PHASE 6b] Time breakdown from max variant:', maxVariant.config.title);
-        }
-        
-        // Compute wasTimeRefined: OR across all variants
-        const anyRefined = backendResponses.some(r => r.data.wasTimeRefined === true);
-        if (anyRefined) {
-          console.log('[PHASE 6b] ⚠️ Time budget was refined by backend in at least one variant');
-        }
-        
-        // Extract AI Design Report: prefer "moderate" variant, else max variant
-        const moderateVariant = backendResponses.find(r => r.config.adaptationLevel === 'moderate');
-        const reportVariant = moderateVariant || maxVariant;
-        
-        if (reportVariant.data.aiDesignReport) {
-          setAiDesignReport(JSON.stringify(reportVariant.data.aiDesignReport));
-          if (import.meta.env.DEV) {
-            console.log('[FIX] AI Design Report found:', {
-              variant: reportVariant.config.title,
-              hasReport: true,
-              reportKeys: Object.keys(reportVariant.data.aiDesignReport || {})
-            });
+      const effectivePlan = generationContext
+        ? {
+            ...plan,
+            triggers: { versionB: false, versionC: false },
+            assignmentByStudentId: Object.fromEntries(
+              groupContextData.students.map(student => [String(student.studentId), 'A'])
+            ),
+            versionPlans: [
+              {
+                kind: 'A',
+                label: 'Versión A (Universal)',
+                assignedStudentIds: groupContextData.students.map(student => student.studentId),
+                reason: 'Modo sesiones/materiales: versión única'
+              }
+            ],
+            contentAdaptationStudentIds: []
           }
-        } else {
-          if (import.meta.env.DEV) {
-            console.warn('[FIX] AI Design Report missing in backend response:', {
-              variant: reportVariant.config.title,
-              responseKeys: Object.keys(reportVariant.data || {})
-            });
-          }
-        }
+        : plan;
+
+      const requestBody: any = {
+        originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
+        modification: requerimientos || 'Genera una evaluación escrita universal basada en los contenidos seleccionados.',
+        groupContext,
+        type: 'modification'
+      };
+
+      if (generationContext) {
+        const { serializeGenerationContext } = await import('@/services/evaluations');
+        requestBody.generation_context = serializeGenerationContext(generationContext);
       } else {
-        // Fallback: if backend doesn't provide these fields (backward compat or error)
-        console.warn('[PHASE 6b] Backend responses missing time budgeting fields, showing fallback message');
+        requestBody.generation_mode = 'universal';
+        requestBody.evaluation_design_plan = {
+          instrumentDesignRules,
+          responseOptions: effectivePlan.responseOptions,
+          triggers: effectivePlan.triggers
+        };
+      }
+
+      const { data, error } = await supabase.functions.invoke('modify-evaluation', {
+        body: requestBody
+      });
+
+      if (error) throw error;
+
+      setEvaluationDesignPlan(effectivePlan);
+
+      if (data?.evaluationBundle?.baseHtml) {
+        setEvaluationBundle(data.evaluationBundle);
+        setGeneratedEvaluations([]);
+      } else {
+        const content = data?.content || basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1);
+        setEvaluationBundle(null);
+        setGeneratedEvaluations([
+          {
+            id: 'A',
+            version: 1,
+            versionKind: 'A',
+            versionLabel: 'Versión A (Universal)',
+            title: 'Versión A (Universal)',
+            content,
+            adaptations: [],
+            assignedStudents: [],
+            assignedStudentIds: []
+          }
+        ]);
+      }
+
+      if (data?.estimatedTotalMinutes) {
+        setEstimatedDurationMinutes(data.estimatedTotalMinutes);
+      } else {
         setEstimatedDurationMinutes(null);
+      }
+
+      if (data?.timeBreakdown) {
+        setTimeBreakdown({
+          sections: data.timeBreakdown,
+          heuristicAssumptions: 'Estimación generada por IA basada en el tipo y cantidad de items'
+        });
+      } else {
         setTimeBreakdown(null);
+      }
+
+      if (data?.aiDesignReport) {
+        setAiDesignReport(JSON.stringify(data.aiDesignReport));
+      } else {
         setAiDesignReport(null);
       }
       
@@ -1054,39 +938,22 @@ const EvaluacionesGrupo = () => {
     } catch (error) {
       console.error('Error generating evaluations:', error);
       // Fallback to local generation if AI fails (using provider data)
-      const hasContentAdaptation = versionStudentData?.hasContentAdaptation ?? false;
-      
       const evaluations: GeneratedEvaluation[] = [
         {
-          id: '1',
+          id: 'A',
           version: 1,
-          title: 'Versión Estándar',
+          versionKind: 'A',
+          versionLabel: 'Versión A (Universal)',
+          title: 'Versión A (Universal)',
           content: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
-          adaptations: ['Formato estándar', 'Tiempo regular (80 min)', 'Instrucciones claras'],
-          assignedStudents: versionStudentData?.v1.map(s => s.nombre) || [],
-          assignedStudentIds: versionStudentData?.v1.map(s => s.id) || []
-        },
-        {
-          id: '2',
-          version: 2,
-          title: 'Versión con Apoyos Moderados', 
-          content: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 2),
-          adaptations: ['Tiempo extendido 50%', 'Apoyo visual', 'Estructura guiada', 'Lectura de enunciados'],
-          assignedStudents: versionStudentData?.v2.map(s => s.nombre) || [],
-          assignedStudentIds: versionStudentData?.v2.map(s => s.id) || []
-        },
-        // V3 only generated if there are students with content adaptation
-        ...(hasContentAdaptation ? [{
-          id: '3',
-          version: 3,
-          title: 'Versión Altamente Adaptada',
-          content: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 3),
-          adaptations: ['Evaluación oral', 'Materiales concretos', 'Tiempo flexible', 'Acompañamiento 1:1'],
-          assignedStudents: versionStudentData?.v3.map(s => s.nombre) || [],
-          assignedStudentIds: versionStudentData?.v3.map(s => s.id) || []
-        }] : [])
+          adaptations: [],
+          assignedStudents: [],
+          assignedStudentIds: []
+        }
       ];
       setGeneratedEvaluations(evaluations);
+      setEvaluationBundle(null);
+      setEvaluationDesignPlan(null);
       setActiveTab('results');
     } finally {
       setIsGenerating(false);
@@ -1904,7 +1771,7 @@ const EvaluacionesGrupo = () => {
                 )}
               </Button>
               <p className="text-xs text-muted-foreground text-center">
-                Se generarán versiones automáticamente adaptadas según las adecuaciones declaradas de tus estudiantes
+                Se generará una evaluación universal; versiones B/C solo si se cumplen condiciones deterministas
               </p>
             </div>
           </CardContent>
