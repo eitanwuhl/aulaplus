@@ -125,7 +125,7 @@ supabase/
 
 **Model**: `gpt-4o-mini` (no fallback)
 
-**Retry**: 3 attempts, exponential backoff (base delay: 2000ms)
+**Retry**: 3 attempts, exponential backoff (base delay: 1000ms)
 
 **CORS**: `Access-Control-Allow-Origin: *`
 

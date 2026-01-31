@@ -15,7 +15,7 @@ import {
   buildCompetenciasContenidosMap,
 } from '@/lib/competencyExtractor';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
-import { loadGroupContext } from '@/utils/groupContext';
+import { loadGroupContext } from '@/services/groupContext/provider';
 import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
@@ -249,7 +249,7 @@ async function persistSessionBriefs(
 }
 
 // PHASE 4: Use shared helper for group context (removed local implementation)
-// See src/utils/groupContext.ts for centralized logic
+// See src/services/groupContext/provider.ts for centralized logic
 
 // Función para generar automáticamente los planes de todas las sesiones
 const generarPlanesAutomaticamente = async (
