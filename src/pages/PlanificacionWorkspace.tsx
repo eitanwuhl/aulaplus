@@ -16,7 +16,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/utils/groupContext';
+import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/services/groupContext/provider';
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { resolveMockGroup } from '@/utils/resolveMockGroup';

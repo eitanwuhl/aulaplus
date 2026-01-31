@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { SesionClase, Planificacion, DistribucionModalidades, UnidadDidactica, UnitAssignmentMetadata } from '@/types/planificacion';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
-import { loadGroupContext } from '@/utils/groupContext';
+import { loadGroupContext } from '@/services/groupContext/provider';
 
 interface SessionGenerationContext {
   planificacion: Planificacion;
