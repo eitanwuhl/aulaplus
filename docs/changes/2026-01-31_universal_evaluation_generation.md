@@ -49,22 +49,50 @@
 - `CORRECTION_REMINDER`
 - `CONTENT_ADAPTATION_EXCEPTION`
 
+**Bucket mapping (evaluación):**
+- `diseño_cuadernillo` / `norma_formato` → `INSTRUMENT_DESIGN`
+- `recordatorio_docente` → `ADMIN_REMINDER`
+- `regla_correccion` → `CORRECTION_REMINDER`
+
 ### Version Decision (Draft)
 - **A** always generated
 - **B** only if high-structure trigger + design complexity guard
 - **C** only if `hasDeclaredContentAdaptation === true`
 
+**Version B trigger (deterministic):**
+- Condición 1: ≥ 30% del grupo con ≥ 2 de:
+  - `contemplacion-13` (Modelos/plantillas)
+  - `contemplacion-23` (Respuestas estructuradas)
+  - `contemplacion-5` (Segmentación en pasos)
+  - `contemplacion-19` (Fragmentación + preguntas)
+- Condición 2: `INSTRUMENT_DESIGN` distintos ≥ 6
+
+**Response options (deterministic):**
+- Incluir opciones si: necesidades de estructuración **o** (V+K ≥ 50%) **o** mayoría no-R **o** pedido explícito docente
+- Cantidad: 2 por defecto; 3 si `INSTRUMENT_DESIGN` ≥ 6 o pedido explícito de 3
+
 ---
 
-## Commit Log (to be updated)
+## Commit Log
 
-- _Pending_
+- `aaf807b` docs: evaluation generation impact analysis — impact analysis + scope
+- `4d6ae08` feat(contemplaciones): add memotecnia and deterministic mapping — #27 + mapping scaffolding
+- `3086a8c` feat(evaluations): add deterministic evaluation design plan — plan + reminders scaffolding
+- `d591301` feat(edge): support universal evaluation generation output — universal JSON bundle (backward compatible)
+- `77a323e` feat(ui): render universal evaluation + teacher reminders with legacy fallback — UI fallback + panels
+- `32287d2` refactor(evaluations): retire 3-version generation in new flow (keep legacy rendering) — single-call generation
 
 ---
 
-## Files Changed (to be updated)
+## Files Changed (by area)
 
-- _Pending_
+- **Docs**: `docs/changes/2026-01-31_universal_evaluation_generation.md`
+- **Contemplaciones**: `src/lib/contemplaciones/catalog.ts`, `src/lib/contemplaciones/enforcement.ts`, `src/lib/contemplaciones/mapping.ts`
+- **Docs**: `docs/CONTEMPLACIONES_CATALOG.md`
+- **Evaluations**: `src/services/evaluations/designPlan.ts`, `src/services/evaluations/index.ts`
+- **Edge**: `supabase/functions/modify-evaluation/index.ts`
+- **SSoT**: `docs/ARCHITECTURE_SSoT.md`
+- **UI**: `src/pages/EvaluacionesGrupo.tsx`, `src/pages/EvaluacionDetalle.tsx`, `src/components/evaluaciones/*`
 
 ---
 
@@ -78,11 +106,21 @@
 6. Chat modify works (if supported)
 7. Old saved evaluation renders
 
+**Tooling status (Steps 1-6):**
+- `npm run lint` fails due to pre-existing errors in the repo (no new lint errors introduced in these steps).
+- Manual smoke test: pendiente (no se inició servidor local).
+
 ---
 
 ## Risks & Rollback (to be updated)
 
-- _Pending_
+- **Risk**: Lint baseline is failing, which may block strict gating.
+- **Rollback**: `git revert aaf807b` (docs-only).
+- **Rollback**: `git revert 4d6ae08` (contemplaciones + mapping).
+- **Rollback**: `git revert 3086a8c` (design plan determinista).
+- **Rollback**: `git revert d591301` (edge universal bundle).
+- **Rollback**: `git revert 77a323e` (UI fallback + panels).
+- **Rollback**: `git revert 32287d2` (flujo universal).
 
 ---
 
