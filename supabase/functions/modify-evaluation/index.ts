@@ -233,7 +233,10 @@ serve(async (req) => {
       // PHASE 3: Optional per-session focus override
       sessionBrief,
       // PHASE 6b: Session digests + time budgeting + AI design report
-      generation_context
+      generation_context,
+      // Universal evaluation generation (backward compatible)
+      generation_mode = 'legacy',
+      evaluation_design_plan
     } = await req.json();
 
     console.log('Request received:', { type, adaptationLevel, modification, hasGenerationContext: !!generation_context });
@@ -467,6 +470,142 @@ DEVUELVE: El mismo formato JSON con evaluationHTML refinada, estimatedTotalMinut
         timeBreakdown: parsed.timeBreakdown,
         aiDesignReport: parsed.aiDesignReport,
         wasTimeRefined,
+        metadata: {
+          tokensUsed: result.usage?.total_tokens || 0,
+          model: result.model || 'gpt-4.1-2025-04-14'
+        }
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Universal evaluation path (backward compatible)
+    if (type === 'modification' && generation_mode === 'universal') {
+      const designPlan = evaluation_design_plan || {};
+      const instrumentDesignRules = Array.isArray(designPlan.instrumentDesignRules)
+        ? designPlan.instrumentDesignRules
+        : [];
+      const responseOptions = designPlan.responseOptions || {};
+      const responseOptionsInclude = responseOptions.include === true;
+      const responseOptionCount = [2, 3].includes(responseOptions.optionCount)
+        ? responseOptions.optionCount
+        : 2;
+      const generateVersionB = designPlan.triggers?.versionB === true;
+      const generateVersionC = designPlan.triggers?.versionC === true;
+      
+      const systemPrompt = `Eres un especialista en evaluación educativa. Tu tarea es generar una evaluación escrita universal, lista para entregar.
+
+REGLAS CRÍTICAS (NO NEGOCIABLES):
+1. Evidencia SIEMPRE escrita. Prohibido generar tareas "solo orales".
+2. NO inferir diagnósticos ni necesidades desde narrativas. Usa SOLO datos estructurados.
+3. CE/CL son definidos por el docente: NO inventar ni inferir nuevos criterios.
+4. No incluir explicaciones meta ni razonamientos de IA.
+5. HTML válido, renderizable. NO usar Markdown. NO usar <img>.
+
+FORMATO:
+- Usa <strong> para títulos y secciones
+- Evita múltiples <br> consecutivos
+- Incluye puntajes por ítem cuando aplique
+
+RESPUESTAS CON OPCIONES EQUIVALENTES:
+- Si corresponde, cada consigna debe incluir "Elige UNA opción. Todas equivalentes."
+- Opciones equivalentes en dificultad y evidencia, solo cambia el formato de respuesta
+- Máximo ${responseOptionCount} opciones cuando se solicitan opciones
+
+SALIDA OBLIGATORIA (JSON):
+{
+  "base_html": "<html>...</html>",
+  "version_b_html": "<html>...</html> | null",
+  "version_c_html": "<html>...</html> | null",
+  "response_options_included": true/false,
+  "response_option_count": ${responseOptionCount}
+}`;
+
+      const userPrompt = `CONTEXTO DEL GRUPO:
+Materia: ${groupContext?.subject || 'No especificada'}
+Contenidos: ${groupContext?.content?.join(', ') || 'No especificados'}
+Competencias (si provistas por docente): ${groupContext?.competencies?.join(', ') || 'No provistas'}
+Criterios de logro (si provistos por docente): ${groupContext?.criteriosLogro?.join(', ') || 'No provistos'}
+
+REQUERIMIENTOS DOCENTE:
+${modification || 'No hay requerimientos adicionales'}
+
+REGLAS DE DISEÑO DEL INSTRUMENTO (determinísticas, no omitir):
+${instrumentDesignRules.length ? instrumentDesignRules.map((rule: string) => `- ${rule}`).join('\n') : '- (Sin reglas adicionales)'}
+
+OPCIONES DE RESPUESTA:
+- Incluir opciones equivalentes: ${responseOptionsInclude ? 'Sí' : 'No'}
+- Cantidad de opciones por consigna (si aplica): ${responseOptionCount}
+
+VERSIONES:
+- Generar versión B equivalente: ${generateVersionB ? 'Sí' : 'No'}
+- Generar versión C con adecuación de contenido: ${generateVersionC ? 'Sí' : 'No'}
+
+TAREA:
+1. Genera la versión base (A) universal.
+2. Si se pide, genera versión B equivalente (solo cambia formato, misma evidencia).
+3. Si se pide, genera versión C con adecuación de contenido (solo para estudiantes explícitos).
+4. Devuelve únicamente el JSON solicitado.`;
+
+      const result = await retryWithBackoff(async () => {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openAIApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4.1-2025-04-14',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            response_format: { type: 'json_object' },
+            max_completion_tokens: 4000
+          }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`OpenAI API error ${response.status}:`, errorText);
+          throw new Error(`OpenAI API error: ${response.status}`);
+        }
+
+        return await response.json();
+      });
+
+      const generatedContent = result.choices[0]?.message?.content;
+      let parsed: any;
+
+      try {
+        parsed = JSON.parse(generatedContent || '{}');
+      } catch (e) {
+        console.error('[UNIVERSAL] Failed to parse JSON response:', e);
+        return new Response(JSON.stringify({
+          success: true,
+          content: generatedContent || '',
+          type: type,
+          warning: 'Respuesta no estructurada; se devuelve el contenido base.'
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const baseHtml = cleanupContent(parsed.base_html || parsed.baseHtml || '');
+      const versionBHtml = cleanupContent(parsed.version_b_html || parsed.versionBHtml || '');
+      const versionCHtml = cleanupContent(parsed.version_c_html || parsed.versionCHtml || '');
+
+      return new Response(JSON.stringify({
+        success: true,
+        content: baseHtml || '',
+        type: type,
+        evaluationBundle: {
+          baseHtml,
+          versionBHtml: versionBHtml || null,
+          versionCHtml: versionCHtml || null,
+          responseOptionsIncluded: parsed.response_options_included === true,
+          responseOptionCount: parsed.response_option_count || responseOptionCount
+        },
         metadata: {
           tokensUsed: result.usage?.total_tokens || 0,
           model: result.model || 'gpt-4.1-2025-04-14'
