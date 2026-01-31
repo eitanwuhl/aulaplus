@@ -2,7 +2,7 @@
 
 > **Purpose**: Compact, operational architecture reference for Cursor context. Use this as the definitive guide for all code changes.
 >
-> **Last Updated**: January 26, 2026  
+> **Last Updated**: January 31, 2026  
 > **Status**: Active
 
 ---
@@ -15,25 +15,29 @@
 
 ## Repo Map
 
+**Note**: File counts are indicative and may drift as the codebase evolves. Focus on structure and boundaries, not exact counts.
+
 ```
 src/
-├── pages/              # Route-level orchestration (13 files)
+├── pages/              # Route-level orchestration (indicative count)
 ├── components/         # UI components
-│   ├── evaluaciones/  # Evaluation components (13 files)
-│   ├── planificacion/ # Planning components (15 files)
-│   └── ui/            # shadcn/ui primitives (63 files)
-├── hooks/             # Business logic hooks (7 files)
+│   ├── evaluaciones/  # Evaluation components (indicative count)
+│   ├── planificacion/ # Planning components (indicative count)
+│   └── ui/            # shadcn/ui primitives (indicative count)
+├── hooks/             # Business logic hooks (indicative count)
 ├── lib/               # Pure utilities
-│   └── contemplaciones/ # Contemplaciones system (7 files)
+│   └── contemplaciones/ # Contemplaciones system (indicative count)
 ├── contexts/          # React contexts (AuthContext)
 ├── integrations/      # Supabase client
 ├── data/              # Static data (competencies, mock groups)
 ├── types/             # TypeScript definitions
-└── utils/             # Shared utilities (groupContext)
+└── services/          # Specialized services
+│   └── groupContext/ # Unified group context provider (use provider.ts)
+└── utils/             # Shared utilities (groupContext deprecated, kept for backward compatibility)
 
 supabase/
-├── functions/         # Edge functions (4 functions)
-├── migrations/        # SQL migrations (23 files)
+├── functions/         # Edge functions (4 core + 1 demo auxiliary: ensure-demo-users)
+├── migrations/        # SQL migrations (indicative count, may drift)
 └── config.toml       # Project config
 ```
 
@@ -156,6 +160,14 @@ supabase/
 
 **Model**: `gpt-4.1-2025-04-14`
 
+#### `ensure-demo-users` (Demo Only)
+
+**Path**: `supabase/functions/ensure-demo-users/index.ts`
+
+**Purpose**: Auxiliary function for demo mode. Creates demo user in Supabase Auth if it doesn't exist.
+
+**Note**: Demo-only, not used in production flows.
+
 ### Parsing Contract
 
 **File**: `src/lib/planParser.ts`
@@ -240,10 +252,11 @@ supabase/
    - **Risk**: Enum changes break application logic
    - **File**: Migration `20250930180042`
 
-10. **Group Context Loading** (`src/utils/groupContext.ts`)
+10. **Group Context Loading** (`src/services/groupContext/provider.ts`)
     - Hybrid: Supabase (teacher_sugerencias) + mockData (students)
     - **Risk**: Changing loading logic breaks AI generation
     - **Future**: Migrate students to Supabase
+    - **Note**: `src/utils/groupContext.ts` is deprecated but kept for backward compatibility
 
 ---
 
@@ -310,10 +323,12 @@ supabase/
    - **Risk**: AI output format changes break parser
    - **Evidence**: Regex patterns in `planParser.ts`, used throughout codebase
 
-4. **Hybrid Data Model** (`src/utils/groupContext.ts`)
+4. **Hybrid Data Model** (`src/services/groupContext/provider.ts`)
    - Students in `mockData.ts` (not in database)
    - **Future**: Migrate to Supabase `students` table
-   - **Evidence**: `groupContext.ts` loads from both Supabase and mockData
+   - **Evidence**: `provider.ts` loads from both Supabase and mockData
+   - **Note**: `src/utils/groupContext.ts` is deprecated
+   - **Note**: `src/utils/groupContext.ts` is deprecated
 
 5. **No Structured Logging**
    - Console logs only (DEV mode)
