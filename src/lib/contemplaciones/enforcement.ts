@@ -80,6 +80,14 @@ const EVALUATION_DESIGN_RULES: Record<string, string> = {
   'contemplacion-27': 'Apoyaturas de memotecnia (anclajes de pensamiento) cerca de consignas relevantes, sin respuestas'
 };
 
+export function getEvaluationReminderTemplate(contemplacionId: string): string | undefined {
+  return EVALUATION_REMINDER_TEMPLATES[contemplacionId];
+}
+
+export function getEvaluationDesignRuleTemplate(contemplacionId: string): string | undefined {
+  return EVALUATION_DESIGN_RULES[contemplacionId];
+}
+
 /**
  * Templates para "Diferenciación/Adaptaciones" en planes de clase
  * Incluyen placeholder para nombres de estudiantes
