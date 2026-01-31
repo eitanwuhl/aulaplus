@@ -142,11 +142,30 @@ supabase/
   modification: string,
   groupContext: { subject: string, content: string[], competencies: string[], groupName: string, ... },
   unitContext?: {...},
-  sessionBrief?: string
+  sessionBrief?: string,
+  generation_mode?: 'legacy' | 'universal',
+  evaluation_design_plan?: {
+    instrumentDesignRules?: string[],
+    responseOptions?: { include: boolean, optionCount: 1 | 2 | 3 },
+    triggers?: { versionB: boolean, versionC: boolean }
+  }
 }
 ```
 
-**Response**: `{ content: string }` (plain text)
+**Response**: `{ content: string, evaluationBundle?: {...} }` (plain text + optional bundle)
+
+```typescript
+{
+  content: string,
+  evaluationBundle?: {
+    baseHtml: string,
+    versionBHtml?: string | null,
+    versionCHtml?: string | null,
+    responseOptionsIncluded?: boolean,
+    responseOptionCount?: number
+  }
+}
+```
 
 **Model**: `gpt-5-mini-2025-08-07` (if type === 'chat'), `gpt-4.1-2025-04-14` (otherwise)
 
