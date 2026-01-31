@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Loader2, AlertTriangle } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
-import { EvaluacionVisualRenderer } from '@/components/evaluaciones/EvaluacionVisualRenderer';
+import { EvaluacionVisualRenderer, EvaluationAssignmentsPanel, TeacherRemindersPanel } from '@/components/evaluaciones';
 import { getSubtemaPorId } from '@/data/catalogo';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { mockGroups } from '@/data/mockData';
@@ -29,11 +29,29 @@ interface Evaluacion {
       title: string;
       content: string;
       version: number;
+      versionLabel?: string;
+      versionKind?: string;
       adaptations?: string[];
       assignedStudents?: string[];  // Legacy: Student names (for backward compatibility)
       assignedStudentIds?: (string | number)[];  // NEW: Student IDs assigned to this version
     }>;
     base_prototype?: string;
+    evaluation_bundle?: {
+      baseHtml?: string;
+      versionBHtml?: string | null;
+      versionCHtml?: string | null;
+      responseOptionsIncluded?: boolean;
+      responseOptionCount?: number;
+    };
+    evaluation_design_plan?: {
+      assignmentByStudentId?: Record<string, 'A' | 'B' | 'C'>;
+      perStudentReminders?: Array<{
+        studentId: string | number;
+        admin: string[];
+        correction: string[];
+        allowances: string[];
+      }>;
+    };
   };
   is_saved: boolean;
   saved_at: string;
@@ -174,8 +192,70 @@ const EvaluacionDetalle: React.FC = () => {
     return { nombre: subtema?.contenido || id };
   }).filter(Boolean) || [];
 
-  // Get evaluaciones from evaluacion_generada
-  const evaluacionesGeneradas = evaluacion.evaluacion_generada?.evaluaciones || [];
+  const evaluationBundle = evaluacion.evaluacion_generada?.evaluation_bundle;
+  const evaluationDesignPlan = evaluacion.evaluacion_generada?.evaluation_design_plan;
+
+  const displayEvaluations = useMemo(() => {
+    if (!evaluationBundle?.baseHtml) {
+      return evaluacion.evaluacion_generada?.evaluaciones || [];
+    }
+
+    const assignmentByStudentId = evaluationDesignPlan?.assignmentByStudentId || {};
+    const getAssigned = (kind: 'A' | 'B' | 'C') => {
+      const assigned = students.filter(student => assignmentByStudentId[String(student.id)] === kind);
+      return {
+        ids: assigned.map(student => student.id),
+        names: assigned.map(student => student.name || `Estudiante ${student.id}`)
+      };
+    };
+
+    const baseAssigned = getAssigned('A');
+    const base = {
+      id: 'A',
+      title: 'Versión A (Universal)',
+      content: evaluationBundle.baseHtml || '',
+      version: 1,
+      versionKind: 'A',
+      versionLabel: 'Versión A (Universal)',
+      adaptations: [],
+      assignedStudents: baseAssigned.names,
+      assignedStudentIds: baseAssigned.ids
+    };
+
+    const evaluations = [base];
+
+    if (evaluationBundle.versionBHtml) {
+      const assigned = getAssigned('B');
+      evaluations.push({
+        id: 'B',
+        title: 'Versión B (Equivalente)',
+        content: evaluationBundle.versionBHtml,
+        version: 2,
+        versionKind: 'B',
+        versionLabel: 'Versión B (Equivalente)',
+        adaptations: [],
+        assignedStudents: assigned.names,
+        assignedStudentIds: assigned.ids
+      });
+    }
+
+    if (evaluationBundle.versionCHtml) {
+      const assigned = getAssigned('C');
+      evaluations.push({
+        id: 'C',
+        title: 'Versión C (Adecuación de contenido)',
+        content: evaluationBundle.versionCHtml,
+        version: 3,
+        versionKind: 'C',
+        versionLabel: 'Versión C (Adecuación de contenido)',
+        adaptations: [],
+        assignedStudents: assigned.names,
+        assignedStudentIds: assigned.ids
+      });
+    }
+
+    return evaluations;
+  }, [evaluationBundle, evaluationDesignPlan, evaluacion, students]);
 
   return (
     <ErrorBoundary>
@@ -203,9 +283,18 @@ const EvaluacionDetalle: React.FC = () => {
         </div>
 
         {/* Evaluaciones Generadas */}
-        {evaluacionesGeneradas.length > 0 ? (
+        {displayEvaluations.length > 0 ? (
           <div className="space-y-8">
-            {evaluacionesGeneradas.map((evalItem) => (
+            {evaluationDesignPlan?.assignmentByStudentId && (
+              <EvaluationAssignmentsPanel
+                assignments={evaluationDesignPlan.assignmentByStudentId}
+                students={students}
+              />
+            )}
+            {evaluationDesignPlan?.perStudentReminders && (
+              <TeacherRemindersPanel reminders={evaluationDesignPlan.perStudentReminders} students={students} />
+            )}
+            {displayEvaluations.map((evalItem) => (
               <EvaluacionVisualRenderer
                 key={evalItem.id}
                 evaluation={{
@@ -213,6 +302,8 @@ const EvaluacionDetalle: React.FC = () => {
                   title: evalItem.title,
                   content: evalItem.content,
                   version: evalItem.version || 1,
+                  versionKind: evalItem.versionKind,
+                  versionLabel: evalItem.versionLabel,
                   adaptations: evalItem.adaptations,
                   assignedStudents: evalItem.assignedStudents,
                   assignedStudentIds: evalItem.assignedStudentIds

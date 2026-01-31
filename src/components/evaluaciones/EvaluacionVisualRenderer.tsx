@@ -18,6 +18,8 @@ interface EvaluacionVisualRendererProps {
     title: string;
     content: string;
     version: number;
+    versionLabel?: string;
+    versionKind?: string;
     adaptations?: string[];
     assignedStudents?: string[];  // Legacy: Student names (for backward compatibility)
     assignedStudentIds?: (string | number)[];  // NEW: Student IDs assigned to this version
