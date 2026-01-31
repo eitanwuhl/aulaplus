@@ -76,7 +76,8 @@ const EVALUATION_DESIGN_RULES: Record<string, string> = {
   'contemplacion-18': 'Enunciados simples y lenguaje concreto (sin frases encadenadas)',
   'contemplacion-19': 'Texto por bloques + preguntas inmediatamente después de cada fragmento',
   'contemplacion-20': 'Cronograma sugerido por secciones',
-  'contemplacion-23': 'Plantillas/casilleros; si hay V/F exigir justificación para no bajar exigencia'
+  'contemplacion-23': 'Plantillas/casilleros; si hay V/F exigir justificación para no bajar exigencia',
+  'contemplacion-27': 'Apoyaturas de memotecnia (anclajes de pensamiento) cerca de consignas relevantes, sin respuestas'
 };
 
 /**

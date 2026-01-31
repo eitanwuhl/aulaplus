@@ -18,7 +18,7 @@
 6. [Deduplicación: #9 y #22](#deduplicación-9-y-22)
 7. [Badge "Sugerido"](#badge-sugerido)
 8. [Funciones Helper](#funciones-helper)
-9. [Catálogo Completo (1-26)](#catálogo-completo-1-26)
+9. [Catálogo Completo (1-27)](#catálogo-completo-1-27)
 
 ---
 
@@ -76,6 +76,7 @@ Cada contemplación tiene un **ID estable** que nunca debe cambiar:
 | `contemplacion-24` | 24 | Priorización de tareas (orden recomendado, qué hacer primero) |
 | `contemplacion-25` | 25 | Refuerzo positivo / comentarios de reconocimiento (motivación externa) |
 | `contemplacion-26` | 26 | Soporte digital para producción escrita (teclado / dictado a texto si el centro lo permite) |
+| `contemplacion-27` | 27 | Apoyatura de memotecnia |
 
 **Nota:** No existe `contemplacion-22` como ID independiente. La contemplación #22 está unificada con #9 en `contemplacion-9-22`.
 
@@ -281,7 +282,7 @@ Obtiene contemplaciones aplicables para un contexto específico:
 
 ---
 
-## Catálogo Completo (1-26)
+## Catálogo Completo (1-27)
 
 ### Contemplación 1: Lectura oral de consignas
 - **ID:** `contemplacion-1`
@@ -454,6 +455,13 @@ Obtiene contemplaciones aplicables para un contexto específico:
 - **Materialización:**
   - Ambas: Recordatorio docente + opción de formato (evidencia sigue escrita)
 - **Regla específica:** "Grabación" NO como evidencia → traducir a "dictado a texto/teclado"
+
+### Contemplación 27: Apoyatura de memotecnia
+- **ID:** `contemplacion-27`
+- **Categoría:** `evaluaciones`
+- **Materialización:**
+  - Evaluación: Diseño cuadernillo (anclajes de pensamiento cerca de consignas relevantes)
+- **Regla específica:** No incluir respuestas; solo orientar el pensamiento (causa→consecuencia, tesis→evidencia, criterios de comparación, etc.)
 
 ---
 
