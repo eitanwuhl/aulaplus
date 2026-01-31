@@ -24,9 +24,10 @@ import { getCompetenciasEspecificasLiteratura, getCriteriosLogroPorCompetenciasL
 import { getCompetenciasEspecificasCiudadania, getCriteriosLogroPorCompetenciasCiudadania } from "@/data/competenciasCiudadania";
 import { RubricaIntegrada } from "@/components/RubricaIntegrada";
 import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
-import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport } from "@/components/evaluaciones";
+import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport, EvaluationAssignmentsPanel, TeacherRemindersPanel } from "@/components/evaluaciones";
 import type { AIDesignReportData } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import type { EvaluationDesignPlan } from "@/services/evaluations";
 
 interface ResultadoEvaluacion {
   grupo: string;
@@ -44,6 +45,8 @@ interface GeneratedEvaluation {
   version: number;
   title: string;
   content: string;
+  versionLabel?: string;
+  versionKind?: string;
   adaptations: string[];
   assignedStudents: string[];  // Legacy: Student names (for backward compatibility)
   assignedStudentIds?: (string | number)[];  // NEW: Student IDs assigned to this version
@@ -53,6 +56,14 @@ interface GeneratedEvaluation {
     disliked: string[];
     suggestions: string[];
   };
+}
+
+interface EvaluationBundle {
+  baseHtml?: string;
+  versionBHtml?: string | null;
+  versionCHtml?: string | null;
+  responseOptionsIncluded?: boolean;
+  responseOptionCount?: number;
 }
 
 function getPersistedContemplaciones(studentId: number): string[] {
@@ -374,6 +385,8 @@ const EvaluacionesGrupo = () => {
   // Estados del generador unificado
   const [basePrototype, setBasePrototype] = useState('');
   const [generatedEvaluations, setGeneratedEvaluations] = useState<GeneratedEvaluation[]>([]);
+  const [evaluationBundle, setEvaluationBundle] = useState<EvaluationBundle | null>(null);
+  const [evaluationDesignPlan, setEvaluationDesignPlan] = useState<EvaluationDesignPlan | null>(null);
   const [currentFeedback, setCurrentFeedback] = useState<Record<string, { liked: string; disliked: string; suggestions: string }>>({});
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState('setup');
@@ -543,13 +556,15 @@ const EvaluacionesGrupo = () => {
         criterios_logro: normalizeArrayField(selectedCriteriosLogro),
         requerimientos,
         evaluacion_generada: {
-          evaluaciones: generatedEvaluations,
+          evaluaciones: displayEvaluations,
           base_prototype: basePrototype,
           // PHASE 6: Time budgeting + AI Design Report
           targetDurationMinutes,
           estimatedDurationMinutes,
           timeBreakdown,
-          aiDesignReport: aiDesignReport ? JSON.parse(aiDesignReport) : null
+          aiDesignReport: aiDesignReport ? JSON.parse(aiDesignReport) : null,
+          evaluation_bundle: evaluationBundle,
+          evaluation_design_plan: evaluationDesignPlan
         },
         // PHASE C: Persist AI design report in DB column
         ai_design_report: aiDesignReport ? JSON.parse(aiDesignReport) : null,
@@ -960,6 +975,8 @@ const EvaluacionesGrupo = () => {
       });
       
       setGeneratedEvaluations(evaluations);
+      setEvaluationBundle(null);
+      setEvaluationDesignPlan(null);
       
       // PHASE 6b: Aggregate time budgeting data across all evaluation variants
       // Process all backend responses to compute aggregated values
@@ -1303,6 +1320,69 @@ const EvaluacionesGrupo = () => {
       return `Disculpa, hubo un problema conectando con la IA. Mientras tanto, puedo sugerirte que para ${subject} consideres usar apoyos visuales y tiempo extendido según las necesidades de tu grupo.`;
     }
   };
+
+  const displayEvaluations = useMemo(() => {
+    if (!evaluationBundle?.baseHtml) {
+      return generatedEvaluations;
+    }
+
+    const assignmentByStudentId = evaluationDesignPlan?.assignmentByStudentId || {};
+    const students = selectedGroup?.students || [];
+    const getAssigned = (kind: 'A' | 'B' | 'C') => {
+      const assigned = students.filter(student => assignmentByStudentId[String(student.id)] === kind);
+      return {
+        ids: assigned.map(student => student.id),
+        names: assigned.map(student => student.name || `Estudiante ${student.id}`)
+      };
+    };
+
+    const baseAssigned = getAssigned('A');
+    const evaluations: GeneratedEvaluation[] = [
+      {
+        id: 'A',
+        title: 'Versión A (Universal)',
+        content: evaluationBundle.baseHtml || '',
+        version: 1,
+        versionKind: 'A',
+        versionLabel: 'Versión A (Universal)',
+        adaptations: [],
+        assignedStudents: baseAssigned.names,
+        assignedStudentIds: baseAssigned.ids
+      }
+    ];
+
+    if (evaluationBundle.versionBHtml) {
+      const assigned = getAssigned('B');
+      evaluations.push({
+        id: 'B',
+        title: 'Versión B (Equivalente)',
+        content: evaluationBundle.versionBHtml,
+        version: 2,
+        versionKind: 'B',
+        versionLabel: 'Versión B (Equivalente)',
+        adaptations: [],
+        assignedStudents: assigned.names,
+        assignedStudentIds: assigned.ids
+      });
+    }
+
+    if (evaluationBundle.versionCHtml) {
+      const assigned = getAssigned('C');
+      evaluations.push({
+        id: 'C',
+        title: 'Versión C (Adecuación de contenido)',
+        content: evaluationBundle.versionCHtml,
+        version: 3,
+        versionKind: 'C',
+        versionLabel: 'Versión C (Adecuación de contenido)',
+        adaptations: [],
+        assignedStudents: assigned.names,
+        assignedStudentIds: assigned.ids
+      });
+    }
+
+    return evaluations;
+  }, [evaluationBundle, evaluationDesignPlan, generatedEvaluations, selectedGroup]);
 
   return (
     <ErrorBoundary>
@@ -1830,7 +1910,7 @@ const EvaluacionesGrupo = () => {
           </CardContent>
         </Card>
 
-        {generatedEvaluations.length > 0 && (
+        {displayEvaluations.length > 0 && (
           <div className="space-y-6">
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="grid w-full grid-cols-1">
@@ -1857,7 +1937,16 @@ const EvaluacionesGrupo = () => {
                   </Button>
                 </div>
                 
-                {generatedEvaluations.map((evaluation) => (
+                {evaluationDesignPlan?.assignmentByStudentId && (
+                  <EvaluationAssignmentsPanel
+                    assignments={evaluationDesignPlan.assignmentByStudentId}
+                    students={selectedGroup?.students || []}
+                  />
+                )}
+                {evaluationDesignPlan?.perStudentReminders && (
+                  <TeacherRemindersPanel reminders={evaluationDesignPlan.perStudentReminders} students={selectedGroup?.students || []} />
+                )}
+                {displayEvaluations.map((evaluation) => (
                   <EvaluacionVisualRenderer
                     key={evaluation.id}
                     evaluation={evaluation}

@@ -11,6 +11,8 @@ interface CleanEvaluationDisplayProps {
     title: string;
     content: string;
     version: number;
+    versionLabel?: string;
+    versionKind?: string;
   };
 }
 
@@ -33,6 +35,12 @@ export const CleanEvaluationDisplay: React.FC<CleanEvaluationDisplayProps> = ({
     }
   };
 
+  const getVersionLabel = () => {
+    if (evaluation.versionLabel) return evaluation.versionLabel;
+    if (evaluation.versionKind) return `Versión ${evaluation.versionKind}`;
+    return `Versión ${evaluation.version}`;
+  };
+
 
   return (
     <Card className="border border-border shadow-sm print:shadow-none print:border-gray-300">
@@ -43,7 +51,7 @@ export const CleanEvaluationDisplay: React.FC<CleanEvaluationDisplayProps> = ({
             {evaluation.title}
           </CardTitle>
           <Badge variant={getVersionBadgeColor(evaluation.version)} className="text-xs print:text-xs">
-            Versión {evaluation.version}
+            {getVersionLabel()}
           </Badge>
         </div>
       </CardHeader>
