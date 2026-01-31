@@ -457,6 +457,22 @@ export const CONTEMPLACIONES_CATALOG: Contemplacion[] = [
     reglasEspecificas: [
       '"Grabación" NO como evidencia → traducir a "dictado a texto/teclado"'
     ]
+  },
+  {
+    id: 'contemplacion-27',
+    numero: 27,
+    label: 'Apoyatura de memotecnia',
+    category: 'evaluaciones',
+    materializaciones: [
+      {
+        tipo: 'diseño_cuadernillo',
+        descripcion: 'Apoyaturas de memotecnia (anclajes de pensamiento) cerca de consignas relevantes, sin respuestas',
+        contexto: 'evaluacion'
+      }
+    ],
+    reglasEspecificas: [
+      'No incluir respuestas; solo orientar el pensamiento (causa→consecuencia, tesis→evidencia, criterios de comparación, etc.)'
+    ]
   }
 ];
 
