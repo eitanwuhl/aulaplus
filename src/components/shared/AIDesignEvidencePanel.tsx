@@ -50,7 +50,7 @@ interface AIDesignEvidencePanelProps {
 
 export function AIDesignEvidencePanel({
   evidence,
-  title = 'Evidencia de diseño de la IA',
+  title = 'Reporte de IA',
   description = 'Información sobre cómo la IA generó este contenido',
   className,
   defaultExpanded = false

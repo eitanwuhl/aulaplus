@@ -962,7 +962,7 @@ export default function PlanificacionWorkspace() {
               ) : (
                 <Card className="border-l-4 border-purple-500 bg-purple-50 dark:bg-purple-950/20">
                   <CardHeader>
-                    <CardTitle className="text-base">Evidencia de diseño de la IA</CardTitle>
+                    <CardTitle className="text-base">Reporte de IA</CardTitle>
                     <CardDescription className="text-xs">
                       No hay evidencia de diseño disponible para esta planificación. Se generará después de crear o modificar sesiones.
                     </CardDescription>
