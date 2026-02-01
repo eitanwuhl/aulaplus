@@ -46,13 +46,15 @@ Memotecnia (#27): anchors of pensamiento, no answers.
 
 ## Files Changed (planned)
 
-- `src/lib/contemplaciones/*`
-- `src/services/evaluations/*`
+### Actual
 - `supabase/functions/modify-evaluation/index.ts`
+- `docs/ARCHITECTURE_SSoT.md`
 - `src/pages/EvaluacionesGrupo.tsx`
 - `src/pages/EvaluacionDetalle.tsx`
-- `src/components/evaluaciones/*`
-- `docs/ARCHITECTURE_SSoT.md`
+- `src/components/evaluaciones/AIDesignReport.tsx`
+- `src/components/shared/AIDesignEvidencePanel.tsx`
+- `src/pages/PlanificacionWorkspace.tsx`
+- `src/services/evaluations/index.ts`
 
 ---
 
@@ -68,9 +70,21 @@ Memotecnia (#27): anchors of pensamiento, no answers.
 
 ---
 
+## Commit Log
+
+- `d8c0334` docs: add impact analysis for universal evaluation generation consistency + AI report
+- `205bfe3` chore(evaluations): stabilize exports and file formatting
+- `3bf25aa` feat(edge/evaluations): generate version bundle aligned to deterministic plan
+- `9c862f6` feat(ui): align student assignment with generated versions + fallback
+
+---
+
 ## Rollback Plan
 
-- `git revert <sha>` por cada commit relacionado a esta EPIC.
+- `git revert 9c862f6`
+- `git revert 3bf25aa`
+- `git revert 205bfe3`
+- `git revert d8c0334`
 
 ---
 
