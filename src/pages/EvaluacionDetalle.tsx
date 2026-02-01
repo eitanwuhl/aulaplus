@@ -6,7 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Loader2, AlertTriangle } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
-import { EvaluacionVisualRenderer, EvaluationAssignmentsPanel, TeacherRemindersPanel } from '@/components/evaluaciones';
+import { AIDesignReport, EvaluacionVisualRenderer, EvaluationAssignmentsPanel, TeacherRemindersPanel } from '@/components/evaluaciones';
+import type { AIDesignReportData } from '@/components/evaluaciones';
 import { getSubtemaPorId } from '@/data/catalogo';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { mockGroups } from '@/data/mockData';
@@ -40,6 +41,7 @@ interface Evaluacion {
       baseHtml?: string;
       versionBHtml?: string | null;
       versionCHtml?: string | null;
+      versions?: { A: string; B?: string | null; C?: string | null };
       responseOptionsIncluded?: boolean;
       responseOptionCount?: number;
     };
@@ -52,12 +54,21 @@ interface Evaluacion {
         allowances: string[];
       }>;
     };
+    student_assignments?: Record<string, 'A' | 'B' | 'C'>;
+    teacher_reminders_by_student?: Array<{
+      studentId: string | number;
+      admin: string[];
+      correction: string[];
+      allowances: string[];
+    }>;
+    ai_report?: unknown;
   };
   is_saved: boolean;
   saved_at: string;
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
+  ai_design_report?: unknown;
 }
 
 const EvaluacionDetalle: React.FC = () => {
@@ -194,13 +205,33 @@ const EvaluacionDetalle: React.FC = () => {
 
   const evaluationBundle = evaluacion.evaluacion_generada?.evaluation_bundle;
   const evaluationDesignPlan = evaluacion.evaluacion_generada?.evaluation_design_plan;
+  const rawAssignments = evaluacion.evaluacion_generada?.student_assignments || evaluationDesignPlan?.assignmentByStudentId || {};
+  const teacherReminders = evaluacion.evaluacion_generada?.teacher_reminders_by_student || evaluationDesignPlan?.perStudentReminders || [];
+  const aiReportPayload = evaluacion.evaluacion_generada?.ai_report || evaluacion.ai_design_report || null;
+
+  const { normalizedAssignments, assignmentWarnings } = useMemo(() => {
+    const available = {
+      A: true,
+      B: Boolean(evaluationBundle?.versionBHtml),
+      C: Boolean(evaluationBundle?.versionCHtml)
+    };
+    const normalized: Record<string, 'A' | 'B' | 'C'> = { ...rawAssignments };
+    const warnings: string[] = [];
+    Object.entries(normalized).forEach(([studentId, version]) => {
+      if (!available[version]) {
+        normalized[studentId] = 'A';
+        warnings.push(`Se reasignó ${studentId} a Versión A porque ${version} no fue generada.`);
+      }
+    });
+    return { normalizedAssignments: normalized, assignmentWarnings: warnings };
+  }, [evaluationBundle, rawAssignments]);
 
   const displayEvaluations = useMemo(() => {
-    if (!evaluationBundle?.baseHtml) {
+    if (!evaluationBundle?.baseHtml && !evaluationBundle?.versions?.A) {
       return evaluacion.evaluacion_generada?.evaluaciones || [];
     }
 
-    const assignmentByStudentId = evaluationDesignPlan?.assignmentByStudentId || {};
+    const assignmentByStudentId = normalizedAssignments || {};
     const getAssigned = (kind: 'A' | 'B' | 'C') => {
       const assigned = students.filter(student => assignmentByStudentId[String(student.id)] === kind);
       return {
@@ -210,10 +241,11 @@ const EvaluacionDetalle: React.FC = () => {
     };
 
     const baseAssigned = getAssigned('A');
+    const baseHtml = evaluationBundle.baseHtml || evaluationBundle.versions?.A || '';
     const base = {
       id: 'A',
       title: 'Versión A (Universal)',
-      content: evaluationBundle.baseHtml || '',
+      content: baseHtml,
       version: 1,
       versionKind: 'A',
       versionLabel: 'Versión A (Universal)',
@@ -224,12 +256,13 @@ const EvaluacionDetalle: React.FC = () => {
 
     const evaluations = [base];
 
-    if (evaluationBundle.versionBHtml) {
+    const versionBHtml = evaluationBundle.versionBHtml || evaluationBundle.versions?.B || null;
+    if (versionBHtml) {
       const assigned = getAssigned('B');
       evaluations.push({
         id: 'B',
         title: 'Versión B (Equivalente)',
-        content: evaluationBundle.versionBHtml,
+        content: versionBHtml,
         version: 2,
         versionKind: 'B',
         versionLabel: 'Versión B (Equivalente)',
@@ -239,12 +272,13 @@ const EvaluacionDetalle: React.FC = () => {
       });
     }
 
-    if (evaluationBundle.versionCHtml) {
+    const versionCHtml = evaluationBundle.versionCHtml || evaluationBundle.versions?.C || null;
+    if (versionCHtml) {
       const assigned = getAssigned('C');
       evaluations.push({
         id: 'C',
         title: 'Versión C (Adecuación de contenido)',
-        content: evaluationBundle.versionCHtml,
+        content: versionCHtml,
         version: 3,
         versionKind: 'C',
         versionLabel: 'Versión C (Adecuación de contenido)',
@@ -285,14 +319,31 @@ const EvaluacionDetalle: React.FC = () => {
         {/* Evaluaciones Generadas */}
         {displayEvaluations.length > 0 ? (
           <div className="space-y-8">
-            {evaluationDesignPlan?.assignmentByStudentId && (
+            {assignmentWarnings.length > 0 && (
+              <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+                <CardHeader>
+                  <CardTitle className="text-sm text-amber-800 dark:text-amber-200 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4" />
+                    Ajustes automáticos de versiones
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <ul className="list-disc pl-5 text-sm text-amber-700 dark:text-amber-300">
+                    {assignmentWarnings.map((warning, idx) => (
+                      <li key={idx}>{warning}</li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            )}
+            {Object.keys(normalizedAssignments).length > 0 && (
               <EvaluationAssignmentsPanel
-                assignments={evaluationDesignPlan.assignmentByStudentId}
+                assignments={normalizedAssignments}
                 students={students}
               />
             )}
-            {evaluationDesignPlan?.perStudentReminders && (
-              <TeacherRemindersPanel reminders={evaluationDesignPlan.perStudentReminders} students={students} />
+            {teacherReminders.length > 0 && (
+              <TeacherRemindersPanel reminders={teacherReminders} students={students} />
             )}
             {displayEvaluations.map((evalItem) => (
               <EvaluacionVisualRenderer
@@ -316,6 +367,25 @@ const EvaluacionDetalle: React.FC = () => {
                 criteriosLogro={evaluacion.criterios_logro || []}
               />
             ))}
+            {aiReportPayload ? (
+              <AIDesignReport
+                reportData={aiReportPayload as AIDesignReportData}
+                className="mt-4"
+              />
+            ) : (
+              <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+                <CardHeader>
+                  <CardTitle className="text-sm text-amber-800 dark:text-amber-200">
+                    Reporte de IA
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-amber-700 dark:text-amber-300">
+                    El reporte de IA no está disponible para esta evaluación (legacy o generación previa).
+                  </p>
+                </CardContent>
+              </Card>
+            )}
           </div>
         ) : (
           <Card>

@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { motion } from "framer-motion";
-import { Upload, FileText, MessageCircle, ThumbsUp, ThumbsDown, RefreshCw, Lightbulb, ChevronDown, ChevronUp, Save } from 'lucide-react';
+import { Upload, FileText, MessageCircle, ThumbsUp, ThumbsDown, RefreshCw, Lightbulb, ChevronDown, ChevronUp, Save, AlertTriangle } from 'lucide-react';
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -27,7 +27,7 @@ import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVi
 import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport, EvaluationAssignmentsPanel, TeacherRemindersPanel } from "@/components/evaluaciones";
 import type { AIDesignReportData } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import type { EvaluationDesignPlan } from "@/services/evaluations";
+import type { EvaluationDesignPlan, StudentReminders } from "@/services/evaluations";
 
 interface ResultadoEvaluacion {
   grupo: string;
@@ -62,6 +62,7 @@ interface EvaluationBundle {
   baseHtml?: string;
   versionBHtml?: string | null;
   versionCHtml?: string | null;
+  versions?: { A: string; B?: string | null; C?: string | null };
   responseOptionsIncluded?: boolean;
   responseOptionCount?: number;
 }
@@ -387,6 +388,9 @@ const EvaluacionesGrupo = () => {
   const [generatedEvaluations, setGeneratedEvaluations] = useState<GeneratedEvaluation[]>([]);
   const [evaluationBundle, setEvaluationBundle] = useState<EvaluationBundle | null>(null);
   const [evaluationDesignPlan, setEvaluationDesignPlan] = useState<EvaluationDesignPlan | null>(null);
+  const [studentAssignments, setStudentAssignments] = useState<Record<string, 'A' | 'B' | 'C'>>({});
+  const [teacherReminders, setTeacherReminders] = useState<StudentReminders[]>([]);
+  const [assignmentWarnings, setAssignmentWarnings] = useState<string[]>([]);
   const [currentFeedback, setCurrentFeedback] = useState<Record<string, { liked: string; disliked: string; suggestions: string }>>({});
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState('setup');
@@ -563,8 +567,11 @@ const EvaluacionesGrupo = () => {
           estimatedDurationMinutes,
           timeBreakdown,
           aiDesignReport: aiDesignReport ? JSON.parse(aiDesignReport) : null,
+          ai_report: aiDesignReport ? JSON.parse(aiDesignReport) : null,
           evaluation_bundle: evaluationBundle,
-          evaluation_design_plan: evaluationDesignPlan
+          evaluation_design_plan: evaluationDesignPlan,
+          student_assignments: studentAssignments,
+          teacher_reminders_by_student: teacherReminders
         },
         // PHASE C: Persist AI design report in DB column
         ai_design_report: aiDesignReport ? JSON.parse(aiDesignReport) : null,
@@ -880,7 +887,13 @@ const EvaluacionesGrupo = () => {
         requestBody.evaluation_design_plan = {
           instrumentDesignRules,
           responseOptions: effectivePlan.responseOptions,
-          triggers: effectivePlan.triggers
+          triggers: effectivePlan.triggers,
+          assignmentByStudentId: effectivePlan.assignmentByStudentId,
+          perStudentReminders: effectivePlan.perStudentReminders,
+          varkDistribution: effectivePlan.varkDistribution,
+          highStructureNeed: effectivePlan.highStructureNeed,
+          designComplexityCount: effectivePlan.designComplexityCount,
+          bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds
         };
       }
 
@@ -890,11 +903,36 @@ const EvaluacionesGrupo = () => {
 
       if (error) throw error;
 
+      const rawAssignments = (data?.studentAssignments as Record<string, 'A' | 'B' | 'C'>) || effectivePlan.assignmentByStudentId || {};
+      const normalizeAssignments = (
+        assignments: Record<string, 'A' | 'B' | 'C'>,
+        bundle: EvaluationBundle | null
+      ) => {
+        const available = {
+          A: true,
+          B: Boolean(bundle?.versionBHtml),
+          C: Boolean(bundle?.versionCHtml)
+        };
+        const normalized: Record<string, 'A' | 'B' | 'C'> = { ...assignments };
+        const warnings: string[] = [];
+        Object.entries(normalized).forEach(([studentId, version]) => {
+          if (!available[version]) {
+            normalized[studentId] = 'A';
+            warnings.push(`Se reasignó ${studentId} a Versión A porque ${version} no fue generada.`);
+          }
+        });
+        return { normalized, warnings };
+      };
+
       setEvaluationDesignPlan(effectivePlan);
 
       if (data?.evaluationBundle?.baseHtml) {
         setEvaluationBundle(data.evaluationBundle);
         setGeneratedEvaluations([]);
+        const normalizedResult = normalizeAssignments(rawAssignments, data.evaluationBundle);
+        setStudentAssignments(normalizedResult.normalized);
+        const edgeWarnings = Array.isArray(data?.warnings) ? data.warnings : [];
+        setAssignmentWarnings([...edgeWarnings, ...normalizedResult.warnings]);
       } else {
         const content = data?.content || basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1);
         setEvaluationBundle(null);
@@ -911,7 +949,14 @@ const EvaluacionesGrupo = () => {
             assignedStudentIds: []
           }
         ]);
+        setStudentAssignments(rawAssignments);
+        setAssignmentWarnings([]);
       }
+
+      const reminders = Array.isArray(data?.teacherRemindersByStudent)
+        ? data.teacherRemindersByStudent
+        : (effectivePlan.perStudentReminders || []);
+      setTeacherReminders(reminders);
 
       if (data?.estimatedTotalMinutes) {
         setEstimatedDurationMinutes(data.estimatedTotalMinutes);
@@ -928,7 +973,9 @@ const EvaluacionesGrupo = () => {
         setTimeBreakdown(null);
       }
 
-      if (data?.aiDesignReport) {
+      if (data?.aiReport) {
+        setAiDesignReport(JSON.stringify(data.aiReport));
+      } else if (data?.aiDesignReport) {
         setAiDesignReport(JSON.stringify(data.aiDesignReport));
       } else {
         setAiDesignReport(null);
@@ -954,6 +1001,9 @@ const EvaluacionesGrupo = () => {
       setGeneratedEvaluations(evaluations);
       setEvaluationBundle(null);
       setEvaluationDesignPlan(null);
+      setStudentAssignments({});
+      setTeacherReminders([]);
+      setAssignmentWarnings([]);
       setActiveTab('results');
     } finally {
       setIsGenerating(false);
@@ -1189,11 +1239,13 @@ const EvaluacionesGrupo = () => {
   };
 
   const displayEvaluations = useMemo(() => {
-    if (!evaluationBundle?.baseHtml) {
+    if (!evaluationBundle?.baseHtml && !evaluationBundle?.versions?.A) {
       return generatedEvaluations;
     }
 
-    const assignmentByStudentId = evaluationDesignPlan?.assignmentByStudentId || {};
+    const assignmentByStudentId = Object.keys(studentAssignments).length > 0
+      ? studentAssignments
+      : (evaluationDesignPlan?.assignmentByStudentId || {});
     const students = selectedGroup?.students || [];
     const getAssigned = (kind: 'A' | 'B' | 'C') => {
       const assigned = students.filter(student => assignmentByStudentId[String(student.id)] === kind);
@@ -1204,11 +1256,12 @@ const EvaluacionesGrupo = () => {
     };
 
     const baseAssigned = getAssigned('A');
+    const baseHtml = evaluationBundle.baseHtml || evaluationBundle.versions?.A || '';
     const evaluations: GeneratedEvaluation[] = [
       {
         id: 'A',
         title: 'Versión A (Universal)',
-        content: evaluationBundle.baseHtml || '',
+        content: baseHtml,
         version: 1,
         versionKind: 'A',
         versionLabel: 'Versión A (Universal)',
@@ -1218,12 +1271,13 @@ const EvaluacionesGrupo = () => {
       }
     ];
 
-    if (evaluationBundle.versionBHtml) {
+    const versionBHtml = evaluationBundle.versionBHtml || evaluationBundle.versions?.B || null;
+    if (versionBHtml) {
       const assigned = getAssigned('B');
       evaluations.push({
         id: 'B',
         title: 'Versión B (Equivalente)',
-        content: evaluationBundle.versionBHtml,
+        content: versionBHtml,
         version: 2,
         versionKind: 'B',
         versionLabel: 'Versión B (Equivalente)',
@@ -1233,12 +1287,13 @@ const EvaluacionesGrupo = () => {
       });
     }
 
-    if (evaluationBundle.versionCHtml) {
+    const versionCHtml = evaluationBundle.versionCHtml || evaluationBundle.versions?.C || null;
+    if (versionCHtml) {
       const assigned = getAssigned('C');
       evaluations.push({
         id: 'C',
         title: 'Versión C (Adecuación de contenido)',
-        content: evaluationBundle.versionCHtml,
+        content: versionCHtml,
         version: 3,
         versionKind: 'C',
         versionLabel: 'Versión C (Adecuación de contenido)',
@@ -1803,15 +1858,33 @@ const EvaluacionesGrupo = () => {
                     Guardar evaluación
                   </Button>
                 </div>
-                
-                {evaluationDesignPlan?.assignmentByStudentId && (
+
+                {assignmentWarnings.length > 0 && (
+                  <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+                    <CardHeader>
+                      <CardTitle className="text-sm text-amber-800 dark:text-amber-200 flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4" />
+                        Ajustes automáticos de versiones
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <ul className="list-disc pl-5 text-sm text-amber-700 dark:text-amber-300">
+                        {assignmentWarnings.map((warning, idx) => (
+                          <li key={idx}>{warning}</li>
+                        ))}
+                      </ul>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {Object.keys(studentAssignments).length > 0 && (
                   <EvaluationAssignmentsPanel
-                    assignments={evaluationDesignPlan.assignmentByStudentId}
+                    assignments={studentAssignments}
                     students={selectedGroup?.students || []}
                   />
                 )}
-                {evaluationDesignPlan?.perStudentReminders && (
-                  <TeacherRemindersPanel reminders={evaluationDesignPlan.perStudentReminders} students={selectedGroup?.students || []} />
+                {teacherReminders.length > 0 && (
+                  <TeacherRemindersPanel reminders={teacherReminders} students={selectedGroup?.students || []} />
                 )}
                 {displayEvaluations.map((evaluation) => (
                   <EvaluacionVisualRenderer
@@ -1844,7 +1917,7 @@ const EvaluacionesGrupo = () => {
                   />
                 ))}
                 
-                {/* FIX: AI Design Report with fallback */}
+                {/* Reporte de IA con fallback */}
                 {aiDesignReport ? (
                   <AIDesignReport 
                     reportData={JSON.parse(aiDesignReport) as AIDesignReportData} 
@@ -1854,12 +1927,12 @@ const EvaluacionesGrupo = () => {
                   <Card className="mt-6 border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
                     <CardHeader>
                       <CardTitle className="text-sm text-amber-800 dark:text-amber-200">
-                        Evidencia de diseño de la IA
+                        Reporte de IA
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
                       <p className="text-sm text-amber-700 dark:text-amber-300">
-                        El reporte de diseño de la IA no está disponible. Esto puede ocurrir si la generación fue realizada antes de implementar esta característica.
+                        El reporte de IA no está disponible para esta evaluación (legacy o generación previa).
                       </p>
                     </CardContent>
                   </Card>

@@ -16,18 +16,39 @@ import { ChevronDown, ChevronUp, FileText, Lightbulb } from 'lucide-react';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
 
 export interface AIDesignReportData {
-  rationale: string;  // Global design rationale
-  coverageMapping: {
+  rationale?: string;  // Global design rationale (legacy)
+  coverageMapping?: {
     sessionId: string;
     sessionTitle: string;
     sectionsIncluded: string[];  // Which evaluation sections cover this session
   }[];
-  materialsUsage: {
+  materialsUsage?: {
     materialId: string;
     materialTitle: string;
     usageDescription: string;  // How/where the material was used
   }[];
-  adaptationNotes: string;  // How contemplaciones were applied (global, not per-student)
+  adaptationNotes?: string;  // How contemplaciones were applied (global, not per-student)
+  versions?: {
+    generated?: string[];
+    reason?: string;
+  };
+  contemplaciones?: {
+    instrument_design?: string[];
+    admin_reminders?: string[];
+    correction_reminders?: string[];
+  };
+  response_options?: {
+    included?: boolean;
+    optionCount?: number;
+    rationale?: string;
+  };
+  vark?: {
+    summary?: string;
+  };
+  assignments?: {
+    rationale?: string;
+  };
+  warnings?: string[];
 }
 
 interface AIDesignReportProps {
@@ -46,7 +67,7 @@ export function AIDesignReport({ reportData, className = '' }: AIDesignReportPro
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-lg">
             <Lightbulb className="h-5 w-5" />
-            Reporte de Diseño de la IA
+            Reporte de IA
             <Badge variant="secondary" className="text-xs">Solo docente</Badge>
           </CardTitle>
           <Button
@@ -69,23 +90,64 @@ export function AIDesignReport({ reportData, className = '' }: AIDesignReportPro
           </Button>
         </div>
         <p className="text-sm text-muted-foreground mt-1">
-          Explicación global de cómo la IA diseñó esta evaluación y qué fuentes utilizó
+          Explicación global de por qué se generaron versiones, opciones y recordatorios
         </p>
       </CardHeader>
       
       <Collapsible open={isOpen}>
         <CollapsibleContent>
           <CardContent className="space-y-6 pt-0">
-            {/* Rationale */}
-            <div className="space-y-2">
-              <h4 className="font-semibold text-sm flex items-center gap-2">
-                <FileText className="h-4 w-4" />
-                Justificación del Diseño
-              </h4>
-              <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                {reportData.rationale}
-              </p>
-            </div>
+            {(reportData.rationale || reportData.versions?.reason) && (
+              <div className="space-y-2">
+                <h4 className="font-semibold text-sm flex items-center gap-2">
+                  <FileText className="h-4 w-4" />
+                  Justificación
+                </h4>
+                <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                  {reportData.versions?.reason || reportData.rationale}
+                </p>
+              </div>
+            )}
+
+            {reportData.response_options && (
+              <div className="space-y-2 border-t pt-4">
+                <h4 className="font-semibold text-sm">Opciones equivalentes</h4>
+                <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                  {reportData.response_options.included
+                    ? `Incluidas (${reportData.response_options.optionCount || 2} opciones). ${reportData.response_options.rationale || ''}`.trim()
+                    : 'No se incluyeron opciones equivalentes.'}
+                </p>
+              </div>
+            )}
+
+            {reportData.vark?.summary && (
+              <div className="space-y-2 border-t pt-4">
+                <h4 className="font-semibold text-sm">Diversidad de formatos</h4>
+                <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                  {reportData.vark.summary}
+                </p>
+              </div>
+            )}
+
+            {reportData.assignments?.rationale && (
+              <div className="space-y-2 border-t pt-4">
+                <h4 className="font-semibold text-sm">Asignaciones</h4>
+                <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                  {reportData.assignments.rationale}
+                </p>
+              </div>
+            )}
+
+            {reportData.warnings && reportData.warnings.length > 0 && (
+              <div className="space-y-2 border-t pt-4">
+                <h4 className="font-semibold text-sm text-amber-700">Advertencias</h4>
+                <ul className="list-disc pl-5 text-sm text-amber-700 dark:text-amber-300">
+                  {reportData.warnings.map((warning, idx) => (
+                    <li key={idx}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             
             {/* Coverage Mapping (Sessions → Evaluation sections) */}
             {reportData.coverageMapping && reportData.coverageMapping.length > 0 && (
