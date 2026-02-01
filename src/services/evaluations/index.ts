@@ -13,3 +13,15 @@ export type {
   EvaluationGenerationContext
 } from './sessionDigests';
 
+export {
+  buildEvaluationDesignPlan
+} from './designPlan';
+
+export type {
+  EvaluationDesignPlan,
+  EvaluationDesignPlanInput,
+  EvaluationVersionPlan,
+  ResponseOptionsPlan,
+  StudentReminders
+} from './designPlan';
+
