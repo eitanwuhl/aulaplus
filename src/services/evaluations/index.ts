@@ -24,4 +24,3 @@ export type {
   ResponseOptionsPlan,
   StudentReminders
 } from './designPlan';
-
