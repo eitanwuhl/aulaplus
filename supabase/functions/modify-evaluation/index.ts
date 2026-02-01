@@ -485,6 +485,16 @@ DEVUELVE: El mismo formato JSON con evaluationHTML refinada, estimatedTotalMinut
       const instrumentDesignRules = Array.isArray(designPlan.instrumentDesignRules)
         ? designPlan.instrumentDesignRules
         : [];
+      const studentAssignments = designPlan.studentAssignments || designPlan.assignmentByStudentId || {};
+      const teacherRemindersByStudent = Array.isArray(designPlan.perStudentReminders)
+        ? designPlan.perStudentReminders
+        : [];
+      const varkDistribution = designPlan.varkDistribution || {};
+      const highStructureNeed = designPlan.highStructureNeed || {};
+      const designComplexityCount = typeof designPlan.designComplexityCount === 'number'
+        ? designPlan.designComplexityCount
+        : instrumentDesignRules.length;
+      const bucketedContemplacionIds = designPlan.bucketedContemplacionIds || {};
       const responseOptions = designPlan.responseOptions || {};
       const responseOptionsInclude = responseOptions.include === true;
       const responseOptionCount = [2, 3].includes(responseOptions.optionCount)
@@ -514,11 +524,21 @@ RESPUESTAS CON OPCIONES EQUIVALENTES:
 
 SALIDA OBLIGATORIA (JSON):
 {
-  "base_html": "<html>...</html>",
-  "version_b_html": "<html>...</html> | null",
-  "version_c_html": "<html>...</html> | null",
+  "versions": { "A": "<html>...</html>", "B": "<html>...</html> | null", "C": "<html>...</html> | null" },
   "response_options_included": true/false,
-  "response_option_count": ${responseOptionCount}
+  "response_option_count": ${responseOptionCount},
+  "ai_report": {
+    "versions": { "generated": ["A","B","C"], "reason": "..." },
+    "contemplaciones": {
+      "instrument_design": ["..."],
+      "admin_reminders": ["..."],
+      "correction_reminders": ["..."]
+    },
+    "response_options": { "included": true/false, "optionCount": ${responseOptionCount}, "rationale": "..." },
+    "vark": { "summary": "..." },
+    "assignments": { "rationale": "..." },
+    "warnings": ["..."]
+  }
 }`;
 
       const userPrompt = `CONTEXTO DEL GRUPO:
@@ -533,6 +553,12 @@ ${modification || 'No hay requerimientos adicionales'}
 REGLAS DE DISEÑO DEL INSTRUMENTO (determinísticas, no omitir):
 ${instrumentDesignRules.length ? instrumentDesignRules.map((rule: string) => `- ${rule}`).join('\n') : '- (Sin reglas adicionales)'}
 
+DETALLE DEL PLAN (NO INVENTAR DATOS):
+- Complejidad de diseño: ${designComplexityCount}
+- Necesidad de estructura (resumen): ${highStructureNeed.percent ?? 0}% del grupo
+- VARK distribución: ${JSON.stringify(varkDistribution)}
+- Contemplaciones por bucket: ${JSON.stringify(bucketedContemplacionIds)}
+
 OPCIONES DE RESPUESTA:
 - Incluir opciones equivalentes: ${responseOptionsInclude ? 'Sí' : 'No'}
 - Cantidad de opciones por consigna (si aplica): ${responseOptionCount}
@@ -545,7 +571,8 @@ TAREA:
 1. Genera la versión base (A) universal.
 2. Si se pide, genera versión B equivalente (solo cambia formato, misma evidencia).
 3. Si se pide, genera versión C con adecuación de contenido (solo para estudiantes explícitos).
-4. Devuelve únicamente el JSON solicitado.`;
+4. Devuelve únicamente el JSON solicitado.
+5. En ai_report usa lenguaje docente simple (sin jerga técnica) y NO incluyas nombres de estudiantes.`;
 
       const result = await retryWithBackoff(async () => {
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -591,9 +618,18 @@ TAREA:
         });
       }
 
-      const baseHtml = cleanupContent(parsed.base_html || parsed.baseHtml || '');
-      const versionBHtml = cleanupContent(parsed.version_b_html || parsed.versionBHtml || '');
-      const versionCHtml = cleanupContent(parsed.version_c_html || parsed.versionCHtml || '');
+      const versions = parsed.versions || {};
+      const baseHtml = cleanupContent(versions.A || parsed.base_html || parsed.baseHtml || '');
+      const versionBHtml = cleanupContent(versions.B || parsed.version_b_html || parsed.versionBHtml || '');
+      const versionCHtml = cleanupContent(versions.C || parsed.version_c_html || parsed.versionCHtml || '');
+      const warnings: string[] = Array.isArray(parsed.ai_report?.warnings) ? parsed.ai_report.warnings : [];
+
+      if (generateVersionB && !versionBHtml) {
+        warnings.push('La versión B estaba planificada pero no se generó; se reasignará a versión A.');
+      }
+      if (generateVersionC && !versionCHtml) {
+        warnings.push('La versión C estaba planificada pero no se generó; se reasignará a versión A.');
+      }
 
       return new Response(JSON.stringify({
         success: true,
@@ -603,9 +639,18 @@ TAREA:
           baseHtml,
           versionBHtml: versionBHtml || null,
           versionCHtml: versionCHtml || null,
+          versions: {
+            A: baseHtml || '',
+            B: versionBHtml || null,
+            C: versionCHtml || null
+          },
           responseOptionsIncluded: parsed.response_options_included === true,
           responseOptionCount: parsed.response_option_count || responseOptionCount
         },
+        studentAssignments,
+        teacherRemindersByStudent,
+        aiReport: parsed.ai_report || null,
+        warnings,
         metadata: {
           tokensUsed: result.usage?.total_tokens || 0,
           model: result.model || 'gpt-4.1-2025-04-14'

@@ -152,7 +152,7 @@ supabase/
 }
 ```
 
-**Response**: `{ content: string, evaluationBundle?: {...} }` (plain text + optional bundle)
+**Response**: `{ content: string, evaluationBundle?: {...}, studentAssignments?: {...}, teacherRemindersByStudent?: [...], aiReport?: {...} }` (plain text + optional bundle)
 
 ```typescript
 {
@@ -161,8 +161,19 @@ supabase/
     baseHtml: string,
     versionBHtml?: string | null,
     versionCHtml?: string | null,
+    versions?: { A: string, B?: string | null, C?: string | null },
     responseOptionsIncluded?: boolean,
     responseOptionCount?: number
+  },
+  studentAssignments?: Record<string, 'A' | 'B' | 'C'>,
+  teacherRemindersByStudent?: Array<{ studentId: string | number, admin: string[], correction: string[], allowances: string[] }>,
+  aiReport?: {
+    versions: { generated: string[], reason: string },
+    contemplaciones: { instrument_design: string[], admin_reminders: string[], correction_reminders: string[] },
+    response_options: { included: boolean, optionCount: number, rationale: string },
+    vark: { summary: string },
+    assignments: { rationale: string },
+    warnings?: string[]
   }
 }
 ```
