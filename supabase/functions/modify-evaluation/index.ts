@@ -3,6 +3,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
 const openAIApiKey = Deno.env.get('OPENAI_API_KEY');
+console.log('OpenAI API Key:', openAIApiKey);
 
 // Initialize Supabase client for image rehosting
 // Note: Using SERVICE_ROLE_KEY instead of SUPABASE_SERVICE_ROLE_KEY
@@ -13,7 +14,8 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'apikey, authorization, content-type, x-client-info',
 };
 
 // Helper function to clean up generated content
@@ -217,7 +219,19 @@ async function retryWithBackoff(fn: () => Promise<any>, maxRetries = 3, baseDela
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  // DEBUG ENDPOINT: Para verificar la API key
+  const url = new URL(req.url);
+  if (url.pathname.includes('modify-evaluation') && url.searchParams.get('debug') === 'apikey') {
+    return new Response(JSON.stringify({ 
+      apiKeyPresent: !!openAIApiKey,
+      apiKeyPreview: openAIApiKey ? `${openAIApiKey.substring(0, 10)}...${openAIApiKey.substring(openAIApiKey.length - 4)}` : 'NOT SET',
+      apiKeyLength: openAIApiKey?.length || 0
+    }), { 
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+    });
   }
 
   try {
@@ -239,248 +253,110 @@ serve(async (req) => {
       evaluation_design_plan
     } = await req.json();
 
-    console.log('Request received:', { type, adaptationLevel, modification, hasGenerationContext: !!generation_context });
+    console.log('Request received:', { type, adaptationLevel, modification, hasGenerationContext: !!generation_context, generation_mode });
+    console.log('OpenAI API Key:', openAIApiKey ? `${openAIApiKey.substring(0, 10)}...${openAIApiKey.substring(openAIApiKey.length - 4)}` : 'NOT SET');
 
-    // PHASE 6b: Handle evaluation generation with session digests + time budgeting
-    if (generation_context && type === 'modification') {
-      console.log('[PHASE 6b] Processing evaluation with generation_context');
-      console.log('- Sessions:', generation_context.sessions?.length || 0);
-      console.log('- Materials:', generation_context.materials?.length || 0);
-      console.log('- Time Budget:', generation_context.timeBudget);
-      
-      // Build session digests section
-      const sessionsSection = generation_context.sessions && generation_context.sessions.length > 0
-        ? `
-SESIONES DE CLASE A EVALUAR:
-${generation_context.sessions.map((s: any, idx: number) => `
-Sesión ${s.order}: ${s.title || `Sesión ${s.order}`}
-- Contenidos ANEP: ${s.anepContent?.join(', ') || 'No especificados'}
-- Competencias: ${s.competencies?.join(', ') || 'No especificadas'}
-- Objetivos: ${s.objectives || 'No especificados'}
-- Resumen de actividades: ${s.activitiesSummary || 'No disponible'}
-- Recursos: ${s.resources?.join(', ') || 'No especificados'}
-${s.attachedMaterials?.length ? `- Materiales adjuntos: ${s.attachedMaterials.map((m: any) => m.title).join(', ')}` : ''}
-`).join('\n---\n')}
-` : '';
-
-      // Build materials section
-      const materialsSection = generation_context.materials && generation_context.materials.length > 0
-        ? `
-MATERIALES DOCENTES ADJUNTOS:
-${generation_context.materials.map((m: any, idx: number) => `
-${idx + 1}. ${m.title} (${m.mimeType})
-${m.focusText ? `   Enfoque: ${m.focusText}` : ''}
-${m.extractedText ? `   Contenido extraído del PDF:\n   ${m.extractedText}` : '   (No hay texto extraído disponible)'}
-`).join('\n---\n')}
-` : '';
-
-      // Build evaluation focus section
-      const focusSection = generation_context.evaluationFocus
-        ? `
-ENFOQUE DE EVALUACIÓN (ESPECIFICADO POR EL DOCENTE):
-${generation_context.evaluationFocus}
-
-INSTRUCCIÓN CRÍTICA: La evaluación debe enfocarse específicamente en los aspectos mencionados arriba.
-` : '';
-
-      // Build time budget section
-      const timeBudgetSection = generation_context.timeBudget
-        ? `
-PRESUPUESTO DE TIEMPO:
-- Duración objetivo: ${generation_context.timeBudget.targetMinutes} minutos
-- Tolerancia: ${Math.round((generation_context.timeBudget.flexibilityThreshold || 0.10) * 100)}%
-
-INSTRUCCIÓN CRÍTICA: La evaluación debe completarse dentro del tiempo objetivo.
-Debes incluir en tu respuesta una estimación de tiempo por sección.
-` : '';
-
-      // First generation attempt
-      const systemPrompt = `Eres un experto en evaluación educativa. Tu tarea es generar una evaluación basada en:
-1. Sesiones de clase específicas (con sus contenidos, objetivos, actividades)
-2. Materiales docentes adjuntos
-3. Enfoque evaluativo del docente
-4. Presupuesto de tiempo
-
-FORMATO DE RESPUESTA REQUERIDO (JSON):
-Debes devolver un objeto JSON con la siguiente estructura:
-{
-  "evaluationHTML": "<html>...</html>",
-  "estimatedTotalMinutes": 75,
-  "timeBreakdown": [
-    {"itemType": "multiple_choice", "estimatedMinutes": 20, "description": "10 preguntas de opción múltiple"},
-    {"itemType": "short_answer", "estimatedMinutes": 25, "description": "5 preguntas de respuesta corta"},
-    {"itemType": "essay", "estimatedMinutes": 30, "description": "1 pregunta de desarrollo"}
-  ],
-  "aiDesignReport": {
-    "rationale": "Esta evaluación integra las 3 sesiones trabajadas...",
-    "coverageMapping": [
-      {"sessionId": "uuid-123", "sessionTitle": "Sesión 1", "sectionsIncluded": ["Sección I", "Sección II"]}
-    ],
-    "materialsUsage": [
-      {"materialId": "mat-456", "materialTitle": "Material X", "usageDescription": "Utilizado en pregunta 3..."}
-    ],
-    "adaptationNotes": "Las contemplaciones se aplicaron diferenciadamente..."
-  }
-}
-
-REGLAS CRÍTICAS:
-1. El HTML debe ser válido y renderizable
-2. estimatedTotalMinutes debe ser la suma de timeBreakdown
-3. aiDesignReport.coverageMapping debe mapear cada sesión a secciones específicas de la evaluación
-4. aiDesignReport NO debe incluir recomendaciones por estudiante (eso va en casillas separadas)
-5. Si hay timeBudget, intenta que estimatedTotalMinutes <= targetMinutes`;
-
-      const userPrompt = `${sessionsSection}${materialsSection}${focusSection}${timeBudgetSection}
-
-CONTEXTO DEL GRUPO:
-Materia: ${groupContext?.subject || 'No especificada'}
-Estudiantes: ${groupContext?.students?.length || 0}
-Nivel de adaptación: ${adaptationLevel}
-
-${modification ? `REQUERIMIENTOS ADICIONALES:\n${modification}` : ''}
-
-Genera la evaluación en formato JSON siguiendo la estructura especificada.`;
-
-      console.log('[PHASE 6b] System Prompt:', systemPrompt.substring(0, 500) + '...');
-      console.log('[PHASE 6b] User Prompt:', userPrompt.substring(0, 500) + '...');
-
-      // First generation attempt with JSON mode
-      const result = await retryWithBackoff(async () => {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${openAIApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'gpt-4.1-2025-04-14',
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt }
-            ],
-            response_format: { type: 'json_object' },
-            max_completion_tokens: 4000,
-          }),
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`OpenAI API error ${response.status}:`, errorText);
-          throw new Error(`OpenAI API error: ${response.status}`);
-        }
-
-        return await response.json();
-      });
-
-      let generatedContent = result.choices[0]?.message?.content;
-      let parsed: any;
-
-      try {
-        parsed = JSON.parse(generatedContent || '{}');
-      } catch (e) {
-        console.error('[PHASE 6b] Failed to parse JSON response:', e);
-        // Fallback: return content as-is
+    // FORCE: Universal path takes priority - if generation_mode === 'universal', use it regardless of generation_context
+    // Universal evaluation path (must be checked FIRST before generation_context)
+    if (type === 'modification' && generation_mode === 'universal') {
+      const buildUniversalResponse = ({
+        baseHtml,
+        versionBHtml,
+        versionCHtml,
+        responseOptionsIncluded,
+        responseOptionCount,
+        studentAssignments,
+        teacherRemindersByStudent,
+        aiReport,
+        warnings,
+        metadata,
+        generationPath,
+        shouldDropB = false,
+        finalTriggers
+      }: {
+        baseHtml: string;
+        versionBHtml: string | null;
+        versionCHtml: string | null;
+        responseOptionsIncluded: boolean;
+        responseOptionCount: number;
+        studentAssignments: Record<string, 'A' | 'B' | 'C'>;
+        teacherRemindersByStudent: any[];
+        aiReport: any;
+        warnings: string[];
+        metadata: { tokensUsed: number; model: string };
+        generationPath: 'universal' | 'universal_parse_failed';
+        shouldDropB?: boolean;
+        finalTriggers?: { versionB: boolean; versionC: boolean };
+      }) => {
         return new Response(JSON.stringify({
           success: true,
-          content: generatedContent,
+          content: baseHtml || '',
           type: type,
-          warning: 'Time budgeting no disponible (respuesta no estructurada)'
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-
-      // Check if time budget exceeded
-      const targetMinutes = generation_context.timeBudget?.targetMinutes || Infinity;
-      const threshold = generation_context.timeBudget?.flexibilityThreshold || 0.10;
-      const maxAllowedMinutes = targetMinutes * (1 + threshold);
-      const estimatedMinutes = parsed.estimatedTotalMinutes || 0;
-
-      let wasTimeRefined = false;
-
-      if (estimatedMinutes > maxAllowedMinutes && generation_context.timeBudget) {
-        console.log(`[PHASE 6b] Time budget exceeded: ${estimatedMinutes} > ${maxAllowedMinutes}`);
-        console.log('[PHASE 6b] Running refinement pass...');
-
-        // Refinement pass
-        const refinementPrompt = `La evaluación generada excede el presupuesto de tiempo:
-- Tiempo estimado: ${estimatedMinutes} minutos
-- Tiempo objetivo: ${targetMinutes} minutos
-- Máximo permitido: ${maxAllowedMinutes} minutos
-
-TAREA: Refina la evaluación para que se ajuste al tiempo objetivo, manteniendo:
-1. Cobertura de todos los temas/sesiones
-2. Contemplaciones aplicadas (no eliminar adaptaciones)
-3. Calidad pedagógica
-
-ESTRATEGIAS PERMITIDAS:
-- Reducir número de preguntas (ej: 10 → 7 preguntas de opción múltiple)
-- Acortar preguntas de desarrollo (pedir respuestas más concisas)
-- Combinar secciones similares
-- Simplificar instrucciones sin perder claridad
-
-DEVUELVE: El mismo formato JSON con evaluationHTML refinada, estimatedTotalMinutes actualizado, y timeBreakdown actualizado.`;
-
-        const refinementResult = await retryWithBackoff(async () => {
-          const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${openAIApiKey}`,
-              'Content-Type': 'application/json',
+          evaluationBundle: {
+            // TASK 4: Ensure versions.* are clean HTML, legacy fields are for backward compat only
+            // When versions exists, baseHtml/versionBHtml/versionCHtml are already extracted (no wrappers)
+            baseHtml: baseHtml || '', // Legacy alias for A (backward compat)
+            versionBHtml: versionBHtml, // Legacy alias for B (backward compat)
+            versionCHtml: versionCHtml, // Legacy alias for C (backward compat)
+            versions: {
+              A: baseHtml || '', // Clean HTML, never wrapper
+              B: versionBHtml, // Clean HTML or null, never wrapper
+              C: versionCHtml // Clean HTML or null, never wrapper
             },
-            body: JSON.stringify({
-              model: 'gpt-4.1-2025-04-14',
-              messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-                { role: 'assistant', content: generatedContent },
-                { role: 'user', content: refinementPrompt }
-              ],
-              response_format: { type: 'json_object' },
-              max_completion_tokens: 4000,
-            }),
-          });
-
-          if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`OpenAI API error ${response.status}:`, errorText);
-            throw new Error(`OpenAI API error: ${response.status}`);
-          }
-
-          return await response.json();
-        });
-
-        const refinedContent = refinementResult.choices[0]?.message?.content;
-        try {
-          parsed = JSON.parse(refinedContent || '{}');
-          wasTimeRefined = true;
-          console.log(`[PHASE 6b] Refinement successful. New estimated time: ${parsed.estimatedTotalMinutes}`);
-        } catch (e) {
-          console.error('[PHASE 6b] Failed to parse refined JSON, using original');
-        }
-      }
-
-      // Return structured response
-      return new Response(JSON.stringify({
-        success: true,
-        content: parsed.evaluationHTML || '',
-        type: type,
-        // PHASE 6b fields
-        estimatedTotalMinutes: parsed.estimatedTotalMinutes,
-        timeBreakdown: parsed.timeBreakdown,
-        aiDesignReport: parsed.aiDesignReport,
-        wasTimeRefined,
-        metadata: {
-          tokensUsed: result.usage?.total_tokens || 0,
-          model: result.model || 'gpt-4.1-2025-04-14'
+            responseOptionsIncluded,
+            responseOptionCount
+          },
+          studentAssignments,
+          teacherRemindersByStudent,
+          aiReport,
+          warnings,
+          metadata,
+          _debug: {
+            generationPath,
+            hasEvaluationBundle: true,
+            hasAiReport: true,
+            versionsLengths: {
+              A: baseHtml?.length || 0,
+              B: versionBHtml?.length || 0,
+              C: versionCHtml?.length || 0
+            },
+            startsWith: {
+              A: baseHtml?.trim().slice(0, 15) || 'null',
+              B: versionBHtml?.trim().slice(0, 15) || 'null',
+              C: versionCHtml?.trim().slice(0, 15) || 'null'
+            },
+            isWrapper: {
+              A: baseHtml?.trim().startsWith('{') || false,
+              B: versionBHtml?.trim().startsWith('{') || false,
+              C: versionCHtml?.trim().startsWith('{') || false
+            },
+            triggers: {
+              versionB: generateVersionB,
+              versionC: generateVersionC
+            },
+            finalTriggers: finalTriggers || {
+              versionB: false,
+              versionC: false
+            },
+            responseOptions: {
+              include: responseOptionsInclude,
+              optionCount: responseOptionsInclude ? responseOptionCountFinal : 0
+            },
+            assignmentCounts: {
+              A: Object.values(studentAssignments).filter(v => v === 'A').length,
+              B: Object.values(studentAssignments).filter(v => v === 'B').length,
+              C: Object.values(studentAssignments).filter(v => v === 'C').length
+            },
+            droppedVersions: {
+              B: shouldDropB || false
+            }
         }
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
-    }
+      };
 
-    // Universal evaluation path (backward compatible)
-    if (type === 'modification' && generation_mode === 'universal') {
+      console.log('[UNIVERSAL] Processing evaluation with universal path');
       const designPlan = evaluation_design_plan || {};
       const instrumentDesignRules = Array.isArray(designPlan.instrumentDesignRules)
         ? designPlan.instrumentDesignRules
@@ -500,8 +376,18 @@ DEVUELVE: El mismo formato JSON con evaluationHTML refinada, estimatedTotalMinut
       const responseOptionCount = [2, 3].includes(responseOptions.optionCount)
         ? responseOptions.optionCount
         : 2;
-      const generateVersionB = designPlan.triggers?.versionB === true;
-      const generateVersionC = designPlan.triggers?.versionC === true;
+      const assignmentsIncludeB = Object.values(studentAssignments).includes('B');
+      const assignmentsIncludeC = Object.values(studentAssignments).includes('C');
+      const hasContentAdaptationStudent = Array.isArray(groupContext?.students)
+        ? groupContext.students.some((student: any) =>
+            student?.hasDeclaredContentAdaptation === true ||
+            student?.requiereAdecuacionContenido === true ||
+            student?.requiresContentAdaptation === true ||
+            student?.informeTecnico?.requiereAdecuacionContenido === true
+          )
+        : false;
+      const generateVersionB = designPlan.triggers?.versionB === true || assignmentsIncludeB;
+      const generateVersionC = designPlan.triggers?.versionC === true || assignmentsIncludeC || hasContentAdaptationStudent;
       
       const systemPrompt = `Eres un especialista en evaluación educativa. Tu tarea es generar una evaluación escrita universal, lista para entregar.
 
@@ -518,28 +404,46 @@ FORMATO:
 - Incluye puntajes por ítem cuando aplique
 
 RESPUESTAS CON OPCIONES EQUIVALENTES:
-- Si corresponde, cada consigna debe incluir "Elige UNA opción. Todas equivalentes."
-- Opciones equivalentes en dificultad y evidencia, solo cambia el formato de respuesta
-- Máximo ${responseOptionCount} opciones cuando se solicitan opciones
+${responseOptionsInclude ? `
+- OBLIGATORIO Y CRÍTICO: Cada consigna que requiera respuesta escrita DEBE incluir EXACTAMENTE ${responseOptionCount} opciones equivalentes de formato.
+- Formato requerido (copiar exactamente): "Elige UNA opción. Todas equivalentes en dificultad y evidencia, solo cambia el formato de respuesta."
+- Ejemplo de opciones (incluir en cada consigna relevante):
+  * Opción 1: Respuesta escrita tradicional (párrafo)
+  * Opción 2: Respuesta estructurada (lista con viñetas o tabla)
+  ${responseOptionCount === 3 ? '  * Opción 3: Respuesta visual (diagrama o esquema con texto explicativo)' : ''}
+- Las opciones DEBEN aparecer INMEDIATAMENTE después de cada consigna relevante, dentro del mismo ítem.
+- NO omitir las opciones. Si no las incluyes, la evaluación será incompleta.
+` : `
+- NO incluir opciones equivalentes de respuesta.
+`}
 
 SALIDA OBLIGATORIA (JSON):
 {
-  "versions": { "A": "<html>...</html>", "B": "<html>...</html> | null", "C": "<html>...</html> | null" },
-  "response_options_included": true/false,
+  "versions": { 
+    "A": "<html>...</html>", 
+    ${generateVersionB ? '"B": "<html>...</html>",' : '"B": null,'}
+    ${generateVersionC ? '"C": "<html>...</html>",' : '"C": null,'}
+  },
+  "response_options_included": ${responseOptionsInclude},
   "response_option_count": ${responseOptionCount},
   "ai_report": {
-    "versions": { "generated": ["A","B","C"], "reason": "..." },
+    "versions": { "generated": [${generateVersionB && generateVersionC ? '"A","B","C"' : generateVersionB ? '"A","B"' : generateVersionC ? '"A","C"' : '"A"'}], "reason": "..." },
     "contemplaciones": {
       "instrument_design": ["..."],
       "admin_reminders": ["..."],
       "correction_reminders": ["..."]
     },
-    "response_options": { "included": true/false, "optionCount": ${responseOptionCount}, "rationale": "..." },
+    "response_options": { "included": ${responseOptionsInclude}, "optionCount": ${responseOptionCount}, "rationale": "..." },
     "vark": { "summary": "..." },
     "assignments": { "rationale": "..." },
     "warnings": ["..."]
   }
-}`;
+}
+
+REGLAS CRÍTICAS PARA VERSIONES:
+${generateVersionB ? '- La versión B DEBE estar presente en "versions.B" (no null). Si no la generas, la respuesta será inválida.' : ''}
+${generateVersionC ? '- La versión C DEBE estar presente en "versions.C" (no null). Si no la generas, la respuesta será inválida.' : ''}
+${!generateVersionB && !generateVersionC ? '- Solo generar versión A. No incluir B ni C.' : ''}`;
 
       const userPrompt = `CONTEXTO DEL GRUPO:
 Materia: ${groupContext?.subject || 'No especificada'}
@@ -564,14 +468,26 @@ OPCIONES DE RESPUESTA:
 - Cantidad de opciones por consigna (si aplica): ${responseOptionCount}
 
 VERSIONES:
-- Generar versión B equivalente: ${generateVersionB ? 'Sí' : 'No'}
-- Generar versión C con adecuación de contenido: ${generateVersionC ? 'Sí' : 'No'}
+${generateVersionB ? `
+- OBLIGATORIO: Generar versión B equivalente (solo cambia formato, misma evidencia).
+- La versión B debe ser funcionalmente equivalente a la A pero con formato diferente.
+- Si no generas versión B, la evaluación será incompleta.
+` : `
+- NO generar versión B.
+`}
+${generateVersionC ? `
+- OBLIGATORIO: Generar versión C con adecuación de contenido (solo para estudiantes explícitos).
+- La versión C debe adaptar el contenido manteniendo los objetivos de aprendizaje.
+- Si no generas versión C, la evaluación será incompleta.
+` : `
+- NO generar versión C.
+`}
 
 TAREA:
-1. Genera la versión base (A) universal.
-2. Si se pide, genera versión B equivalente (solo cambia formato, misma evidencia).
-3. Si se pide, genera versión C con adecuación de contenido (solo para estudiantes explícitos).
-4. Devuelve únicamente el JSON solicitado.
+1. Genera la versión base (A) universal. ${generateVersionB ? 'OBLIGATORIO: También genera versión B.' : ''} ${generateVersionC ? 'OBLIGATORIO: También genera versión C.' : ''}
+2. ${generateVersionB ? 'Versión B: equivalente en formato, misma evidencia.' : 'No generar versión B.'}
+3. ${generateVersionC ? 'Versión C: adecuación de contenido para estudiantes específicos.' : 'No generar versión C.'}
+4. Devuelve únicamente el JSON solicitado con TODAS las versiones requeridas.
 5. En ai_report usa lenguaje docente simple (sin jerga técnica) y NO incluyas nombres de estudiantes.`;
 
       const result = await retryWithBackoff(async () => {
@@ -602,61 +518,744 @@ TAREA:
       });
 
       const generatedContent = result.choices[0]?.message?.content;
-      let parsed: any;
+      let parseFailed = false;
 
-      try {
-        parsed = JSON.parse(generatedContent || '{}');
+      const parseMaybeJsonString = (value: any): any | null => {
+        if (typeof value !== 'string') return null;
+        const trimmed = value.trim();
+        if (!trimmed.startsWith('{')) return null;
+        try {
+          return JSON.parse(trimmed);
+        } catch {
+          return null;
+        }
+      };
+
+      const extractVersions = (payload: any): { A: any; B: any; C: any } => {
+        if (!payload || typeof payload !== 'object') return { A: null, B: null, C: null };
+        if (payload.versions && typeof payload.versions === 'object') return payload.versions;
+        if (payload.A || payload.B || payload.C) return { A: payload.A, B: payload.B, C: payload.C };
+        if (payload.evaluationBundle?.versions) return payload.evaluationBundle.versions;
+        return { A: null, B: null, C: null };
+      };
+
+      /**
+       * Robust HTML extractor that guarantees pure HTML strings, never JSON wrappers.
+       * Handles nested JSON strings, multiple shapes, and ensures output starts with '<'.
+       */
+      const extractVersionsFromModelOutput = (input: any): { A: string | null; B: string | null; C: null } => {
+        const result: { A: string | null; B: string | null; C: string | null } = { A: null, B: null, C: null };
+        
+        if (!input) return result;
+        
+        // Strategy 1: If input is a string, try to parse it as JSON
+        let parsed: any = null;
+        if (typeof input === 'string') {
+          const trimmed = input.trim();
+          if (trimmed.startsWith('{')) {
+            try {
+              parsed = JSON.parse(trimmed);
+            } catch {
+              // Not valid JSON, treat as HTML if it starts with '<'
+              if (trimmed.startsWith('<')) {
+                result.A = trimmed;
+                return result;
+              }
+              return result;
+            }
+          } else if (trimmed.startsWith('<')) {
+            // Already HTML
+            result.A = trimmed;
+            return result;
+          } else {
+            return result;
+          }
+        } else if (typeof input === 'object') {
+          parsed = input;
+        } else {
+          return result;
+        }
+        
+        // Strategy 2: Extract versions from parsed object
+        const extractFromObject = (obj: any): { A: string | null; B: string | null; C: string | null } => {
+          const extracted: { A: string | null; B: string | null; C: string | null } = { A: null, B: null, C: null };
+          
+          // Try multiple shapes
+          if (obj.versions && typeof obj.versions === 'object') {
+            extracted.A = obj.versions.A || null;
+            extracted.B = obj.versions.B || null;
+            extracted.C = obj.versions.C || null;
+          } else if (obj.A || obj.B || obj.C) {
+            extracted.A = obj.A || null;
+            extracted.B = obj.B || null;
+            extracted.C = obj.C || null;
+          } else if (obj.evaluationBundle?.versions) {
+            extracted.A = obj.evaluationBundle.versions.A || null;
+            extracted.B = obj.evaluationBundle.versions.B || null;
+            extracted.C = obj.evaluationBundle.versions.C || null;
+          } else if (obj.base_html || obj.baseHtml) {
+            extracted.A = obj.base_html || obj.baseHtml || null;
+            extracted.B = obj.version_b_html || obj.versionBHtml || null;
+            extracted.C = obj.version_c_html || obj.versionCHtml || null;
+          }
+          
+          return extracted;
+        };
+        
+        const extracted = extractFromObject(parsed);
+        
+        // Strategy 3: Recursively extract if any value is itself a JSON string
+        const normalizeHtml = (value: any): string | null => {
+          if (!value) return null;
+          if (typeof value === 'string') {
+            const trimmed = value.trim();
+            // If it's a JSON string, parse and extract again
+            if (trimmed.startsWith('{') && (trimmed.includes('"versions"') || trimmed.includes('"A"') || trimmed.includes('"B"') || trimmed.includes('"C"'))) {
+              try {
+                const nested = JSON.parse(trimmed);
+                const nestedExtracted = extractFromObject(nested);
+                // Prefer A from nested, fallback to nested root
+                return nestedExtracted.A || nested.A || nested.html || nested.content || null;
+              } catch {
+                // Not valid JSON, return as-is if it looks like HTML
+                return trimmed.startsWith('<') ? trimmed : null;
+              }
+            }
+            // If it's already HTML, return it
+            return trimmed.startsWith('<') ? trimmed : null;
+          }
+          if (typeof value === 'object') {
+            const objExtracted = extractFromObject(value);
+            return objExtracted.A || value.html || value.content || null;
+          }
+          return null;
+        };
+        
+        result.A = normalizeHtml(extracted.A);
+        result.B = normalizeHtml(extracted.B);
+        result.C = normalizeHtml(extracted.C);
+        
+        // Final validation: ensure A/B/C are HTML strings (start with '<') or null
+        const validateHtml = (html: string | null): string | null => {
+          if (!html) return null;
+          const trimmed = html.trim();
+          if (trimmed.startsWith('<')) return trimmed;
+          // If it doesn't start with '<', it's not valid HTML - return null
+          return null;
+        };
+        
+        result.A = validateHtml(result.A);
+        result.B = validateHtml(result.B);
+        result.C = validateHtml(result.C);
+        
+        return result;
+      };
+      
+      const extractHtml = (value: any, key: 'A' | 'B' | 'C'): string | null => {
+        const extracted = extractVersionsFromModelOutput(value);
+        return extracted[key];
+      };
+
+      let parsed: any = null;
+      if (generatedContent) {
+        parsed = parseMaybeJsonString(generatedContent);
+        if (!parsed) {
+          const jsonMatch = generatedContent.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            parsed = parseMaybeJsonString(jsonMatch[0]);
+          }
+        }
+      }
+      if (!parsed) {
+        parseFailed = true;
+      }
+
+      const versions = extractVersions(parsed || {});
+      let baseHtml = extractHtml(versions.A || parsed?.base_html || parsed?.baseHtml || parsed?.A || '', 'A') || '';
+      let versionBHtml = extractHtml(versions.B || parsed?.version_b_html || parsed?.versionBHtml || parsed?.B, 'B');
+      let versionCHtml = extractHtml(versions.C || parsed?.version_c_html || parsed?.versionCHtml || parsed?.C, 'C');
+
+      if (baseHtml.trim().startsWith('{')) {
+        const parsedBase = parseMaybeJsonString(baseHtml);
+        if (parsedBase) {
+          const nestedVersions = extractVersions(parsedBase);
+          baseHtml = extractHtml(nestedVersions.A || parsedBase.A || baseHtml, 'A') || baseHtml;
+          versionBHtml = versionBHtml || extractHtml(nestedVersions.B || parsedBase.B, 'B');
+          versionCHtml = versionCHtml || extractHtml(nestedVersions.C || parsedBase.C, 'C');
+        }
+      }
+
+      /**
+       * STRICT extractor that returns ONLY the target version.
+       * NEVER returns JSON wrappers, NEVER fallbacks to A when key is B or C.
+       */
+      const extractVersionStrict = (input: unknown, key: 'A' | 'B' | 'C'): string | null => {
+        if (!input) return null;
+        
+        // Helper to escape and convert newlines to <br/>
+        const escapeAndBr = (text: string): string => {
+          return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+            .replace(/\n/g, '<br/>');
+        };
+        
+        // Helper to extract specific key from object
+        const extractKeyFromObject = (obj: any, k: 'A' | 'B' | 'C'): string | null => {
+          if (!obj || typeof obj !== 'object') return null;
+          if (obj.versions?.[k]) return obj.versions[k];
+          if (obj[k]) return obj[k];
+          if (obj.evaluationBundle?.versions?.[k]) return obj.evaluationBundle.versions[k];
+          // Legacy fallbacks ONLY for A
+          if (k === 'A') {
+            if (obj.base_html || obj.baseHtml) return obj.base_html || obj.baseHtml;
+            if (obj.html) return obj.html;
+            if (obj.content) return obj.content;
+          }
+          return null;
+        };
+        
+        if (typeof input === 'string') {
+          const trimmed = input.trim();
+          
+          // If already HTML, return cleaned
+          if (trimmed.startsWith('<')) {
+            return cleanupContent(trimmed);
+          }
+          
+          // If JSON wrapper, parse and extract EXACT key
+          if (trimmed.startsWith('{') || trimmed.includes('"versions"')) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              const extracted = extractKeyFromObject(parsed, key);
+              if (extracted) {
+                // Recurse on extracted value (might be nested JSON or HTML)
+                return extractVersionStrict(extracted, key);
+              }
+              // Key not found, return null (NEVER fallback to A)
+              return null;
       } catch (e) {
-        console.error('[UNIVERSAL] Failed to parse JSON response:', e);
+              // Not valid JSON, treat as plain text
+              if (trimmed.length > 0) {
+                return `<div>${escapeAndBr(trimmed)}</div>`;
+              }
+              return null;
+            }
+          }
+          
+          // Plain text: wrap safely
+          if (trimmed.length > 0) {
+            return `<div>${escapeAndBr(trimmed)}</div>`;
+          }
+          
+          return null;
+        }
+        
+        if (typeof input === 'object') {
+          const extracted = extractKeyFromObject(input, key);
+          if (extracted) {
+            return extractVersionStrict(extracted, key);
+          }
+          return null;
+        }
+        
+        return null;
+      };
+      
+      // A3: STRICT extraction before building response
+      // Force strict extraction to prevent JSON wrappers from leaking
+      let finalA = extractVersionStrict(baseHtml || generatedContent || '', 'A');
+      let finalB = versionBHtml ? extractVersionStrict(versionBHtml, 'B') : null;
+      let finalC = versionCHtml ? extractVersionStrict(versionCHtml, 'C') : null;
+      
+      // Fallback for A if extraction failed
+      if (!finalA || !finalA.trim().startsWith('<')) {
+        parseFailed = true;
+        finalA = '<div>Contenido no disponible.</div>';
+        warnings.push('La versión A no pudo ser extraída correctamente; se aplicó fallback seguro.');
+      }
+      
+      // A4: If C is required but missing, create deterministic fallback
+      const finalAssignmentCounts = {
+        A: Object.values(adjustedAssignments).filter(v => v === 'A').length,
+        B: Object.values(adjustedAssignments).filter(v => v === 'B').length,
+        C: Object.values(adjustedAssignments).filter(v => v === 'C').length
+      };
+      
+      if (finalAssignmentCounts.C > 0 && (!finalC || !finalC.trim().startsWith('<'))) {
+        console.warn('[UNIVERSAL] Version C required but missing, generating deterministic fallback');
+        // Create deterministic fallback C from A
+        let fallbackC = finalA;
+        
+        // Prepend adaptation note
+        const adaptationNote = '<p><em>Nota: Esta versión ha sido adaptada para facilitar la comprensión, manteniendo los mismos objetivos de aprendizaje.</em></p>';
+        fallbackC = adaptationNote + fallbackC;
+        
+        // Simplify language minimally
+        fallbackC = fallbackC.replace(/\b(analizar|examinar|investigar|evaluar)\b/gi, 'explicar');
+        fallbackC = fallbackC.replace(/\b(complejo|compleja|complejos|complejas)\b/gi, 'importante');
+        fallbackC = fallbackC.replace(/\b(desarrollar|elaborar|construir)\b/gi, 'escribir');
+        
+        // Reduce items if too many (keep first 3 items)
+        const itemMatches = [...fallbackC.matchAll(/(\d+[\.\)]|\d+\.\s*[A-Z])/gi)];
+        if (itemMatches.length > 3) {
+          let itemIndex = 0;
+          fallbackC = fallbackC.replace(/(\d+[\.\)]|\d+\.\s*[A-Z])(.*?)(?=\d+[\.\)]|\d+\.\s*[A-Z]|$)/gi, (match) => {
+            itemIndex++;
+            if (itemIndex > 3) return '';
+            return match;
+          });
+        }
+        
+        finalC = cleanupContent(fallbackC);
+        warnings.push('Se generó versión C determinísticamente como fallback (era requerida pero no fue generada por la IA).');
+      }
+      
+      // A5: Final validation - FAIL FAST if any version is still a wrapper
+      const isWrapperA = finalA.trim().startsWith('{');
+      const isWrapperB = finalB ? finalB.trim().startsWith('{') : false;
+      const isWrapperC = finalC ? finalC.trim().startsWith('{') : false;
+      
+      if (isWrapperA || isWrapperB || isWrapperC) {
+        console.error('[UNIVERSAL] CRITICAL: JSON wrapper detected in final versions!', {
+          isWrapperA,
+          isWrapperB,
+          isWrapperC,
+          AStartsWith: finalA.trim().slice(0, 20),
+          BStartsWith: finalB?.trim().slice(0, 20),
+          CStartsWith: finalC?.trim().slice(0, 20)
+        });
+        // Fail fast - return error response instead of shipping wrappers
         return new Response(JSON.stringify({
-          success: true,
-          content: generatedContent || '',
-          type: type,
-          warning: 'Respuesta no estructurada; se devuelve el contenido base.'
+          success: false,
+          error: 'Internal error: JSON wrapper detected in evaluation versions',
+          _debug: {
+            generationPath: 'universal_extraction_failed',
+            isWrapper: { A: isWrapperA, B: isWrapperB, C: isWrapperC }
+          }
         }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+      
+      // Use final extracted values
+      baseHtml = finalA;
+      versionBHtml = finalB;
+      versionCHtml = finalC;
+      
+      // Log extraction results
+      console.log('[UNIVERSAL] HTML extraction results:', {
+        baseHtmlStartsWith: baseHtml.trim().substring(0, 20),
+        versionBHtmlExists: !!versionBHtml,
+        versionBHtmlStartsWith: versionBHtml ? versionBHtml.trim().substring(0, 20) : null,
+        versionCHtmlExists: !!versionCHtml,
+        versionCHtmlStartsWith: versionCHtml ? versionCHtml.trim().substring(0, 20) : null,
+        parseFailed
+      });
+      
+      // Initialize warnings array
+      const warnings: string[] = [];
+      if (parseFailed) {
+        warnings.push('La respuesta del modelo no fue JSON válido; se aplicó extracción robusta y fallback de HTML.');
+      }
+      
+      // R3a: Enforcement determinístico de metacognición
+      const metacognitionPhrase = 'Elige UNA opción. Todas equivalentes en dificultad y evidencia, solo cambia el formato de respuesta.';
+      if (responseOptionsInclude && baseHtml && !baseHtml.includes(metacognitionPhrase)) {
+        console.log('[UNIVERSAL] R3a: Metacognition not found in Version A, injecting deterministically');
+        
+        // Inyectar opciones equivalentes después de cada ítem numerado o consigna relevante
+        // Buscar patrones como: "1.", "2.", "a)", "b)", "<strong>", etc.
+        const itemPattern = /(<p[^>]*>|<strong[^>]*>|<h[1-6][^>]*>)(.*?)(<\/p>|<\/strong>|<\/h[1-6]>)/gi;
+        const numberedItemPattern = /(\d+[\.\)]|\d+\.\s*[A-Z]|^[a-z][\.\)])/i;
+        
+        let injectedHtml = baseHtml;
+        let injectionCount = 0;
+        
+        // Buscar ítems que requieren respuesta escrita
+        const responseKeywords = ['explica', 'describe', 'analiza', 'compara', 'justifica', 'desarrolla', 'redacta', 'escribe'];
+        const needsInjection = (text: string) => {
+          const lowerText = text.toLowerCase();
+          return responseKeywords.some(keyword => lowerText.includes(keyword)) || 
+                 numberedItemPattern.test(text);
+        };
+        
+        // Inyectar después de cada párrafo que contenga consigna relevante
+        injectedHtml = injectedHtml.replace(/(<p[^>]*>.*?<\/p>)/gi, (match, pTag) => {
+          if (needsInjection(pTag) && !pTag.includes(metacognitionPhrase)) {
+            injectionCount++;
+            const optionsHtml = `
+<p><strong>${metacognitionPhrase}</strong></p>
+<ul>
+  <li><strong>Opción 1:</strong> Respuesta escrita tradicional (párrafo)</li>
+  <li><strong>Opción 2:</strong> Respuesta estructurada (lista con viñetas o tabla)${responseOptionCount === 3 ? '</li>\n  <li><strong>Opción 3:</strong> Respuesta visual (diagrama o esquema con texto explicativo)' : ''}
+</ul>`;
+            return match + optionsHtml;
+          }
+          return match;
+        });
+        
+        if (injectionCount > 0) {
+          baseHtml = injectedHtml;
+          warnings.push(`Se inyectaron ${injectionCount} bloques de opciones equivalentes determinísticamente (no estaban en la respuesta de la IA).`);
+        } else {
+          // R4: Fallback: inyectar al menos UNA VEZ después del primer prompt de respuesta escrita
+          // Buscar el primer párrafo que requiera respuesta escrita
+          const firstWrittenResponseMatch = baseHtml.match(/<p[^>]*>.*?(explica|describe|analiza|compara|justifica|desarrolla|redacta|escribe).*?<\/p>/i);
+          if (firstWrittenResponseMatch && firstWrittenResponseMatch.index !== undefined) {
+            const insertIndex = firstWrittenResponseMatch.index + firstWrittenResponseMatch[0].length;
+            const optionsHtml = `
+<p><strong>${metacognitionPhrase}</strong></p>
+<ul>
+  <li><strong>Opción 1:</strong> Respuesta escrita tradicional (párrafo)</li>
+  <li><strong>Opción 2:</strong> Respuesta estructurada (lista con viñetas o tabla)${responseOptionCount === 3 ? '</li>\n  <li><strong>Opción 3:</strong> Respuesta visual (diagrama o esquema con texto explicativo)' : ''}
+</ul>`;
+            baseHtml = baseHtml.slice(0, insertIndex) + optionsHtml + baseHtml.slice(insertIndex);
+            warnings.push('Se inyectó bloque de opciones equivalentes determinísticamente después del primer prompt de respuesta escrita (no estaba en la respuesta de la IA).');
+          } else {
+            // Último fallback: inyectar al final de la primera sección
+            const firstSectionEnd = baseHtml.indexOf('</p>', baseHtml.indexOf('<p'));
+            if (firstSectionEnd > 0) {
+              const optionsHtml = `
+<p><strong>${metacognitionPhrase}</strong></p>
+<ul>
+  <li><strong>Opción 1:</strong> Respuesta escrita tradicional (párrafo)</li>
+  <li><strong>Opción 2:</strong> Respuesta estructurada (lista con viñetas o tabla)${responseOptionCount === 3 ? '</li>\n  <li><strong>Opción 3:</strong> Respuesta visual (diagrama o esquema con texto explicativo)' : ''}
+</ul>`;
+              baseHtml = baseHtml.slice(0, firstSectionEnd + 4) + optionsHtml + baseHtml.slice(firstSectionEnd + 4);
+              warnings.push('Se inyectó bloque de opciones equivalentes determinísticamente al inicio (no estaba en la respuesta de la IA).');
+            }
+          }
+        }
+      }
+      
+      // R3b: Enforcement determinístico de versión C
+      // IMPORTANTE: Hacer esto ANTES de verificar hasVersionC para ajustar assignments
+      const needsVersionC = generateVersionC && (!versionCHtml || versionCHtml.trim().length === 0);
+      if (needsVersionC) {
+        console.log('[UNIVERSAL] R3b: Version C required but not generated, creating fallback deterministically');
+        
+        // Crear versión C fallback desde baseHtml
+        let fallbackC = baseHtml;
+        
+        // Simplificar lenguaje: reemplazar palabras complejas (sin romper HTML)
+        fallbackC = fallbackC.replace(/\b(analizar|examinar|investigar|evaluar)\b/gi, 'explicar');
+        fallbackC = fallbackC.replace(/\b(complejo|compleja|complejos|complejas)\b/gi, 'importante');
+        fallbackC = fallbackC.replace(/\b(desarrollar|elaborar|construir)\b/gi, 'escribir');
+        
+        // Reducir cantidad de ítems: eliminar cada segundo ítem numerado si hay más de 3
+        const itemMatches = [...fallbackC.matchAll(/(\d+[\.\)]|\d+\.\s*[A-Z])/gi)];
+        if (itemMatches.length > 3) {
+          // Eliminar ítems pares (mantener impares: 1, 3, 5, ...)
+          let itemIndex = 0;
+          fallbackC = fallbackC.replace(/(\d+[\.\)]|\d+\.\s*[A-Z])(.*?)(?=\d+[\.\)]|\d+\.\s*[A-Z]|$)/gi, (match) => {
+            itemIndex++;
+            if (itemIndex % 2 === 0) {
+              return ''; // Eliminar ítem par
+            }
+            return match;
+          });
+        }
+        
+        // Agregar nota de simplificación al inicio
+        const simplificationNote = '<p><em>Nota: Esta versión ha sido adaptada para facilitar la comprensión, manteniendo los mismos objetivos de aprendizaje.</em></p>';
+        fallbackC = simplificationNote + fallbackC;
+        
+        versionCHtml = cleanupContent(fallbackC);
+        warnings.push('Se generó versión C determinísticamente como fallback (la IA no la generó pero era requerida).');
+      }
+      
+      // A4: studentAssignments MUST NOT be empty - start with evaluation_design_plan.assignmentByStudentId
+      // Normalize keys to String and ensure all students have assignments
+      const rawAssignments = designPlan.assignmentByStudentId || designPlan.studentAssignments || studentAssignments || {};
+      const adjustedAssignments: Record<string, 'A' | 'B' | 'C'> = {};
+      
+      // Normalize all keys to strings
+      Object.entries(rawAssignments).forEach(([key, value]) => {
+        adjustedAssignments[String(key)] = value as 'A' | 'B' | 'C';
+      });
+      
+      // Asignar versión C a estudiantes con adecuación de contenido (si corresponde)
+      const sid = (s: any): string => String(s?.studentId ?? s?.id ?? s?.student_id ?? '');
+      const contentAdaptationIds = Array.isArray(groupContext?.students)
+        ? groupContext.students
+            .filter((student: any) =>
+              student?.hasDeclaredContentAdaptation === true ||
+              student?.requiereAdecuacionContenido === true ||
+              student?.requiresContentAdaptation === true ||
+              student?.informeTecnico?.requiereAdecuacionContenido === true
+            )
+            .map((student: any) => sid(student))
+        : [];
+      if (contentAdaptationIds.length > 0) {
+        contentAdaptationIds.forEach((studentId) => {
+          if (studentId) {
+            adjustedAssignments[studentId] = 'C';
+          }
         });
       }
 
-      const versions = parsed.versions || {};
-      const baseHtml = cleanupContent(versions.A || parsed.base_html || parsed.baseHtml || '');
-      const versionBHtml = cleanupContent(versions.B || parsed.version_b_html || parsed.versionBHtml || '');
-      const versionCHtml = cleanupContent(versions.C || parsed.version_c_html || parsed.versionCHtml || '');
-      const warnings: string[] = Array.isArray(parsed.ai_report?.warnings) ? parsed.ai_report.warnings : [];
-
-      if (generateVersionB && !versionBHtml) {
-        warnings.push('La versión B estaba planificada pero no se generó; se reasignará a versión A.');
+      // Verificar si B/C realmente existen (no null, no empty string) - después del enforcement
+      const hasVersionB = Boolean(versionBHtml && versionBHtml.trim().length > 0 && versionBHtml.trim().startsWith('<'));
+      const hasVersionC = Boolean(versionCHtml && versionCHtml.trim().length > 0 && versionCHtml.trim().startsWith('<'));
+      
+      // REQUIREMENT 2: Do not generate/return Version B unless it is required
+      // If there are no students assigned to 'B' AND designPlan.triggers.versionB is false, drop B
+      const assignmentCountB = Object.values(adjustedAssignments).filter(v => v === 'B').length;
+      const shouldDropB = hasVersionB && assignmentCountB === 0 && !designPlan.triggers?.versionB;
+      if (shouldDropB) {
+        console.log('[UNIVERSAL] Dropping Version B: no assignments to B and triggers.versionB is false');
+        versionBHtml = null;
+        warnings.push('La versión B fue generada pero no es necesaria (sin asignaciones y triggers.versionB=false); se eliminó de la respuesta.');
       }
-      if (generateVersionC && !versionCHtml) {
-        warnings.push('La versión C estaba planificada pero no se generó; se reasignará a versión A.');
+
+      // Reasignar estudiantes de B a A si B no existe
+      if (!hasVersionB) {
+        const reassignedB = Object.keys(adjustedAssignments).filter(studentId => adjustedAssignments[studentId] === 'B');
+        if (reassignedB.length > 0) {
+          warnings.push(`La versión B estaba planificada pero no se generó; ${reassignedB.length} estudiante(s) reasignado(s) a versión A.`);
+          reassignedB.forEach(studentId => {
+            adjustedAssignments[studentId] = 'A';
+          });
+        }
       }
 
-      return new Response(JSON.stringify({
-        success: true,
-        content: baseHtml || '',
-        type: type,
-        evaluationBundle: {
-          baseHtml,
-          versionBHtml: versionBHtml || null,
-          versionCHtml: versionCHtml || null,
-          versions: {
-            A: baseHtml || '',
-            B: versionBHtml || null,
-            C: versionCHtml || null
-          },
-          responseOptionsIncluded: parsed.response_options_included === true,
-          responseOptionCount: parsed.response_option_count || responseOptionCount
+      // Reasignar estudiantes de C a A si C no existe
+      if (!hasVersionC) {
+        const reassignedC = Object.keys(adjustedAssignments).filter(studentId => adjustedAssignments[studentId] === 'C');
+        if (reassignedC.length > 0) {
+          warnings.push(`La versión C estaba planificada pero no se generó; ${reassignedC.length} estudiante(s) reasignado(s) a versión A.`);
+          reassignedC.forEach(studentId => {
+            adjustedAssignments[studentId] = 'A';
+          });
+        }
+      }
+      
+      // Garantizar que ningún assignment quede como 'B' o 'C' si esas versiones no existen
+      Object.keys(adjustedAssignments).forEach(studentId => {
+        if (adjustedAssignments[studentId] === 'B' && !hasVersionB) {
+          adjustedAssignments[studentId] = 'A';
+        }
+        if (adjustedAssignments[studentId] === 'C' && !hasVersionC) {
+          adjustedAssignments[studentId] = 'A';
+        }
+      });
+      
+      // REQUIREMENT 3: Final invariant enforcement - ensure C is actually C when required
+      const finalAssignmentCounts = {
+        A: Object.values(adjustedAssignments).filter(v => v === 'A').length,
+        B: Object.values(adjustedAssignments).filter(v => v === 'B').length,
+        C: Object.values(adjustedAssignments).filter(v => v === 'C').length
+      };
+      
+      // If assignmentCounts.C > 0, versionCHtml MUST be non-null and must be C (not A/B)
+      if (finalAssignmentCounts.C > 0 && !hasVersionC) {
+        console.warn('[UNIVERSAL] Version C required but missing, generating deterministic fallback');
+        // Generate deterministic fallback C from baseHtml (simplified language)
+        let fallbackC = baseHtml;
+        
+        // Simplificar lenguaje
+        fallbackC = fallbackC.replace(/\b(analizar|examinar|investigar|evaluar)\b/gi, 'explicar');
+        fallbackC = fallbackC.replace(/\b(complejo|compleja|complejos|complejas)\b/gi, 'importante');
+        fallbackC = fallbackC.replace(/\b(desarrollar|elaborar|construir)\b/gi, 'escribir');
+        
+        // Reducir cantidad de ítems si hay más de 3
+        const itemMatches = [...fallbackC.matchAll(/(\d+[\.\)]|\d+\.\s*[A-Z])/gi)];
+        if (itemMatches.length > 3) {
+          let itemIndex = 0;
+          fallbackC = fallbackC.replace(/(\d+[\.\)]|\d+\.\s*[A-Z])(.*?)(?=\d+[\.\)]|\d+\.\s*[A-Z]|$)/gi, (match) => {
+            itemIndex++;
+            if (itemIndex % 2 === 0) return '';
+            return match;
+          });
+        }
+        
+        // Agregar nota de simplificación
+        const simplificationNote = '<p><em>Nota: Esta versión ha sido adaptada para facilitar la comprensión, manteniendo los mismos objetivos de aprendizaje.</em></p>';
+        versionCHtml = cleanupContent(simplificationNote + fallbackC);
+        hasVersionC = true;
+        warnings.push('Se generó versión C determinísticamente como fallback (era requerida pero no fue generada por la IA).');
+      }
+      
+      // Final validation: ensure versionCHtml is NOT equal to baseHtml (unless intentionally identical)
+      // This prevents C from accidentally containing A
+      if (hasVersionC && versionCHtml && baseHtml && versionCHtml.trim() === baseHtml.trim()) {
+        console.warn('[UNIVERSAL] Version C equals A, this may indicate extraction bug');
+        // If they're identical, at least add a note to C
+        versionCHtml = '<p><em>Nota: Versión adaptada.</em></p>' + versionCHtml;
+      }
+      
+      // Log final version integrity
+      console.log('[UNIVERSAL] Final version integrity:', {
+        baseHtmlLength: baseHtml?.length || 0,
+        versionBHtmlLength: versionBHtml?.length || 0,
+        versionCHtmlLength: versionCHtml?.length || 0,
+        assignmentCounts: finalAssignmentCounts,
+        baseHtmlStartsWith: baseHtml?.trim().substring(0, 30),
+        versionCHtmlStartsWith: versionCHtml?.trim().substring(0, 30),
+        versionCHtmlEqualsBaseHtml: versionCHtml && baseHtml && versionCHtml.trim() === baseHtml.trim()
+      });
+
+      // REQUIREMENT 2-3: Construir aiReport - SIEMPRE presente, MERGEAR con datos locales si OpenAI lo generó
+      // REQUIREMENT 4: Usar solo evaluation_design_plan del requestBody y valores seguros
+      const aiReportFromAI = parsed?.ai_report ?? null;
+      
+      // REQUIREMENT 3: Versiones generadas basadas en REALIDAD (no en plan)
+      const generatedVersions: string[] = ['A'];  // A siempre existe
+      if (hasVersionB) generatedVersions.push('B');
+      if (hasVersionC) generatedVersions.push('C');
+
+      // Extraer valores seguros del evaluation_design_plan
+      const safeInstrumentDesignRules = evaluation_design_plan?.instrumentDesignRules ?? [];
+      const safeVarkDistribution = evaluation_design_plan?.varkDistribution || {
+        visual: 0,
+        auditory: 0,
+        readWrite: 0,
+        kinesthetic: 0
+      };
+
+      if (!parsed) {
+        console.warn('[UNIVERSAL] Parsed output is null; using fallback-safe values for ai_report and response options.');
+      }
+      // REQUIREMENT 3: Combinar warnings de AI con warnings locales
+      const aiWarnings = Array.isArray(parsed?.ai_report?.warnings) ? parsed.ai_report.warnings : [];
+      const allWarnings = [...aiWarnings, ...warnings];
+
+      // A3: Build meaningful aiReport with design decisions
+      const assignmentCounts = {
+        A: Object.values(adjustedAssignments).filter(v => v === 'A').length,
+        B: Object.values(adjustedAssignments).filter(v => v === 'B').length,
+        C: Object.values(adjustedAssignments).filter(v => v === 'C').length
+      };
+      
+      const contentAdaptationStudentIds = Object.entries(adjustedAssignments)
+        .filter(([_, version]) => version === 'C')
+        .map(([studentId, _]) => studentId);
+
+      const assignmentsByVersion = {
+        A: [] as string[],
+        B: [] as string[],
+        C: [] as string[]
+      };
+      Object.entries(adjustedAssignments).forEach(([studentId, version]) => {
+        if (version === 'A') assignmentsByVersion.A.push(studentId);
+        if (version === 'B') assignmentsByVersion.B.push(studentId);
+        if (version === 'C') assignmentsByVersion.C.push(studentId);
+      });
+      
+      const perStudentReminders = designPlan.perStudentReminders || [];
+      
+      // Build detailed rationale
+      const contentsRationale = groupContext?.content?.length 
+        ? `Contenidos seleccionados: ${groupContext.content.join(', ')}. `
+        : '';
+      const competenciesRationale = groupContext?.competencies?.length
+        ? `Competencias trabajadas: ${groupContext.competencies.join(', ')}. `
+        : '';
+      
+      const versionsRationale = generatedVersions.length === 1
+        ? 'Solo se generó la versión base universal (A) porque no se requirieron versiones diferenciadas según el plan de diseño.'
+        : `Se generaron las versiones ${generatedVersions.join(', ')} porque: ${generateVersionB ? 'Versión B para estudiantes que requieren formato equivalente. ' : ''}${generateVersionC ? 'Versión C para estudiantes con adecuación de contenido explícita. ' : ''}`;
+      
+      const responseOptionsRationale = responseOptionsIncluded
+        ? `Se incluyeron ${responseOptionCountFinal} opciones equivalentes de respuesta (metacognición) para permitir que los estudiantes elijan el formato que mejor se adapte a su estilo de aprendizaje. Las opciones aparecen después de cada consigna que requiere respuesta escrita.`
+        : 'No se incluyeron opciones equivalentes de respuesta porque no se detectaron en el HTML final.';
+      
+      const assignmentsRationale = `Asignaciones: ${assignmentCounts.A} estudiante(s) en versión A (universal), ${assignmentCounts.B} en versión B${assignmentCounts.B > 0 ? ` (formato equivalente)` : ''}, ${assignmentCounts.C} en versión C${assignmentCounts.C > 0 ? ` (adecuación de contenido)` : ''}.${contentAdaptationStudentIds.length > 0 ? ` Estudiantes con adecuación de contenido (IDs: ${contentAdaptationStudentIds.slice(0, 5).join(', ')}${contentAdaptationStudentIds.length > 5 ? ` y ${contentAdaptationStudentIds.length - 5} más` : ''}) asignados a versión C.` : ''}`;
+      
+      const contemplacionesRationale = Object.keys(bucketedContemplacionIds).length > 0
+        ? `Contemplaciones aplicadas: ${Object.keys(bucketedContemplacionIds).length} categorías de contemplaciones fueron consideradas en el diseño del instrumento.`
+        : 'No se aplicaron contemplaciones específicas en el diseño.';
+      
+      const aiReport = {
+        design_rationale: `${contentsRationale}${competenciesRationale}${contemplacionesRationale}`,
+        versions: {
+          generated: generatedVersions,
+          reason: versionsRationale,
+          count: generatedVersions.length
         },
-        studentAssignments,
+        contemplaciones: {
+          instrument_design: safeInstrumentDesignRules,
+          admin_reminders: perStudentReminders.filter((r: any) => r.type === 'admin').map((r: any) => r.text),
+          correction_reminders: perStudentReminders.filter((r: any) => r.type === 'correction').map((r: any) => r.text),
+          bucketed_ids: bucketedContemplacionIds,
+          high_structure_need_percent: highStructureNeed.percent || 0
+        },
+        response_options: {
+          included: responseOptionsIncluded,
+          optionCount: responseOptionCountFinal,
+          rationale: responseOptionsRationale,
+          location: responseOptionsIncluded ? 'Después de cada consigna que requiere respuesta escrita' : 'No aplica'
+        },
+        vark: {
+          summary: `Distribución VARK: Visual=${safeVarkDistribution.visual || 0}, Auditivo=${safeVarkDistribution.auditory || 0}, Lecto-escritor=${safeVarkDistribution.readWrite || 0}, Kinestésico=${safeVarkDistribution.kinesthetic || 0}`,
+          distribution: safeVarkDistribution
+        },
+        assignments: {
+          rationale: assignmentsRationale,
+          counts: assignmentCounts,
+          content_adaptation_student_ids: contentAdaptationStudentIds,
+          by_version: assignmentsByVersion,
+          total_students: Object.keys(adjustedAssignments).length
+        },
+        warnings: allWarnings
+      };
+
+      const responseOptionsIncluded = baseHtml.includes(metacognitionPhrase);
+      const responseOptionCountFinal = responseOptionsIncluded
+        ? (baseHtml.includes('Opción 3') ? 3 : 2)
+        : 0;
+      
+      // TASK 5: Backend log
+      console.log('[UNIVERSAL] response versions startsWith', {
+        A: baseHtml?.slice(0, 15) || 'null',
+        C: versionCHtml?.slice(0, 15) || 'null'
+      });
+      
+      // Log final integrity check
+      console.log('[UNIVERSAL] versions integrity', {
+        assignmentCounts: finalAssignmentCounts,
+        startsWith: {
+          A: baseHtml?.trim().slice(0, 15) || 'null',
+          B: versionBHtml?.trim().slice(0, 15) || 'null',
+          C: versionCHtml?.trim().slice(0, 15) || 'null'
+        },
+        isWrapper: {
+          A: baseHtml?.trim().startsWith('{') || false,
+          B: versionBHtml?.trim().startsWith('{') || false,
+          C: versionCHtml?.trim().startsWith('{') || false
+        },
+        lengths: {
+          A: baseHtml?.length || 0,
+          B: versionBHtml?.length || 0,
+          C: versionCHtml?.length || 0
+        }
+      });
+
+      return buildUniversalResponse({
+        baseHtml,
+        versionBHtml,
+        versionCHtml,
+        responseOptionsIncluded,
+        responseOptionCount: responseOptionsIncluded ? responseOptionCountFinal : 0,
+        studentAssignments: adjustedAssignments,
         teacherRemindersByStudent,
-        aiReport: parsed.ai_report || null,
-        warnings,
+        aiReport,
+        warnings: allWarnings,
         metadata: {
           tokensUsed: result.usage?.total_tokens || 0,
           model: result.model || 'gpt-4.1-2025-04-14'
+        },
+        generationPath: parseFailed ? 'universal_parse_failed' : 'universal',
+        shouldDropB: shouldDropB || false,
+        finalTriggers: {
+          versionB: designPlan.triggers?.versionB || false,
+          versionC: designPlan.triggers?.versionC || false
         }
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
@@ -1087,15 +1686,45 @@ TAREA: Genera 3 versiones completas de evaluación (Versión 1, 2 y 3) siguiendo
       // If we have some content but hit the limit, try to use what we have
       if (generatedContent && generatedContent.trim().length > 100) {
         console.log('Using partial content from token-limited response');
+        // R1: Convert legacy return to universal format
+        const truncatedHtml = cleanupContent(generatedContent);
+        const truncationWarnings = ['La respuesta fue truncada por límite de tokens. El contenido puede estar incompleto.'];
+        const truncationAiReport = {
+          versions: { generated: ['A'], reason: 'Solo se generó la versión base (respuesta truncada por límite de tokens).' },
+          contemplaciones: { instrument_design: [], admin_reminders: [], correction_reminders: [] },
+          response_options: { included: false, optionCount: 2, rationale: 'No se pudieron incluir opciones equivalentes (respuesta truncada).' },
+          vark: { summary: 'Distribución VARK no disponible (respuesta truncada).' },
+          assignments: { rationale: 'Asignaciones no disponibles (respuesta truncada).' },
+          warnings: truncationWarnings
+        };
         return new Response(JSON.stringify({ 
           success: true,
-          content: generatedContent,
+          content: truncatedHtml,
           type: type,
-          warning: 'La respuesta fue truncada por límite de tokens. El contenido puede estar incompleto.',
+          evaluationBundle: {
+            baseHtml: truncatedHtml,
+            versionBHtml: null,
+            versionCHtml: null,
+            versions: { A: truncatedHtml, B: null, C: null },
+            responseOptionsIncluded: false,
+            responseOptionCount: 2
+          },
+          studentAssignments: {},
+          teacherRemindersByStudent: [],
+          aiReport: truncationAiReport,
+          warnings: truncationWarnings,
           metadata: {
             tokensUsed: result.usage?.total_tokens || 0,
             model: result.model || model,
             finishReason: finishReason
+          },
+          _debug: {
+            generationPath: 'legacy_return',
+            hasEvaluationBundle: true,
+            hasAiReport: true,
+            versionsLengths: { A: truncatedHtml.length, B: 0, C: 0 },
+            triggers: { versionB: false, versionC: false },
+            responseOptions: { include: false, optionCount: 2 }
           }
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -1115,11 +1744,45 @@ TAREA: Genera 3 versiones completas de evaluación (Versión 1, 2 y 3) siguiendo
           ? `${originalEvaluation}\n\n**Nota:** No se pudo aplicar la modificación solicitada: "${modification}". El contenido original se mantiene sin cambios.`
           : 'No se pudo generar el contenido solicitado. Por favor, intenta con una solicitud más específica.';
       
+      // R1: Convert legacy return to universal format
+      const fallbackHtml = cleanupContent(fallbackMessage);
+      const fallbackWarnings = [`La IA no generó contenido nuevo. Razón: ${finishReason || 'unknown'}. Se proporciona contenido alternativo.`];
+      const fallbackAiReport = {
+        versions: { generated: ['A'], reason: 'Solo se generó la versión base (contenido alternativo por falta de respuesta de IA).' },
+        contemplaciones: { instrument_design: [], admin_reminders: [], correction_reminders: [] },
+        response_options: { included: false, optionCount: 2, rationale: 'No se pudieron incluir opciones equivalentes (contenido alternativo).' },
+        vark: { summary: 'Distribución VARK no disponible (contenido alternativo).' },
+        assignments: { rationale: 'Asignaciones no disponibles (contenido alternativo).' },
+        warnings: fallbackWarnings
+      };
       return new Response(JSON.stringify({ 
         success: true,
-        content: fallbackMessage,
+        content: fallbackHtml,
         type: type,
-        warning: `La IA no generó contenido nuevo. Razón: ${finishReason || 'unknown'}. Se proporciona contenido alternativo.`
+        evaluationBundle: {
+          baseHtml: fallbackHtml,
+          versionBHtml: null,
+          versionCHtml: null,
+          versions: { A: fallbackHtml, B: null, C: null },
+          responseOptionsIncluded: false,
+          responseOptionCount: 2
+        },
+        studentAssignments: {},
+        teacherRemindersByStudent: [],
+        aiReport: fallbackAiReport,
+        warnings: fallbackWarnings,
+        metadata: {
+          tokensUsed: result.usage?.total_tokens || 0,
+          model: result.model || model
+        },
+        _debug: {
+          generationPath: 'catch_fallback',
+          hasEvaluationBundle: true,
+          hasAiReport: true,
+          versionsLengths: { A: fallbackHtml.length, B: 0, C: 0 },
+          triggers: { versionB: false, versionC: false },
+          responseOptions: { include: false, optionCount: 2 }
+        }
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -1138,13 +1801,44 @@ TAREA: Genera 3 versiones completas de evaluación (Versión 1, 2 y 3) siguiendo
     console.log('Final content length:', generatedContent.length);
     console.log('Content preview:', generatedContent.substring(0, 100) + '...');
 
+    // R1: Convert legacy return to universal format (legacy path for non-modification types)
+    const legacyHtml = cleanupContent(generatedContent);
+    const legacyWarnings: string[] = [];
+    const legacyAiReport = {
+      versions: { generated: ['A'], reason: 'Generada desde path legacy (no modification type).' },
+      contemplaciones: { instrument_design: [], admin_reminders: [], correction_reminders: [] },
+      response_options: { included: false, optionCount: 2, rationale: 'No se incluyeron opciones equivalentes (path legacy).' },
+      vark: { summary: 'Distribución VARK no disponible (path legacy).' },
+      assignments: { rationale: 'Asignaciones no disponibles (path legacy).' },
+      warnings: legacyWarnings
+    };
     return new Response(JSON.stringify({ 
       success: true,
-      content: generatedContent,
+      content: legacyHtml,
       type: type,
+      evaluationBundle: {
+        baseHtml: legacyHtml,
+        versionBHtml: null,
+        versionCHtml: null,
+        versions: { A: legacyHtml, B: null, C: null },
+        responseOptionsIncluded: false,
+        responseOptionCount: 2
+      },
+      studentAssignments: {},
+      teacherRemindersByStudent: [],
+      aiReport: legacyAiReport,
+      warnings: legacyWarnings,
       metadata: {
         tokensUsed: result.usage?.total_tokens || 0,
         model: result.model || model
+      },
+      _debug: {
+        generationPath: 'legacy_return',
+        hasEvaluationBundle: true,
+        hasAiReport: true,
+        versionsLengths: { A: legacyHtml.length, B: 0, C: 0 },
+        triggers: { versionB: false, versionC: false },
+        responseOptions: { include: false, optionCount: 2 }
       }
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

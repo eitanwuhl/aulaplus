@@ -321,8 +321,22 @@ async function loadTeacherSugerencias(grupoId: string): Promise<TeacherSugerenci
       .eq('user_id', user.id)
       .maybeSingle();
     
-    if (error && error.code !== 'PGRST116') {
-      console.warn('[getGroupContextForAI] Error fetching teacher_sugerencias:', error);
+    // Handle 404 gracefully: PGRST116 = no rows returned (expected if group doesn't exist in DB)
+    // Also handle 404 from PostgREST if table/column doesn't exist (non-blocking)
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // No rows found - group doesn't exist in DB, use mock data (expected behavior)
+        console.log('[getGroupContextForAI] Group not found in DB, using mock data');
+        return undefined;
+      }
+      // Handle 404 or other errors gracefully without blocking generation
+      if (error.code === '42P01' || error.message?.includes('does not exist') || error.message?.includes('404')) {
+        // Table or column doesn't exist - non-blocking, just log and continue
+        console.warn('[getGroupContextForAI] Table/column teacher_sugerencias not available:', error.message);
+        return undefined;
+      }
+      // Other errors - log but don't block
+      console.warn('[getGroupContextForAI] Error fetching teacher_sugerencias (non-blocking):', error);
       return undefined;
     }
     
@@ -331,8 +345,9 @@ async function loadTeacherSugerencias(grupoId: string): Promise<TeacherSugerenci
     }
     
     return undefined;
-  } catch (error) {
-    console.warn('[getGroupContextForAI] Error loading teacher_sugerencias:', error);
+  } catch (error: any) {
+    // Catch all errors gracefully - never block generation
+    console.warn('[getGroupContextForAI] Error loading teacher_sugerencias (non-blocking):', error);
     return undefined;
   }
 }

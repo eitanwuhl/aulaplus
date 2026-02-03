@@ -23,8 +23,44 @@ export const CleanEvaluationDisplay: React.FC<CleanEvaluationDisplayProps> = ({
   // It MUST NEVER import or use enforceForEvaluation() or inject reminders.
   // Reminders belong ONLY in SimplifiedSmartRubric student cards, never in evaluation content.
   
+  // TASK 1: Extract from JSON wrapper if present BEFORE cleaning
+  const extractFromWrapper = (text: string): string => {
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') || trimmed.includes('"versions"') || trimmed.includes("'versions'")) {
+      try {
+        let parsed: any;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch (e) {
+          // Try normalizing single quotes
+          const normalized = trimmed.replace(/'/g, '"').replace(/(\w+):/g, '"$1":');
+          try {
+            parsed = JSON.parse(normalized);
+          } catch (e2) {
+            return text; // Cannot parse, return original
+          }
+        }
+        // Extract A (default for this component)
+        const extracted = parsed.versions?.A || parsed.A || parsed.evaluationBundle?.versions?.A;
+        if (extracted && typeof extracted === 'string') {
+          // Recurse if still a wrapper
+          if (extracted.trim().startsWith('{') || extracted.includes('"versions"')) {
+            return extractFromWrapper(extracted);
+          }
+          return extracted;
+        }
+      } catch (e) {
+        // Fall through to original
+      }
+    }
+    return text;
+  };
+  
+  // Extract from wrapper first
+  const extractedContent = extractFromWrapper(evaluation.content);
+  
   // Limpiar contenido para mostrar solo la evaluación pura
-  const { pureContent } = ContentCleaner.extractPureEvaluation(evaluation.content);
+  const { pureContent } = ContentCleaner.extractPureEvaluation(extractedContent);
   
   const getVersionBadgeColor = (version: number) => {
     switch (version) {

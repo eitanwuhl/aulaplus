@@ -1,7 +1,7 @@
 # Change Report: Universal Evaluation Generation (EPIC)
 
 **Date**: 2026-01-31  
-**Branch**: `nuevas-contemplaciones`  
+**Branch**: `nuevas-evaluaciones`  
 **Status**: In progress  
 **Author**: AI Agent (Cursor)
 
@@ -21,6 +21,7 @@
 - **Contemplaciones catalog IDs**: must remain stable; new ID must be additive.
 - **Explicit save pattern**: evaluations saved with `is_saved = true` and `deleted_at IS NULL`.
 - **Group context**: generation MUST use `getGroupContextForAI()` only.
+- **AI Report**: new structured report must be additive and persisted without breaking legacy renders.
 
 ### Existing 3-version Assumptions (Current)
 - `EvaluacionesGrupo.tsx` builds **version 1/2/3** and uses `adaptationLevel` (`standard`, `moderate`, `high`).
@@ -28,16 +29,24 @@
 - UI renderer shows **"Versión X"** badge and expects `evaluation.version`.
 - Saved evaluations persist `evaluacion_generada.evaluaciones[]` array with multiple versions.
 
+### Consistency Rule (Required)
+- UI assignments must only show versions that were actually generated.
+- If a planned version is missing, reassign those students to A and show a warning banner.
+
 ### Risks if Change Is Incorrect
 - **Generation failure**: request payload mismatch → edge returns empty content or fails.
 - **Rendering regressions**: missing fields in legacy evaluations → UI crash or blank content.
 - **Data integrity**: saved evaluations could become non-renderable if structure changes without fallback.
 - **Compliance**: inadvertently reading student context from `mockData` or `localStorage` outside provider.
+- **Consistency bug**: assignments A/B/C shown in UI without corresponding generated versions.
+- **AI report loss**: report not persisted or rendered, causing audit gaps.
 
 ### Backward Compatibility Strategy (Summary)
 - **Read-time**: Legacy evaluations render via existing `evaluaciones[]` array.
 - **Write-time**: New metadata stored in existing JSON fields with safe fallback.
 - **UI fallback**: If new metadata missing, render `evaluaciones[].content` as plain HTML.
+- **Assignments**: if a version is missing, reassign to A and warn.
+- **Reporte de IA**: render fallback message when missing for legacy evaluations.
 
 ---
 
@@ -81,6 +90,7 @@
 - `d591301` feat(edge): support universal evaluation generation output — universal JSON bundle (backward compatible)
 - `77a323e` feat(ui): render universal evaluation + teacher reminders with legacy fallback — UI fallback + panels
 - `32287d2` refactor(evaluations): retire 3-version generation in new flow (keep legacy rendering) — single-call generation
+- `6370766` chore(evaluations): re-export design plan helpers — barrel exports hygiene
 
 ---
 
@@ -126,6 +136,6 @@
 
 ## Branch Discipline
 
-- Branch used: `nuevas-contemplaciones`
+- Branch used: `nuevas-evaluaciones`
 - Statement: no commits on `main`
 
