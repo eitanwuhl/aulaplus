@@ -27,3 +27,5 @@ node_modules
 dist
 .vite
 .env
+
+check-apikey.js
