@@ -213,8 +213,17 @@ export function buildEvaluationDesignPlan(input: EvaluationDesignPlanInput): Eva
   const complexityTrigger = designComplexityCount >= 6;
   const versionBTriggered = highStructureTrigger && complexityTrigger;
 
+  // C1: Consolidate content adaptation detection - accept multiple field names
   const contentAdaptationStudentIds = students
-    .filter(student => student.hasDeclaredContentAdaptation)
+    .filter(student => {
+      // Check multiple possible field names
+      return (
+        student.hasDeclaredContentAdaptation === true ||
+        student.requiereAdecuacionContenido === true ||
+        student.requiresContentAdaptation === true ||
+        (student.informeTecnico?.requiereAdecuacionContenido === true)
+      );
+    })
     .map(student => String(student.studentId));
   const versionCTriggered = contentAdaptationStudentIds.length > 0;
 

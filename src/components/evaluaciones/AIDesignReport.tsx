@@ -31,6 +31,7 @@ export interface AIDesignReportData {
   versions?: {
     generated?: string[];
     reason?: string;
+    count?: number;
   };
   contemplaciones?: {
     instrument_design?: string[];
@@ -41,12 +42,24 @@ export interface AIDesignReportData {
     included?: boolean;
     optionCount?: number;
     rationale?: string;
+    location?: string;
   };
   vark?: {
     summary?: string;
   };
   assignments?: {
     rationale?: string;
+    counts?: {
+      A?: number;
+      B?: number;
+      C?: number;
+    };
+    by_version?: {
+      A?: string[];
+      B?: string[];
+      C?: string[];
+    };
+    total_students?: number;
   };
   warnings?: string[];
 }
@@ -109,6 +122,24 @@ export function AIDesignReport({ reportData, className = '' }: AIDesignReportPro
               </div>
             )}
 
+            {reportData.versions?.generated && reportData.versions.generated.length > 0 && (
+              <div className="space-y-2 border-t pt-4">
+                <h4 className="font-semibold text-sm">Versiones generadas</h4>
+                <div className="flex flex-wrap gap-2">
+                  {reportData.versions.generated.map((version) => (
+                    <Badge key={version} variant="outline" className="text-xs">
+                      Versión {version}
+                    </Badge>
+                  ))}
+                </div>
+                {typeof reportData.versions.count === 'number' && (
+                  <p className="text-xs text-muted-foreground">
+                    Total de versiones: {reportData.versions.count}
+                  </p>
+                )}
+              </div>
+            )}
+
             {reportData.response_options && (
               <div className="space-y-2 border-t pt-4">
                 <h4 className="font-semibold text-sm">Opciones equivalentes</h4>
@@ -117,6 +148,11 @@ export function AIDesignReport({ reportData, className = '' }: AIDesignReportPro
                     ? `Incluidas (${reportData.response_options.optionCount || 2} opciones). ${reportData.response_options.rationale || ''}`.trim()
                     : 'No se incluyeron opciones equivalentes.'}
                 </p>
+                {reportData.response_options.location && (
+                  <p className="text-xs text-muted-foreground">
+                    Ubicación: {reportData.response_options.location}
+                  </p>
+                )}
               </div>
             )}
 
@@ -135,6 +171,29 @@ export function AIDesignReport({ reportData, className = '' }: AIDesignReportPro
                 <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
                   {reportData.assignments.rationale}
                 </p>
+                {reportData.assignments.counts && (
+                  <div className="text-xs text-muted-foreground">
+                    A: {reportData.assignments.counts.A ?? 0} · B: {reportData.assignments.counts.B ?? 0} · C: {reportData.assignments.counts.C ?? 0}
+                    {typeof reportData.assignments.total_students === 'number' && (
+                      <span> · Total: {reportData.assignments.total_students}</span>
+                    )}
+                  </div>
+                )}
+                {reportData.assignments.by_version && (
+                  <div className="text-xs text-muted-foreground space-y-1">
+                    {['A', 'B', 'C'].map((version) => {
+                      const ids = reportData.assignments?.by_version?.[version as 'A' | 'B' | 'C'] || [];
+                      if (!ids.length) return null;
+                      const preview = ids.slice(0, 8).join(', ');
+                      const extra = ids.length > 8 ? ` y ${ids.length - 8} más` : '';
+                      return (
+                        <div key={version}>
+                          Versión {version}: {preview}{extra}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 

@@ -207,6 +207,7 @@ const EvaluacionDetalle: React.FC = () => {
   const evaluationDesignPlan = evaluacion.evaluacion_generada?.evaluation_design_plan;
   const rawAssignments = evaluacion.evaluacion_generada?.student_assignments || evaluationDesignPlan?.assignmentByStudentId || {};
   const teacherReminders = evaluacion.evaluacion_generada?.teacher_reminders_by_student || evaluationDesignPlan?.perStudentReminders || [];
+  // PATCH: Leer ai_report primero desde evaluacion_generada, luego desde ai_design_report
   const aiReportPayload = evaluacion.evaluacion_generada?.ai_report || evaluacion.ai_design_report || null;
 
   const { normalizedAssignments, assignmentWarnings } = useMemo(() => {

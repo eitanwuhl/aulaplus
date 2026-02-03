@@ -6,7 +6,80 @@ interface HTMLRendererProps {
 }
 
 export const HTMLRenderer: React.FC<HTMLRendererProps> = ({ content, className = '' }) => {
-  // Advanced block-based parser for structured content
+  // TASK 1: Extract version from JSON wrapper if present, BEFORE any processing
+  const extractFromWrapper = (text: string, targetKey: 'A' | 'B' | 'C' = 'A'): string | null => {
+    const trimmed = text.trim();
+    
+    // If it's a JSON wrapper, extract the target key
+    if (trimmed.startsWith('{') || trimmed.includes('"versions"') || trimmed.includes("'versions'")) {
+      try {
+        // Try JSON.parse first
+        let parsed: any;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch (e) {
+          // If JSON.parse fails, try normalizing single quotes to double quotes (JS-like wrapper)
+          const normalized = trimmed.replace(/'/g, '"').replace(/(\w+):/g, '"$1":');
+          try {
+            parsed = JSON.parse(normalized);
+          } catch (e2) {
+            return null; // Cannot parse, return null
+          }
+        }
+        
+        // Extract EXACT key
+        const extracted = parsed.versions?.[targetKey] || parsed[targetKey] || parsed.evaluationBundle?.versions?.[targetKey];
+        if (extracted) {
+          // Recurse if extracted is still a wrapper
+          if (typeof extracted === 'string' && (extracted.trim().startsWith('{') || extracted.includes('"versions"'))) {
+            return extractFromWrapper(extracted, targetKey);
+          }
+          return extracted;
+        }
+        return null;
+      } catch (e) {
+        return null;
+      }
+    }
+    
+    return null;
+  };
+  
+  // TASK 1: If content is JSON wrapper, extract first
+  let processedContent = content;
+  const extracted = extractFromWrapper(content, 'A'); // Default to A for HTMLRenderer
+  if (extracted) {
+    processedContent = extracted;
+  }
+  
+  // TASK 1: If extracted content is HTML, render directly
+  const trimmed = processedContent.trim();
+  if (trimmed.startsWith('<')) {
+    // I2: Render as HTML using dangerouslySetInnerHTML
+    return (
+      <div 
+        className={`prose max-w-none ${className}`}
+        dangerouslySetInnerHTML={{ __html: trimmed }}
+        style={{
+          fontSize: '16px',
+          lineHeight: '1.7',
+          fontFamily: 'inherit',
+          padding: '20px 0'
+        }}
+      />
+    );
+  }
+  
+  // TASK 1: If content is still a wrapper after extraction, show error
+  if (trimmed.startsWith('{')) {
+    return (
+      <div className="p-4 bg-red-50 border border-red-200 rounded">
+        <strong>Error:</strong> Contenido no válido (wrapper JSON detectado)
+      </div>
+    );
+  }
+  
+  // Advanced block-based parser for structured content (markdown/plain text)
   const parseContent = (text: string): string => {
     // 1. Normalize and clean content
     let normalized = text.trim();

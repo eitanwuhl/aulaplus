@@ -435,6 +435,34 @@ const EvaluacionesGrupo = () => {
   const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState<number | null>(null);
   const [timeBreakdown, setTimeBreakdown] = useState<any>(null);
   const [aiDesignReport, setAiDesignReport] = useState<string | null>(null);
+  
+  // DEBUG: Pipeline debug panel (gated by feature flag)
+  const [pipelineDebug, setPipelineDebug] = useState<{
+    lastRequest?: {
+      generationMode: string;
+      hasEvaluationDesignPlan: boolean;
+      hasGenerationContext: boolean;
+      triggers: { versionB: boolean; versionC: boolean };
+      responseOptionsInclude: boolean;
+      assignmentsCount: number;
+    };
+    lastResponse?: {
+      hasAiReport: boolean;
+      hasEvaluationBundle: boolean;
+      versionsGenerated: string[];
+      warningsCount: number;
+      endpoint: string;
+      error?: string;
+    };
+  }>({});
+  const showDebugPanel = import.meta.env.VITE_DEBUG_EVAL_PIPELINE === 'true';
+  
+  // ENFORCE: Track if modify-evaluation was called
+  const [generationError, setGenerationError] = useState<{
+    message: string;
+    details?: string;
+    show: boolean;
+  } | null>(null);
 
   const selectedGroup: Group | undefined = useMemo(
     () => mockGroups.find(g => g.id === selectedGroupId),
@@ -594,11 +622,36 @@ const EvaluacionesGrupo = () => {
         user_id: evaluacionData.user_id
       });
 
-      const { data, error } = await supabase
+      const { data: insertedData, error } = await supabase
         .from('evaluaciones')
         .insert(evaluacionData)
         .select()
         .single();
+      
+      // R2: Verificar que ai_report se persistió correctamente
+      if (insertedData) {
+        const hasAiReportInGenerated = !!insertedData.evaluacion_generada?.ai_report;
+        const hasAiDesignReport = !!insertedData.ai_design_report;
+        
+        console.info('[SAVE EVALUATION] Persistence verification', {
+          hasAiReportInGenerated,
+          hasAiDesignReport,
+          evaluationId: insertedData.id
+        });
+        
+        if (!hasAiReportInGenerated && !hasAiDesignReport) {
+          console.error('[SAVE EVALUATION] CRITICAL: AI report not persisted!');
+          toast({
+            title: "Error al guardar",
+            description: "El reporte de IA no se guardó correctamente. Por favor, intentá nuevamente.",
+            variant: "destructive"
+          });
+          setIsSaving(false);
+          return;
+        }
+      }
+      
+      const data = insertedData;
 
       if (error) {
         console.error('[SAVE EVALUATION] Supabase error:', {
@@ -779,10 +832,44 @@ const EvaluacionesGrupo = () => {
   };
 
   const handleGenerateEvaluations = async () => {
+    console.info('[EVAL_PIPELINE] handleGenerateEvaluations called');
+    
     // PHASE A: Allow generation if ANY of: ANEP content, sessions, OR materials
-    if (!selectedGroup || (!materia && !esInterdisciplinaria)) return;
-    if (esInterdisciplinaria && materiasSeleccionadas.length === 0) return;
-    if (!hasAnepContent && !hasSessions && !hasMaterials) return;
+    // ENFORCE: Show visible errors instead of silent returns
+    if (!selectedGroup || (!materia && !esInterdisciplinaria)) {
+      console.info('[EVAL_PIPELINE] Early return: missing group or materia');
+      toast({
+        title: "Error de validación",
+        description: "Seleccioná un grupo y una materia antes de generar evaluaciones.",
+        variant: "destructive"
+      });
+      return;
+    }
+    if (esInterdisciplinaria && materiasSeleccionadas.length === 0) {
+      console.info('[EVAL_PIPELINE] Early return: interdisciplinaria without materias');
+      toast({
+        title: "Error de validación",
+        description: "Seleccioná al menos una materia para la evaluación interdisciplinaria.",
+        variant: "destructive"
+      });
+      return;
+    }
+    if (!hasAnepContent && !hasSessions && !hasMaterials) {
+      console.info('[EVAL_PIPELINE] Early return: no content, sessions, or materials');
+      toast({
+        title: "Error de validación",
+        description: "Seleccioná al menos uno: contenidos ANEP, sesiones de clase, o materiales docentes.",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    console.info('[EVAL_PIPELINE] Starting generation', {
+      hasAnepContent,
+      hasSessions,
+      hasMaterials,
+      groupId: selectedGroup.id
+    });
     
     setIsGenerating(true);
     
@@ -853,38 +940,81 @@ const EvaluacionesGrupo = () => {
         .map(id => getEvaluationDesignRuleTemplate(id))
         .filter((rule): rule is string => Boolean(rule));
 
-      const effectivePlan = generationContext
-        ? {
-            ...plan,
-            triggers: { versionB: false, versionC: false },
-            assignmentByStudentId: Object.fromEntries(
-              groupContextData.students.map(student => [String(student.studentId), 'A'])
-            ),
-            versionPlans: [
-              {
-                kind: 'A',
-                label: 'Versión A (Universal)',
-                assignedStudentIds: groupContextData.students.map(student => student.studentId),
-                reason: 'Modo sesiones/materiales: versión única'
-              }
-            ],
-            contentAdaptationStudentIds: []
-          }
-        : plan;
+      // UNIFIED PIPELINE: Siempre usar el plan completo (sin overrides)
+      const effectivePlan = plan;
 
-      const requestBody: any = {
-        originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
-        modification: requerimientos || 'Genera una evaluación escrita universal basada en los contenidos seleccionados.',
-        groupContext,
-        type: 'modification'
-      };
-
+      // Construir modification con contexto de sesiones/materiales si existe
+      // STRICT LIMITS: máximo 5 sesiones, 5 materiales, 500 chars de extractedText por material
+      let modificationText = requerimientos || 'Genera una evaluación escrita universal basada en los contenidos seleccionados.';
+      
       if (generationContext) {
         const { serializeGenerationContext } = await import('@/services/evaluations');
-        requestBody.generation_context = serializeGenerationContext(generationContext);
-      } else {
-        requestBody.generation_mode = 'universal';
-        requestBody.evaluation_design_plan = {
+        const serialized = serializeGenerationContext(generationContext);
+        
+        // Construir texto legible del contexto con límites estrictos
+        const contextSections: string[] = [];
+        
+        // Límite: máximo 5 sesiones
+        const sessionsToInclude = (serialized.sessions || []).slice(0, 5);
+        if (sessionsToInclude.length > 0) {
+          contextSections.push('SESIONES DE CLASE A EVALUAR:');
+          sessionsToInclude.forEach((s: any, idx: number) => {
+            contextSections.push(`\nSesión ${s.order}: ${s.title || `Sesión ${s.order}`}`);
+            if (s.anepContent?.length) contextSections.push(`- Contenidos ANEP: ${s.anepContent.join(', ')}`);
+            if (s.competencies?.length) contextSections.push(`- Competencias: ${s.competencies.join(', ')}`);
+            if (s.objectives) contextSections.push(`- Objetivos: ${s.objectives}`);
+            if (s.activitiesSummary) contextSections.push(`- Resumen de actividades: ${s.activitiesSummary}`);
+            if (s.resources?.length) contextSections.push(`- Recursos: ${s.resources.join(', ')}`);
+            if (s.attachedMaterials?.length) {
+              contextSections.push(`- Materiales adjuntos: ${s.attachedMaterials.map((m: any) => m.title).join(', ')}`);
+            }
+            if (idx < sessionsToInclude.length - 1) contextSections.push('\n---');
+          });
+          if ((serialized.sessions || []).length > 5) {
+            contextSections.push(`\n(Nota: Se incluyeron las primeras 5 de ${serialized.sessions.length} sesiones seleccionadas)`);
+          }
+        }
+        
+        // Límite: máximo 5 materiales, 500 caracteres de extractedText por material
+        const materialsToInclude = (serialized.materials || []).slice(0, 5);
+        if (materialsToInclude.length > 0) {
+          contextSections.push('\n\nMATERIALES DOCENTES ADJUNTOS:');
+          materialsToInclude.forEach((m: any, idx: number) => {
+            contextSections.push(`\n${idx + 1}. ${m.title} (${m.mimeType})`);
+            if (m.focusText) contextSections.push(`   Enfoque: ${m.focusText}`);
+            if (m.extractedText) {
+              // Límite estricto: máximo 500 caracteres de extractedText
+              const textSnippet = m.extractedText.substring(0, 500);
+              contextSections.push(`   Contenido extraído del PDF:\n   ${textSnippet}${m.extractedText.length > 500 ? '...' : ''}`);
+            }
+            if (idx < materialsToInclude.length - 1) contextSections.push('\n---');
+          });
+          if ((serialized.materials || []).length > 5) {
+            contextSections.push(`\n(Nota: Se incluyeron los primeros 5 de ${serialized.materials.length} materiales seleccionados)`);
+          }
+        }
+        
+        if (serialized.evaluationFocus) {
+          contextSections.push(`\n\nENFOQUE DE EVALUACIÓN (ESPECIFICADO POR EL DOCENTE):\n${serialized.evaluationFocus}`);
+        }
+        
+        if (serialized.timeBudget) {
+          contextSections.push(`\n\nPRESUPUESTO DE TIEMPO:\n- Duración objetivo: ${serialized.timeBudget.targetMinutes} minutos\n- Tolerancia: ${Math.round((serialized.timeBudget.flexibilityThreshold || 0.10) * 100)}%`);
+        }
+        
+        if (contextSections.length > 0) {
+          modificationText = `${modificationText}\n\n${contextSections.join('\n')}`;
+        }
+      }
+
+      // UNIFIED PIPELINE: Siempre usar generation_mode: 'universal'
+      const requestBody: any = {
+        originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
+        modification: modificationText,
+        groupContext,
+        type: 'modification',
+        generation_mode: 'universal',
+        evaluation_design_plan: {
           instrumentDesignRules,
           responseOptions: effectivePlan.responseOptions,
           triggers: effectivePlan.triggers,
@@ -894,15 +1024,123 @@ const EvaluacionesGrupo = () => {
           highStructureNeed: effectivePlan.highStructureNeed,
           designComplexityCount: effectivePlan.designComplexityCount,
           bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds
-        };
+        }
+      };
+
+      // R1: Log request payload with full details
+      const assignmentsByVersion = {
+        A: Object.values(effectivePlan.assignmentByStudentId).filter(v => v === 'A').length,
+        B: Object.values(effectivePlan.assignmentByStudentId).filter(v => v === 'B').length,
+        C: Object.values(effectivePlan.assignmentByStudentId).filter(v => v === 'C').length
+      };
+      
+      console.info('[EVAL_PIPELINE] payload', {
+        generation_mode: requestBody.generation_mode,
+        triggers: effectivePlan.triggers,
+        responseOptions: {
+          include: effectivePlan.responseOptions.include,
+          optionCount: effectivePlan.responseOptions.optionCount
+        },
+        assignmentsByVersion
+      });
+      
+      // DEBUG: Log request payload summary
+      const requestSummary = {
+        generationMode: requestBody.generation_mode,
+        hasEvaluationDesignPlan: !!requestBody.evaluation_design_plan,
+        hasGenerationContext: !!requestBody.generation_context,
+        triggers: effectivePlan.triggers,
+        responseOptionsInclude: effectivePlan.responseOptions.include,
+        assignmentsCount: Object.keys(effectivePlan.assignmentByStudentId).length
+      };
+      console.info('[EVAL_PIPELINE] Request payload summary:', requestSummary);
+      
+      if (showDebugPanel) {
+        setPipelineDebug(prev => ({
+          ...prev,
+          lastRequest: requestSummary
+        }));
       }
 
+      // ENFORCE: Clear any previous errors
+      setGenerationError(null);
+      
+      console.info('[EVAL_PIPELINE] Invoking modify-evaluation edge function');
       const { data, error } = await supabase.functions.invoke('modify-evaluation', {
         body: requestBody
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error('[EVAL_PIPELINE] Edge function error:', error);
+        // ENFORCE: Set visible error state before throwing
+        const errorMessage = error.message || 'Error desconocido al llamar al servidor';
+        const errorStatus = (error as any).status || '';
+        setGenerationError({
+          message: 'No se pudo generar la evaluación',
+          details: `${errorMessage}${errorStatus ? ` (Código: ${errorStatus})` : ''}`,
+          show: true
+        });
+        throw error;
+      }
+      
+      // ENFORCE: Verify that modify-evaluation was actually called and returned data
+      if (!data) {
+        console.error('[EVAL_PIPELINE] Edge function returned no data');
+        setGenerationError({
+          message: 'Error en la respuesta del servidor',
+          details: 'El servidor no retornó datos. Por favor, intentá nuevamente.',
+          show: true
+        });
+        throw new Error('Edge function returned no data');
+      }
 
+      // R4: Response integrity log
+      console.info('[EVAL_PIPELINE] Edge function response received', {
+        hasAiReport: !!data?.aiReport,
+        hasEvaluationBundle: !!data?.evaluationBundle,
+        hasVersions: {
+          A: !!data?.evaluationBundle?.versions?.A,
+          B: !!data?.evaluationBundle?.versions?.B,
+          C: !!data?.evaluationBundle?.versions?.C
+        },
+        studentAssignmentsCount: Object.keys(data?.studentAssignments || {}).length
+      });
+      
+      // R4: Detailed integrity log
+      console.info('[EVAL_PIPELINE] Response integrity check', {
+        responseKeys: Object.keys(data || {}),
+        hasAiReport: !!data?.aiReport,
+        aiReportKeys: data?.aiReport ? Object.keys(data.aiReport) : [],
+        evaluationBundleKeys: data?.evaluationBundle ? Object.keys(data.evaluationBundle) : [],
+        versionsKeys: data?.evaluationBundle?.versions ? Object.keys(data.evaluationBundle.versions) : [],
+        versionALength: data?.evaluationBundle?.versions?.A?.length || 0,
+        versionBLength: data?.evaluationBundle?.versions?.B?.length || 0,
+        versionCLength: data?.evaluationBundle?.versions?.C?.length || 0,
+        studentAssignmentsKeys: data?.studentAssignments ? Object.keys(data.studentAssignments) : []
+      });
+
+      // DEBUG: Log response summary
+      const versionsGenerated: string[] = [];
+      if (data?.evaluationBundle?.versions?.A) versionsGenerated.push('A');
+      if (data?.evaluationBundle?.versions?.B) versionsGenerated.push('B');
+      if (data?.evaluationBundle?.versions?.C) versionsGenerated.push('C');
+      
+      const responseSummary = {
+        hasAiReport: !!data?.aiReport,
+        hasEvaluationBundle: !!data?.evaluationBundle,
+        versionsGenerated,
+        warningsCount: Array.isArray(data?.warnings) ? data.warnings.length : 0,
+        endpoint: 'modify-evaluation'
+      };
+      
+      if (showDebugPanel) {
+        setPipelineDebug(prev => ({
+          ...prev,
+          lastResponse: responseSummary
+        }));
+      }
+
+      // R0: Normalizar studentAssignments del edge response
       const rawAssignments = (data?.studentAssignments as Record<string, 'A' | 'B' | 'C'>) || effectivePlan.assignmentByStudentId || {};
       const normalizeAssignments = (
         assignments: Record<string, 'A' | 'B' | 'C'>,
@@ -910,10 +1148,14 @@ const EvaluacionesGrupo = () => {
       ) => {
         const available = {
           A: true,
-          B: Boolean(bundle?.versionBHtml),
-          C: Boolean(bundle?.versionCHtml)
+          B: Boolean(bundle?.versionBHtml || bundle?.versions?.B),
+          C: Boolean(bundle?.versionCHtml || bundle?.versions?.C)
         };
-        const normalized: Record<string, 'A' | 'B' | 'C'> = { ...assignments };
+        // R0: Normalizar todas las keys a strings
+        const normalized: Record<string, 'A' | 'B' | 'C'> = {};
+        Object.entries(assignments).forEach(([key, value]) => {
+          normalized[String(key)] = value;
+        });
         const warnings: string[] = [];
         Object.entries(normalized).forEach(([studentId, version]) => {
           if (!available[version]) {
@@ -926,32 +1168,102 @@ const EvaluacionesGrupo = () => {
 
       setEvaluationDesignPlan(effectivePlan);
 
-      if (data?.evaluationBundle?.baseHtml) {
-        setEvaluationBundle(data.evaluationBundle);
-        setGeneratedEvaluations([]);
-        const normalizedResult = normalizeAssignments(rawAssignments, data.evaluationBundle);
-        setStudentAssignments(normalizedResult.normalized);
-        const edgeWarnings = Array.isArray(data?.warnings) ? data.warnings : [];
-        setAssignmentWarnings([...edgeWarnings, ...normalizedResult.warnings]);
-      } else {
-        const content = data?.content || basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1);
-        setEvaluationBundle(null);
-        setGeneratedEvaluations([
-          {
-            id: 'A',
-            version: 1,
-            versionKind: 'A',
-            versionLabel: 'Versión A (Universal)',
-            title: 'Versión A (Universal)',
-            content,
-            adaptations: [],
-            assignedStudents: [],
-            assignedStudentIds: []
-          }
-        ]);
-        setStudentAssignments(rawAssignments);
-        setAssignmentWarnings([]);
+      // R3: Build generatedEvaluations from evaluationBundle.versions (A, B, C)
+      // R5: Remove silent fallback - if critical fields missing, show error
+      const hasVersionA = Boolean(
+        data?.evaluationBundle?.versions?.A || 
+        data?.evaluationBundle?.baseHtml
+      );
+      
+      if (!hasVersionA) {
+        console.error('[EVAL_PIPELINE] Response missing Version A (critical field)');
+        setGenerationError({
+          message: 'Error en la respuesta del servidor',
+          details: 'La respuesta no contiene la versión A de la evaluación. Por favor, intentá nuevamente.',
+          show: true
+        });
+        toast({
+          title: "Error crítico",
+          description: "La respuesta del servidor no contiene la versión A de la evaluación.",
+          variant: "destructive"
+        });
+        setIsGenerating(false);
+        return;
       }
+
+      // B1: Defensive parser - extract HTML from JSON strings if needed
+      const extractHtmlFromJsonString = (value: any): string | null => {
+        if (!value) return null;
+        if (typeof value === 'string') {
+          // Check if it's a JSON string containing HTML
+          const trimmed = value.trim();
+          if (trimmed.startsWith('{') && (trimmed.includes('"versions"') || trimmed.includes('"A"') || trimmed.includes('"B"') || trimmed.includes('"C"'))) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              // Try multiple extraction strategies
+              if (parsed.versions?.A) return parsed.versions.A;
+              if (parsed.A) return parsed.A;
+              if (parsed.evaluationBundle?.versions?.A) return parsed.evaluationBundle.versions.A;
+              if (parsed.html) return parsed.html;
+              if (parsed.content) return parsed.content;
+            } catch (e) {
+              // Not valid JSON, treat as HTML
+            }
+          }
+          // Check if it's a JSON string with direct HTML
+          if (trimmed.startsWith('{') && (trimmed.includes('"<') || trimmed.includes("'<"))) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              return parsed.html || parsed.content || parsed.A || value;
+            } catch (e) {
+              // Not valid JSON, treat as HTML
+            }
+          }
+          return value;
+        }
+        return value;
+      };
+      
+      // Extract and clean HTML from each version
+      const extractVersionHtml = (versionData: any): string | null => {
+        const extracted = extractHtmlFromJsonString(versionData);
+        return extracted && typeof extracted === 'string' && extracted.trim().length > 0 ? extracted : null;
+      };
+      
+      // R3: Always use evaluationBundle.versions structure with defensive parsing
+      const rawVersionA = data.evaluationBundle?.versions?.A || data.evaluationBundle?.baseHtml || '';
+      const rawVersionB = data.evaluationBundle?.versions?.B ?? data.evaluationBundle?.versionBHtml ?? null;
+      const rawVersionC = data.evaluationBundle?.versions?.C ?? data.evaluationBundle?.versionCHtml ?? null;
+      
+      const cleanVersionA = extractVersionHtml(rawVersionA) || '';
+      const cleanVersionB = rawVersionB ? extractVersionHtml(rawVersionB) : null;
+      const cleanVersionC = rawVersionC ? extractVersionHtml(rawVersionC) : null;
+      
+      const evaluationBundleToSet: EvaluationBundle = {
+        baseHtml: cleanVersionA,
+        versionBHtml: cleanVersionB,
+        versionCHtml: cleanVersionC,
+        versions: {
+          A: cleanVersionA,
+          B: cleanVersionB,
+          C: cleanVersionC
+        },
+        responseOptionsIncluded: data.evaluationBundle?.responseOptionsIncluded ?? false,
+        responseOptionCount: data.evaluationBundle?.responseOptionCount ?? 2
+      };
+      
+      // Log if parsing was needed
+      if (rawVersionA !== cleanVersionA || (rawVersionB && rawVersionB !== cleanVersionB) || (rawVersionC && rawVersionC !== cleanVersionC)) {
+        console.warn('[EVAL_PIPELINE] Extracted HTML from JSON strings in response');
+      }
+      
+      setEvaluationBundle(evaluationBundleToSet);
+      setGeneratedEvaluations([]); // R3: Use displayEvaluations computed from evaluationBundle
+      
+      const normalizedResult = normalizeAssignments(rawAssignments, evaluationBundleToSet);
+      setStudentAssignments(normalizedResult.normalized);
+      const edgeWarnings = Array.isArray(data?.warnings) ? data.warnings : [];
+      setAssignmentWarnings([...edgeWarnings, ...normalizedResult.warnings]);
 
       const reminders = Array.isArray(data?.teacherRemindersByStudent)
         ? data.teacherRemindersByStudent
@@ -973,38 +1285,123 @@ const EvaluacionesGrupo = () => {
         setTimeBreakdown(null);
       }
 
+      // PATCH 6: Leer data.aiReport primero, luego legacy aiDesignReport
       if (data?.aiReport) {
+        console.info('[EVAL_PIPELINE] Using aiReport from response');
         setAiDesignReport(JSON.stringify(data.aiReport));
       } else if (data?.aiDesignReport) {
+        console.warn('[EVAL_PIPELINE] Falling back to aiDesignReport (legacy)');
         setAiDesignReport(JSON.stringify(data.aiDesignReport));
       } else {
+        console.warn('[EVAL_PIPELINE] No aiReport or aiDesignReport in response');
         setAiDesignReport(null);
       }
       
+      console.info('[EVAL_PIPELINE] Generation completed successfully');
+      
+      // R2: Verify that edge function returned aiReport and evaluationBundle.versions
+      if (!data?.evaluationBundle) {
+        console.error('[EVAL_PIPELINE] Response missing evaluationBundle');
+        setGenerationError({
+          message: 'Error en la respuesta del servidor',
+          details: 'La respuesta no contiene evaluationBundle. El servidor puede no haber procesado la solicitud correctamente.',
+          show: true
+        });
+        toast({
+          title: "Error en la respuesta",
+          description: "La respuesta del servidor no contiene evaluationBundle. Por favor, intentá nuevamente.",
+          variant: "destructive"
+        });
+        setIsGenerating(false);
+        return;
+      }
+      
+      // R2: Verify aiReport is present (should always be non-null from universal path)
+      if (!data?.aiReport) {
+        console.error('[EVAL_PIPELINE] Response missing aiReport (critical field)');
+        setGenerationError({
+          message: 'Error en la respuesta del servidor',
+          details: 'La respuesta no contiene aiReport. La evaluación no se puede guardar correctamente.',
+          show: true
+        });
+        toast({
+          title: "Error crítico",
+          description: "La respuesta del servidor no contiene aiReport. Por favor, intentá nuevamente.",
+          variant: "destructive"
+        });
+        setIsGenerating(false);
+        return;
+      }
+      
+      // ENFORCE: Clear error state on success
+      setGenerationError(null);
+      
       setActiveTab('results');
-    } catch (error) {
-      console.error('Error generating evaluations:', error);
-      // Fallback to local generation if AI fails (using provider data)
-      const evaluations: GeneratedEvaluation[] = [
-        {
-          id: 'A',
-          version: 1,
-          versionKind: 'A',
-          versionLabel: 'Versión A (Universal)',
-          title: 'Versión A (Universal)',
-          content: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
-          adaptations: [],
-          assignedStudents: [],
-          assignedStudentIds: []
+    } catch (error: any) {
+      console.error('[EVAL_PIPELINE] Error generating evaluations:', error);
+      
+      // ENFORCE: Show visible error instead of silent fallback
+      let errorMessage = "No se pudo generar la evaluación. Por favor, intentá nuevamente.";
+      let errorDetails = "";
+      
+      if (error?.message) {
+        if (error.message.includes('network') || error.message.includes('fetch') || error.message.includes('Failed to fetch')) {
+          errorMessage = "Error de conexión";
+          errorDetails = "No se pudo conectar con el servidor. Verificá tu conexión a internet e intentá nuevamente.";
+        } else if (error.message.includes('auth') || error.message.includes('401') || error.message.includes('403')) {
+          errorMessage = "Error de autenticación";
+          errorDetails = "Tu sesión expiró o no tenés permisos. Por favor, iniciá sesión nuevamente.";
+        } else if (error.message.includes('timeout') || error.message.includes('504')) {
+          errorMessage = "Tiempo de espera agotado";
+          errorDetails = "El servidor tardó demasiado en responder. Intentá nuevamente.";
+        } else {
+          errorDetails = error.message;
         }
-      ];
-      setGeneratedEvaluations(evaluations);
+      }
+      
+      if (error?.status) {
+        errorDetails = `${errorDetails} (Código: ${error.status})`;
+      }
+      
+      toast({
+        title: errorMessage,
+        description: errorDetails || "Ocurrió un error inesperado al generar la evaluación.",
+        variant: "destructive",
+        duration: 10000
+      });
+      
+      // ENFORCE: Do NOT use silent fallback - clear state instead
+      setGeneratedEvaluations([]);
       setEvaluationBundle(null);
       setEvaluationDesignPlan(null);
       setStudentAssignments({});
       setTeacherReminders([]);
       setAssignmentWarnings([]);
-      setActiveTab('results');
+      setAiDesignReport(null);
+      
+      // ENFORCE: Set visible error state (already set above, but ensure it's visible)
+      if (!generationError) {
+        setGenerationError({
+          message: errorMessage,
+          details: errorDetails,
+          show: true
+        });
+      }
+      
+      // Update debug panel if enabled
+      if (showDebugPanel) {
+        setPipelineDebug(prev => ({
+          ...prev,
+          lastResponse: {
+            hasAiReport: false,
+            hasEvaluationBundle: false,
+            versionsGenerated: [],
+            warningsCount: 0,
+            endpoint: 'modify-evaluation',
+            error: errorMessage + (errorDetails ? `: ${errorDetails}` : '')
+          }
+        }));
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -1238,46 +1635,297 @@ const EvaluacionesGrupo = () => {
     }
   };
 
+  // R0: Helper para normalizar IDs de estudiantes en todos lados
+  const sid = (s: any): string => String(s?.studentId ?? s?.id ?? s?.student_id ?? '');
+
+  /**
+   * STRICT normalizer that extracts EXACTLY the target version.
+   * NEVER returns JSON wrappers, NEVER fallbacks to A when key is B or C.
+   * If extraction fails, returns null (caller must show error block).
+   */
+  const normalizeVersionHtml = (value: any, key: 'A' | 'B' | 'C'): string | null => {
+    if (!value) return null;
+    
+    // Helper to escape and convert newlines to <br/>
+    const escapeAndBr = (text: string): string => {
+      return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/\n/g, '<br/>');
+    };
+    
+    // Helper to extract specific key from object
+    const extractKeyFromObject = (obj: any, k: 'A' | 'B' | 'C'): string | null => {
+      if (!obj || typeof obj !== 'object') return null;
+      if (obj.versions?.[k]) return obj.versions[k];
+      if (obj[k]) return obj[k];
+      if (obj.evaluationBundle?.versions?.[k]) return obj.evaluationBundle.versions[k];
+      // Legacy fallbacks ONLY for A
+      if (k === 'A') {
+        if (obj.base_html || obj.baseHtml) return obj.base_html || obj.baseHtml;
+        if (obj.html) return obj.html;
+        if (obj.content) return obj.content;
+      }
+      return null;
+    };
+    
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      
+      // B2: If string startsWith("{") => parse and extract EXACT key, recurse until HTML or plain text
+      if (trimmed.startsWith('{') || trimmed.includes('"versions"')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          const extracted = extractKeyFromObject(parsed, key);
+          if (extracted) {
+            // Recurse on extracted value (might be nested JSON or HTML)
+            return normalizeVersionHtml(extracted, key);
+          }
+          // Key not found, return null (NEVER fallback to A)
+          return null;
+        } catch (e) {
+          // Not valid JSON, if it's HTML that was incorrectly detected, return it
+          if (trimmed.startsWith('<')) {
+            return trimmed;
+          }
+          // Otherwise treat as plain text
+          if (trimmed.length > 0) {
+            return `<div>${escapeAndBr(trimmed)}</div>`;
+          }
+          return null;
+        }
+      }
+      
+      // B2: If string startsWith("<") => return as-is
+      if (trimmed.startsWith('<')) {
+        return trimmed;
+      }
+      
+      // B2: If plain text => wrap in <div> with <br/>
+      if (trimmed.length > 0) {
+        return `<div>${escapeAndBr(trimmed)}</div>`;
+      }
+      
+      return null;
+    }
+    
+    if (typeof value === 'object') {
+      const extracted = extractKeyFromObject(value, key);
+      if (extracted) {
+        return normalizeVersionHtml(extracted, key);
+      }
+      return null;
+    }
+    
+    return null;
+  };
+
   const displayEvaluations = useMemo(() => {
     if (!evaluationBundle?.baseHtml && !evaluationBundle?.versions?.A) {
       return generatedEvaluations;
     }
 
-    const assignmentByStudentId = Object.keys(studentAssignments).length > 0
+    // R0: Normalizar assignmentByStudentId keys
+    const rawAssignments = Object.keys(studentAssignments).length > 0
       ? studentAssignments
       : (evaluationDesignPlan?.assignmentByStudentId || {});
+    
+    // Normalizar todas las keys a strings consistentes
+    const assignmentByStudentId: Record<string, 'A' | 'B' | 'C'> = {};
+    Object.entries(rawAssignments).forEach(([key, value]) => {
+      assignmentByStudentId[String(key)] = value;
+    });
+
     const students = selectedGroup?.students || [];
+    
+    // R0: Usar sid() helper para normalizar IDs en todas las comparaciones
     const getAssigned = (kind: 'A' | 'B' | 'C') => {
-      const assigned = students.filter(student => assignmentByStudentId[String(student.id)] === kind);
+      const assigned = students.filter(student => {
+        const normalizedId = sid(student);
+        return assignmentByStudentId[normalizedId] === kind;
+      });
       return {
-        ids: assigned.map(student => student.id),
-        names: assigned.map(student => student.name || `Estudiante ${student.id}`)
+        ids: assigned.map(student => sid(student)),
+        names: assigned.map(student => student.name || `Estudiante ${sid(student)}`)
       };
     };
 
-    const baseAssigned = getAssigned('A');
-    const baseHtml = evaluationBundle.baseHtml || evaluationBundle.versions?.A || '';
-    const evaluations: GeneratedEvaluation[] = [
-      {
-        id: 'A',
-        title: 'Versión A (Universal)',
-        content: baseHtml,
-        version: 1,
-        versionKind: 'A',
-        versionLabel: 'Versión A (Universal)',
-        adaptations: [],
-        assignedStudents: baseAssigned.names,
-        assignedStudentIds: baseAssigned.ids
-      }
-    ];
+    // REQUIREMENT 3: Determine which versions to display based on assignments
+    // Display ONLY versions that have count > 0 (except A, which is always shown)
+    const assignmentCounts = {
+      A: Object.values(assignmentByStudentId).filter(v => v === 'A').length,
+      B: Object.values(assignmentByStudentId).filter(v => v === 'B').length,
+      C: Object.values(assignmentByStudentId).filter(v => v === 'C').length
+    };
 
-    const versionBHtml = evaluationBundle.versionBHtml || evaluationBundle.versions?.B || null;
-    if (versionBHtml) {
+    // TASK 2: Get version source - use ONLY versions.* when available, legacy fields ONLY for backward compat
+    const getVersionSource = (bundle: EvaluationBundle | null): { A: any; B: any; C: any } => {
+      if (bundle?.versions) {
+        // If versions exists, use ONLY that (never fallback to legacy)
+        return {
+          A: bundle.versions.A,
+          B: bundle.versions.B,
+          C: bundle.versions.C
+        };
+      } else {
+        // Legacy: map legacy fields into versions shape (A only, for old records)
+        return {
+          A: bundle?.baseHtml || bundle?.baseHtml || null,
+          B: bundle?.versionBHtml || null,
+          C: bundle?.versionCHtml || null
+        };
+      }
+    };
+    
+    const versionSource = getVersionSource(evaluationBundle);
+    const rawA = versionSource.A;
+    const rawB = versionSource.B;
+    const rawC = versionSource.C;
+    
+    // TASK 3: Implement strict per-key extraction in FRONTEND
+    const extractVersionStrictFront = (value: any, key: 'A' | 'B' | 'C'): string | null => {
+      if (!value) return null;
+      
+      // Helper to escape and convert newlines to <br/>
+      const escapeAndBr = (text: string): string => {
+        return text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;')
+          .replace(/\n/g, '<br/>');
+      };
+      
+      // Helper to extract specific key from object
+      const extractKeyFromObject = (obj: any, k: 'A' | 'B' | 'C'): string | null => {
+        if (!obj || typeof obj !== 'object') return null;
+        if (obj.versions?.[k]) return obj.versions[k];
+        if (obj[k]) return obj[k];
+        if (obj.evaluationBundle?.versions?.[k]) return obj.evaluationBundle.versions[k];
+        // Legacy fallbacks ONLY for A
+        if (k === 'A') {
+          if (obj.base_html || obj.baseHtml) return obj.base_html || obj.baseHtml;
+          if (obj.html) return obj.html;
+          if (obj.content) return obj.content;
+        }
+        return null;
+      };
+      
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        
+        // If already HTML, return it
+        if (trimmed.startsWith('<')) {
+          return trimmed;
+        }
+        
+        // If JSON wrapper, parse and extract EXACT key
+        if (trimmed.startsWith('{') || trimmed.includes('"versions"') || trimmed.includes("'versions'")) {
+          try {
+            // First attempt JSON.parse
+            let parsed: any;
+            try {
+              parsed = JSON.parse(trimmed);
+            } catch (e) {
+              // If JSON.parse fails, attempt to normalize single quotes to double quotes ONLY if safe
+              const normalized = trimmed.replace(/'/g, '"').replace(/(\w+):/g, '"$1":');
+              try {
+                parsed = JSON.parse(normalized);
+              } catch (e2) {
+                return null; // Cannot parse
+              }
+            }
+            
+            const extracted = extractKeyFromObject(parsed, key);
+            if (extracted) {
+              // Recurse if extracted is still a wrapper
+              return extractVersionStrictFront(extracted, key);
+            }
+            // NEVER fallback to A when key is C or B
+            return null;
+          } catch (e) {
+            return null;
+          }
+        }
+        
+        // Plain text: wrap into HTML
+        if (trimmed.length > 0) {
+          return `<div>${escapeAndBr(trimmed)}</div>`;
+        }
+        
+        return null;
+      }
+      
+      if (typeof value === 'object') {
+        const extracted = extractKeyFromObject(value, key);
+        if (extracted) {
+          return extractVersionStrictFront(extracted, key);
+        }
+        return null;
+      }
+      
+      return null;
+    };
+    
+    // TASK 3: Extract strictly before rendering
+    const extractedA = extractVersionStrictFront(rawA, 'A');
+    const extractedB = assignmentCounts.B > 0 ? extractVersionStrictFront(rawB, 'B') : null;
+    const extractedC = assignmentCounts.C > 0 ? extractVersionStrictFront(rawC, 'C') : null;
+    
+    // TASK 3: ABSOLUTE RULE: if extracted startsWith("{") => show error block (do not render)
+    const htmlA = extractedA && !extractedA.trim().startsWith('{') ? extractedA : null;
+    const htmlB = extractedB && !extractedB.trim().startsWith('{') ? extractedB : null;
+    const htmlC = extractedC && !extractedC.trim().startsWith('{') ? extractedC : null;
+    
+    // TASK 5: Runtime proof logs
+    console.log('[EVAL_UI] version-source', {
+      hasVersions: !!evaluationBundle?.versions,
+      rawStartsWith: {
+        A: String(rawA || '').slice(0, 15),
+        C: String(rawC || '').slice(0, 15)
+      },
+      extractedStartsWith: {
+        A: extractedA?.slice(0, 15) || 'null',
+        C: extractedC?.slice(0, 15) || 'null'
+      },
+      extractedIsWrapper: {
+        A: extractedA?.trim().startsWith('{') || false,
+        C: extractedC?.trim().startsWith('{') || false
+      },
+      extractedIsHtml: {
+        A: extractedA?.trim().startsWith('<') || false,
+        C: extractedC?.trim().startsWith('<') || false
+      }
+    });
+    
+    const evaluations: GeneratedEvaluation[] = [];
+    
+    // B4: Add explicit UI error blocks rather than rendering garbage
+    const baseAssigned = getAssigned('A');
+    // B4: If htmlA is null => show error block
+    evaluations.push({
+      id: 'A',
+      title: 'Versión A (Universal)',
+      content: htmlA || '<div><strong>Error:</strong> Version A missing</div>',
+      version: 1,
+      versionKind: 'A',
+      versionLabel: 'Versión A (Universal)',
+      adaptations: [],
+      assignedStudents: baseAssigned.names,
+      assignedStudentIds: baseAssigned.ids
+    });
+
+    // Version B: Only show if assigned
+    if (assignmentCounts.B > 0) {
       const assigned = getAssigned('B');
       evaluations.push({
         id: 'B',
         title: 'Versión B (Equivalente)',
-        content: versionBHtml,
+        content: htmlB || '<div><strong>Error:</strong> Version B required but missing</div>',
         version: 2,
         versionKind: 'B',
         versionLabel: 'Versión B (Equivalente)',
@@ -1287,13 +1935,14 @@ const EvaluacionesGrupo = () => {
       });
     }
 
-    const versionCHtml = evaluationBundle.versionCHtml || evaluationBundle.versions?.C || null;
-    if (versionCHtml) {
+    // Version C: Only show if assigned
+    if (assignmentCounts.C > 0) {
       const assigned = getAssigned('C');
+      // B4: If C required but null => show error block (NEVER show A as fallback)
       evaluations.push({
         id: 'C',
         title: 'Versión C (Adecuación de contenido)',
-        content: versionCHtml,
+        content: htmlC || '<div><strong>Error:</strong> Version C required but missing</div>',
         version: 3,
         versionKind: 'C',
         versionLabel: 'Versión C (Adecuación de contenido)',
@@ -1304,7 +1953,7 @@ const EvaluacionesGrupo = () => {
     }
 
     return evaluations;
-  }, [evaluationBundle, evaluationDesignPlan, generatedEvaluations, selectedGroup]);
+  }, [evaluationBundle, evaluationDesignPlan, generatedEvaluations, selectedGroup, studentAssignments]);
 
   return (
     <ErrorBoundary>
@@ -1314,6 +1963,31 @@ const EvaluacionesGrupo = () => {
           <Button variant="outline" onClick={() => navigate(-1)} className="mb-4">Volver</Button>
           <h1 className="text-3xl font-bold text-gray-800">Generar evaluaciones para el grupo</h1>
         </motion.div>
+
+        {/* ENFORCE: Error banner for generation failures */}
+        {generationError?.show && (
+          <Card className="mb-6 border-l-4 border-red-500 bg-red-50 dark:bg-red-950/20">
+            <CardHeader>
+              <CardTitle className="text-sm text-red-800 dark:text-red-200 flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4" />
+                {generationError.message}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-red-700 dark:text-red-300">
+                {generationError.details || 'Ocurrió un error inesperado al generar la evaluación.'}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={() => setGenerationError(null)}
+              >
+                Cerrar
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         <Card className="mb-8 border-2 border-green-200 bg-white/80">
           <CardHeader>
@@ -1828,6 +2502,45 @@ const EvaluacionesGrupo = () => {
               <p className="text-xs text-muted-foreground text-center">
                 Se generará una evaluación universal; versiones B/C solo si se cumplen condiciones deterministas
               </p>
+              
+              {/* DEBUG: Pipeline debug panel (only visible when VITE_DEBUG_EVAL_PIPELINE=true) */}
+              {showDebugPanel && (pipelineDebug.lastRequest || pipelineDebug.lastResponse) && (
+                <Card className="mt-4 border-2 border-blue-300 bg-blue-50 dark:bg-blue-950/20">
+                  <CardHeader>
+                    <CardTitle className="text-sm text-blue-800 dark:text-blue-200">
+                      🔍 Debug: Pipeline de Generación
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4 text-sm">
+                    {pipelineDebug.lastRequest && (
+                      <div>
+                        <h4 className="font-semibold text-blue-900 dark:text-blue-100 mb-2">Último Request:</h4>
+                        <ul className="list-disc pl-5 space-y-1 text-blue-800 dark:text-blue-200">
+                          <li>Endpoint: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">modify-evaluation</code></li>
+                          <li>Generation Mode: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">{pipelineDebug.lastRequest.generationMode}</code></li>
+                          <li>Has evaluation_design_plan: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">{pipelineDebug.lastRequest.hasEvaluationDesignPlan ? '✅ Sí' : '❌ No'}</code></li>
+                          <li>Has generation_context: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">{pipelineDebug.lastRequest.hasGenerationContext ? '❌ Sí (ERROR)' : '✅ No'}</code></li>
+                          <li>Triggers: versionB={pipelineDebug.lastRequest.triggers.versionB ? '✅' : '❌'}, versionC={pipelineDebug.lastRequest.triggers.versionC ? '✅' : '❌'}</li>
+                          <li>Response Options Include: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">{pipelineDebug.lastRequest.responseOptionsInclude ? '✅ Sí' : '❌ No'}</code></li>
+                          <li>Assignments Count: {pipelineDebug.lastRequest.assignmentsCount}</li>
+                        </ul>
+                      </div>
+                    )}
+                    {pipelineDebug.lastResponse && (
+                      <div>
+                        <h4 className="font-semibold text-blue-900 dark:text-blue-100 mb-2">Último Response:</h4>
+                        <ul className="list-disc pl-5 space-y-1 text-blue-800 dark:text-blue-200">
+                          <li>Endpoint: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">{pipelineDebug.lastResponse.endpoint}</code></li>
+                          <li>Has aiReport: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">{pipelineDebug.lastResponse.hasAiReport ? '✅ Sí' : '❌ No'}</code></li>
+                          <li>Has evaluationBundle: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">{pipelineDebug.lastResponse.hasEvaluationBundle ? '✅ Sí' : '❌ No'}</code></li>
+                          <li>Versions Generated: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">{pipelineDebug.lastResponse.versionsGenerated.length > 0 ? pipelineDebug.lastResponse.versionsGenerated.join(', ') : 'Ninguna'}</code></li>
+                          <li>Warnings Count: {pipelineDebug.lastResponse.warningsCount}</li>
+                        </ul>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
             </div>
           </CardContent>
         </Card>
