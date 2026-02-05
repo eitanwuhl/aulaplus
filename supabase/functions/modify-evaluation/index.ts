@@ -1007,9 +1007,281 @@ serve(async (req) => {
     // Universal evaluation path (must be checked FIRST before generation_context)
     if (type === 'modification' && generation_mode === 'universal') {
       /**
+       * Extract versions from input - returns { A?: string, B?: string|null, C?: string|null }
+       * NEVER returns wrapper JSON string
+       * 
+       * Caso 1: output es objeto y ya tiene versions => usarlo
+       * Caso 2: output es string JSON válido => JSON.parse y extraer versions
+       * Caso 3: output es string "HTML + JSON pegado" => separar: tomar substring desde primer "{" hasta último "}", intentar JSON.parse
+       * Si JSON.parse falla => return { A: makeErrorHtml("Model returned non-JSON wrapper"), B:null, C:null }
+       */
+      const makeErrorHtml = (message: string): string => {
+        return `<div class="evaluation"><p><strong>Error:</strong> ${message}</p></div>`;
+      };
+
+      const extractVersions = (input: unknown): { A?: string; B?: string | null; C?: string | null } => {
+        // Caso 1: output es objeto y ya tiene versions => usarlo
+        if (input && typeof input === 'object' && !Array.isArray(input)) {
+          const obj = input as any;
+          if (obj.versions && typeof obj.versions === 'object') {
+            return {
+              A: obj.versions.A ?? null,
+              B: obj.versions.B ?? null,
+              C: obj.versions.C ?? null
+            };
+          }
+          // También verificar en raíz
+          if (obj.A || obj.B || obj.C) {
+            // CRITICAL FIX: Si A/B/C son strings que empiezan con "{", son wrappers JSON
+            // Necesitamos extraer el contenido del wrapper antes de devolverlos
+            const aIsWrapper = typeof obj.A === 'string' && obj.A.trim().startsWith('{');
+            const bIsWrapper = typeof obj.B === 'string' && obj.B.trim().startsWith('{');
+            const cIsWrapper = typeof obj.C === 'string' && obj.C.trim().startsWith('{');
+            
+            // Si A es wrapper, intentar extraer de él (A suele contener el wrapper completo)
+            if (aIsWrapper) {
+              try {
+                const parsed = JSON.parse(obj.A.trim());
+                if (parsed.versions && typeof parsed.versions === 'object') {
+                  // Wrapper tiene formato {versions: {A, B, C}}
+                  return {
+                    A: parsed.versions.A ?? null,
+                    B: parsed.versions.B ?? (bIsWrapper ? null : obj.B) ?? null,
+                    C: parsed.versions.C ?? (cIsWrapper ? null : obj.C) ?? null
+                  };
+                }
+                if (parsed.A || parsed.B || parsed.C) {
+                  // Wrapper tiene formato {A, B, C} en raíz
+                  return {
+                    A: parsed.A ?? null,
+                    B: parsed.B ?? (bIsWrapper ? null : obj.B) ?? null,
+                    C: parsed.C ?? (cIsWrapper ? null : obj.C) ?? null
+                  };
+                }
+              } catch (e) {
+                // JSON parse falló - el wrapper está malformado
+                // Intentar extraer con regex como fallback
+                const firstBrace = obj.A.trim().indexOf('{');
+                const lastBrace = obj.A.trim().lastIndexOf('}');
+                if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+                  const jsonCandidate = obj.A.trim().slice(firstBrace, lastBrace + 1);
+                  try {
+                    const parsed = JSON.parse(jsonCandidate);
+                    if (parsed.versions && typeof parsed.versions === 'object') {
+                      return {
+                        A: parsed.versions.A ?? null,
+                        B: parsed.versions.B ?? (bIsWrapper ? null : obj.B) ?? null,
+                        C: parsed.versions.C ?? (cIsWrapper ? null : obj.C) ?? null
+                      };
+                    }
+                    if (parsed.A || parsed.B || parsed.C) {
+                      return {
+                        A: parsed.A ?? null,
+                        B: parsed.B ?? (bIsWrapper ? null : obj.B) ?? null,
+                        C: parsed.C ?? (cIsWrapper ? null : obj.C) ?? null
+                      };
+                    }
+                  } catch (e2) {
+                    // Ambos intentos fallaron - devolver error HTML para A
+                    return {
+                      A: makeErrorHtml('Model returned non-JSON wrapper in Version A (parse failed)'),
+                      B: bIsWrapper ? null : obj.B ?? null,
+                      C: cIsWrapper ? null : obj.C ?? null
+                    };
+                  }
+                }
+                // Si no se pudo extraer, devolver error HTML para A
+                return {
+                  A: makeErrorHtml('Model returned non-JSON wrapper in Version A (parse failed)'),
+                  B: bIsWrapper ? null : obj.B ?? null,
+                  C: cIsWrapper ? null : obj.C ?? null
+                };
+              }
+            }
+            
+            // Si B o C son wrappers pero A no, intentar extraer de ellos individualmente
+            if (bIsWrapper && !aIsWrapper) {
+              try {
+                const parsed = JSON.parse(obj.B.trim());
+                if (parsed.versions?.B) {
+                  obj.B = parsed.versions.B;
+                } else if (parsed.B) {
+                  obj.B = parsed.B;
+                } else {
+                  obj.B = null; // Wrapper no contiene B válido
+                }
+              } catch (e) {
+                obj.B = null; // Parse falló
+              }
+            }
+            
+            if (cIsWrapper && !aIsWrapper) {
+              try {
+                const parsed = JSON.parse(obj.C.trim());
+                if (parsed.versions?.C) {
+                  obj.C = parsed.versions.C;
+                } else if (parsed.C) {
+                  obj.C = parsed.C;
+                } else {
+                  obj.C = null; // Wrapper no contiene C válido
+                }
+              } catch (e) {
+                obj.C = null; // Parse falló
+              }
+            }
+            
+            // Si no hay wrappers o la extracción fue exitosa, devolver valores
+            return {
+              A: obj.A ?? null,
+              B: obj.B ?? null,
+              C: obj.C ?? null
+            };
+          }
+        }
+
+        // Caso 2 y 3: output es string
+        if (typeof input === 'string') {
+          const trimmed = input.trim();
+          if (!trimmed) {
+            return { A: makeErrorHtml('Model returned empty output'), B: null, C: null };
+          }
+
+          // Si input es string que empieza con "{": intentar JSON.parse
+          if (trimmed.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (parsed.versions && typeof parsed.versions === 'object') {
+                return {
+                  A: parsed.versions.A ?? null,
+                  B: parsed.versions.B ?? null,
+                  C: parsed.versions.C ?? null
+                };
+              }
+              if (parsed.A || parsed.B || parsed.C) {
+                return {
+                  A: parsed.A ?? null,
+                  B: parsed.B ?? null,
+                  C: parsed.C ?? null
+                };
+              }
+            } catch (e) {
+              // JSON parse falló => return error HTML
+              return { A: makeErrorHtml('Model returned non-JSON wrapper (parse failed)'), B: null, C: null };
+            }
+          }
+
+          // Caso 3: input tiene HTML antes del "{": separar jsonCandidate = input.slice(firstBrace, lastBrace+1) y parsear
+          const firstBrace = trimmed.indexOf('{');
+          const lastBrace = trimmed.lastIndexOf('}');
+          
+          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            const jsonCandidate = trimmed.slice(firstBrace, lastBrace + 1);
+            try {
+              const parsed = JSON.parse(jsonCandidate);
+              if (parsed.versions && typeof parsed.versions === 'object') {
+                return {
+                  A: parsed.versions.A ?? null,
+                  B: parsed.versions.B ?? null,
+                  C: parsed.versions.C ?? null
+                };
+              }
+              if (parsed.A || parsed.B || parsed.C) {
+                return {
+                  A: parsed.A ?? null,
+                  B: parsed.B ?? null,
+                  C: parsed.C ?? null
+                };
+              }
+            } catch (e) {
+              // JSON parse falló => return error HTML
+              return { A: makeErrorHtml('Model returned mixed HTML+JSON but JSON parse failed'), B: null, C: null };
+            }
+          }
+
+          // Si no es JSON y empieza con "<", tratar como HTML directo
+          if (trimmed.startsWith('<')) {
+            return { A: trimmed, B: null, C: null };
+          }
+
+          // Si no es ni JSON ni HTML, error
+          return { A: makeErrorHtml('Model returned invalid format (not JSON, not HTML)'), B: null, C: null };
+        }
+
+        // Si no es objeto ni string, error
+        return { A: makeErrorHtml('Model returned invalid type'), B: null, C: null };
+      };
+
+      /**
+       * Normalize HTML to safe fragment
+       * - si null => null
+       * - remover code fences
+       * - remover DOCTYPE
+       * - si hay <body> => extraer inner body
+       * - remover completamente: <head>...</head>, <style>...</style>, <script>...</script>, <link ...>, y tags <html>/<body>/<head> residuales
+       * - trim
+       * - VALIDAR: no contiene "<head" ni "<style" ni empieza con "{"
+       * - si falla => return makeErrorHtml("Unsafe/invalid HTML returned")
+       */
+      const normalizeHtmlFragment = (html: string | null | undefined): string | null => {
+        if (html == null) return null;
+        if (typeof html !== 'string') return null;
+
+        let cleaned = html.trim();
+        if (!cleaned) return null;
+
+        // Remover code fences
+        cleaned = cleaned.replace(/```html\s*([\s\S]*?)```/gi, '$1');
+        cleaned = cleaned.replace(/```\s*([\s\S]*?)```/gi, '$1');
+
+        // Remover DOCTYPE
+        cleaned = cleaned.replace(/<!DOCTYPE[^>]*>/gi, '');
+
+        // Si hay <body> => extraer inner body
+        const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        if (bodyMatch && bodyMatch[1]) {
+          cleaned = bodyMatch[1];
+        }
+
+        // Remover completamente: <head>...</head>, <style>...</style>, <script>...</script>, <link ...>
+        cleaned = cleaned.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '');
+        cleaned = cleaned.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+        cleaned = cleaned.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+        cleaned = cleaned.replace(/<link[^>]*>/gi, '');
+
+        // Remover tags residuales: <html>, </html>, <body>, </body>, <head>, </head>
+        cleaned = cleaned.replace(/<html[^>]*>/gi, '');
+        cleaned = cleaned.replace(/<\/html>/gi, '');
+        cleaned = cleaned.replace(/<body[^>]*>/gi, '');
+        cleaned = cleaned.replace(/<\/body>/gi, '');
+        cleaned = cleaned.replace(/<head[^>]*>/gi, '');
+        cleaned = cleaned.replace(/<\/head>/gi, '');
+
+        cleaned = cleaned.trim();
+
+        // VALIDAR: no contiene "<head" ni "<style" ni empieza con "{"
+        if (cleaned.includes('<head') || cleaned.includes('</head>')) {
+          return makeErrorHtml('Unsafe/invalid HTML returned (contains &lt;head&gt;)');
+        }
+        if (cleaned.includes('<style') || cleaned.includes('</style>')) {
+          return makeErrorHtml('Unsafe/invalid HTML returned (contains &lt;style&gt;)');
+        }
+        if (cleaned.startsWith('{') || /"versions"\s*:\s*\{/.test(cleaned)) {
+          return makeErrorHtml('Unsafe/invalid HTML returned (contains JSON wrapper)');
+        }
+
+        // Asegurar que empieza con "<"
+        if (!cleaned.startsWith('<')) {
+          cleaned = `<div class="evaluation">${cleaned}</div>`;
+        }
+
+        return cleaned.trim();
+      };
+
+      /**
        * Extract and normalize versions from AI output - SINGLE SOURCE OF TRUTH
        * Handles: delimiters, JSON wrapper, HTML+JSON mixed, HTML blocks, error fallback
        * Returns: { A: string|null; B: string|null; C: string|null; warnings: string[]; extractionMethod: string }
+       * @deprecated Use extractVersions + normalizeHtmlFragment instead
        */
       const extractAndNormalizeVersions = (aiTextOrObject: unknown): { 
         A: string | null; 
@@ -1609,21 +1881,26 @@ serve(async (req) => {
         finalTriggers?: { versionB: boolean; versionC: boolean };
         finalAssignmentCounts?: { A: number; B: number; C: number };
       }) => {
-        // CRITICAL: Inputs to buildUniversalResponse should already be normalized
-        // But apply final safety check to ensure they're HTML fragments
-        // Combine all inputs and extract/normalize in one pass
-        const combinedInput = {
+        // CRITICAL: Extract versions and normalize to HTML fragments
+        // Combine all inputs to extract versions
+        const modelOutput = {
           A: baseHtml,
           B: versionBHtml,
           C: versionCHtml
         };
-        
-        const extracted = extractAndNormalizeVersions(combinedInput);
-        
-        // Use extracted and normalized versions
-        const finalA = extracted.A || '<div class="evaluation"><p><strong>Error:</strong> Versión A no pudo ser extraída.</p></div>';
-        const finalB = extracted.B;
-        const finalC = extracted.C;
+
+        // Extract versions (never returns wrapper JSON string)
+        const versions = extractVersions(modelOutput);
+
+        // Normalize each version to safe HTML fragment
+        const A = normalizeHtmlFragment(versions.A) || makeErrorHtml('Version A normalization failed');
+        const B = normalizeHtmlFragment(versions.B);
+        const C = normalizeHtmlFragment(versions.C);
+
+        // Final values
+        const finalA = A;
+        const finalB = B;
+        const finalC = C;
 
         return new Response(JSON.stringify({
           success: true,
@@ -1634,7 +1911,7 @@ serve(async (req) => {
             baseHtml: finalA,
             versionBHtml: finalB,
             versionCHtml: finalC,
-            // versions.* are ONLY strings or null (never objects, never wrappers)
+            // versions.* is an OBJECT with string values (never a string with JSON)
             versions: {
               A: finalA,
               B: finalB,
@@ -1666,7 +1943,12 @@ serve(async (req) => {
             shouldHaveB,
             shouldHaveC,
             // DEBUG mínimo para verificar en Network (sin loguear HTML completo)
-            extractionMethod: extracted.extractionMethod,
+            wrapperDetected: {
+              contentStartsWithBrace: finalA.trim().startsWith('{'),
+              baseHtmlStartsWithBrace: finalA.trim().startsWith('{'),
+              aStartsWithBrace: finalA.trim().startsWith('{'),
+              cStartsWithBrace: finalC ? finalC.trim().startsWith('{') : false
+            },
             aStartsWithBrace: finalA.trim().startsWith('{'),
             aHasHead: finalA.includes('<head'),
             aHasStyle: finalA.includes('<style'),
@@ -1675,11 +1957,6 @@ serve(async (req) => {
             cHasStyle: finalC ? finalC.includes('<style') : false,
             aPrefix: finalA.slice(0, 60),
             cPrefix: finalC ? finalC.slice(0, 60) : null,
-            wrapperDetected: {
-              contentStartsWithBrace: finalA.trim().startsWith('{'),
-              baseHtmlStartsWithBrace: finalA.trim().startsWith('{'),
-              aStartsWithBrace: finalA.trim().startsWith('{')
-            },
             hasHeadStyleAfterNormalize: {
               A: finalA.includes('<head') || finalA.includes('<style'),
               B: finalB ? (finalB.includes('<head') || finalB.includes('<style')) : false,
@@ -1712,19 +1989,19 @@ serve(async (req) => {
               C: finalC ? finalC.trim().startsWith('<') : false
             },
             hasWrapper: {
-              A: aHasWrapper,
-              B: bHasWrapper,
-              C: cHasWrapper
+              A: finalA.trim().startsWith('{') || /"versions"\s*:\s*\{/.test(finalA),
+              B: finalB ? (finalB.trim().startsWith('{') || /"versions"\s*:\s*\{/.test(finalB)) : false,
+              C: finalC ? (finalC.trim().startsWith('{') || /"versions"\s*:\s*\{/.test(finalC)) : false
             },
             hasForbiddenTags: {
-              A: hasWrapper(baseHtml) || hasForbiddenTags(baseHtml),
-              B: versionBHtml ? (hasWrapper(versionBHtml) || hasForbiddenTags(versionBHtml)) : false,
-              C: versionCHtml ? (hasWrapper(versionCHtml) || hasForbiddenTags(versionCHtml)) : false
+              A: finalA.includes('<head') || finalA.includes('<style'),
+              B: finalB ? (finalB.includes('<head') || finalB.includes('<style')) : false,
+              C: finalC ? (finalC.includes('<head') || finalC.includes('<style')) : false
             },
             wrapperDetectedBefore: {
-              A: hasWrapper(baseHtml),
-              B: versionBHtml ? hasWrapper(versionBHtml) : false,
-              C: versionCHtml ? hasWrapper(versionCHtml) : false
+              A: baseHtml.trim().startsWith('{') || /"versions"\s*:\s*\{/.test(baseHtml),
+              B: versionBHtml ? (versionBHtml.trim().startsWith('{') || /"versions"\s*:\s*\{/.test(versionBHtml)) : false,
+              C: versionCHtml ? (versionCHtml.trim().startsWith('{') || /"versions"\s*:\s*\{/.test(versionCHtml)) : false
             },
             wrapperDetectedAfter: {
               A: false, // Should always be false after normalization
@@ -1737,16 +2014,16 @@ serve(async (req) => {
               C: false
             },
             triggers: {
-              versionB: generateVersionB,
-              versionC: generateVersionC
+              versionB: finalTriggers?.versionB ?? false,
+              versionC: finalTriggers?.versionC ?? false
             },
             finalTriggers: finalTriggers || {
               versionB: false,
               versionC: false
             },
             responseOptions: {
-              include: responseOptionsInclude,
-              optionCount: responseOptionsInclude ? responseOptionCount : 0
+              include: responseOptionsIncluded,
+              optionCount: responseOptionsIncluded ? responseOptionCount : 0
             },
             assignmentCounts: finalAssignmentCounts || {
               A: Object.values(studentAssignments).filter(v => v === 'A').length,

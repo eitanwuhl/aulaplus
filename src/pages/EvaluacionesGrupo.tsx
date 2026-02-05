@@ -1696,10 +1696,26 @@ const EvaluacionesGrupo = () => {
     
     // Backend guarantees HTML strings that start with "<"
     // No wrapper detection, no JSON parsing, no transformation
+    // If it starts with "{", show error HTML (defensive - backend should never send this)
     // If it starts with "<", it's HTML final and use it as-is
-    const htmlA = (typeof rawA === 'string' && rawA.trim().startsWith('<')) ? rawA.trim() : null;
-    const htmlB = (typeof rawB === 'string' && rawB.trim().startsWith('<')) ? rawB.trim() : null;
-    const htmlC = (typeof rawC === 'string' && rawC.trim().startsWith('<')) ? rawC.trim() : null;
+    const getSafeHtml = (value: unknown, key: string): string | null => {
+      if (!value || typeof value !== 'string') return null;
+      const trimmed = value.trim();
+      // Defensive: if starts with "{", show error HTML (NO JSON.parse attempt)
+      if (trimmed.startsWith('{')) {
+        console.error(`[EVAL_UI] Backend returned JSON wrapper in Version ${key} - showing error HTML`);
+        return `<div class="evaluation"><p><strong>Error:</strong> El backend devolvió un wrapper JSON inválido en versión ${key}.</p></div>`;
+      }
+      // If starts with "<", it's HTML final
+      if (trimmed.startsWith('<')) {
+        return trimmed;
+      }
+      return null;
+    };
+
+    const htmlA = getSafeHtml(rawA, 'A');
+    const htmlB = getSafeHtml(rawB, 'B');
+    const htmlC = getSafeHtml(rawC, 'C');
     
     // STEP 4: Console logs for debugging (informative only, no defensive checks)
     console.log('[UI_VERSIONS_RAW]', {
