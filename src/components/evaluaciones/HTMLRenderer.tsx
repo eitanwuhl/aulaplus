@@ -1,80 +1,130 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 
 interface HTMLRendererProps {
   content: string;
   className?: string;
 }
 
+/**
+ * CRITICAL: Sanitize HTML to prevent CSS leakage that shrinks the layout.
+ * Removes <html>, <head>, <body>, <style>, <script> tags that can affect global styles.
+ */
+const sanitizeHtml = (html: string): string => {
+  let sanitized = html;
+  
+  // Remove DOCTYPE
+  sanitized = sanitized.replace(/<!DOCTYPE[^>]*>/gi, '');
+  
+  // Remove <html> tags (opening and closing)
+  sanitized = sanitized.replace(/<html[^>]*>/gi, '');
+  sanitized = sanitized.replace(/<\/html>/gi, '');
+  
+  // Remove entire <head> section including contents
+  sanitized = sanitized.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '');
+  
+  // Remove <body> tags (but keep content inside)
+  sanitized = sanitized.replace(/<body[^>]*>/gi, '');
+  sanitized = sanitized.replace(/<\/body>/gi, '');
+  
+  // Remove entire <style> sections - CRITICAL for preventing CSS leakage
+  sanitized = sanitized.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+  
+  // Remove entire <script> sections
+  sanitized = sanitized.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+  
+  // Remove any remaining standalone tags
+  sanitized = sanitized.replace(/<head[^>]*>/gi, '');
+  sanitized = sanitized.replace(/<\/head>/gi, '');
+  
+  // Remove inline style attributes that could affect global layout
+  // Only remove dangerous CSS properties, not all styles
+  sanitized = sanitized.replace(/style\s*=\s*["'][^"']*(?:position\s*:\s*(?:fixed|absolute)|width\s*:\s*100(?:vw|%)|height\s*:\s*100(?:vh|%))[^"']*["']/gi, '');
+  
+  return sanitized.trim();
+};
+
+/**
+ * Check if content has potential CSS leakage issues
+ */
+const hasCssLeakageRisk = (html: string): boolean => {
+  const lower = html.toLowerCase();
+  return (
+    lower.includes('<html') ||
+    lower.includes('<head') ||
+    lower.includes('<body') ||
+    lower.includes('<style') ||
+    lower.includes('<script')
+  );
+};
+
 export const HTMLRenderer: React.FC<HTMLRendererProps> = ({ content, className = '' }) => {
-  // TASK 1: Extract version from JSON wrapper if present, BEFORE any processing
-  const extractFromWrapper = (text: string, targetKey: 'A' | 'B' | 'C' = 'A'): string | null => {
-    const trimmed = text.trim();
+  const trimmed = content.trim();
+  
+  // SANITIZED HTML: Process the content to remove dangerous tags
+  const sanitizedContent = useMemo(() => {
+    if (!trimmed.startsWith('<')) return trimmed;
     
-    // If it's a JSON wrapper, extract the target key
-    if (trimmed.startsWith('{') || trimmed.includes('"versions"') || trimmed.includes("'versions'")) {
-      try {
-        // Try JSON.parse first
-        let parsed: any;
-        try {
-          parsed = JSON.parse(trimmed);
-        } catch (e) {
-          // If JSON.parse fails, try normalizing single quotes to double quotes (JS-like wrapper)
-          const normalized = trimmed.replace(/'/g, '"').replace(/(\w+):/g, '"$1":');
-          try {
-            parsed = JSON.parse(normalized);
-          } catch (e2) {
-            return null; // Cannot parse, return null
-          }
-        }
-        
-        // Extract EXACT key
-        const extracted = parsed.versions?.[targetKey] || parsed[targetKey] || parsed.evaluationBundle?.versions?.[targetKey];
-        if (extracted) {
-          // Recurse if extracted is still a wrapper
-          if (typeof extracted === 'string' && (extracted.trim().startsWith('{') || extracted.includes('"versions"'))) {
-            return extractFromWrapper(extracted, targetKey);
-          }
-          return extracted;
-        }
-        return null;
-      } catch (e) {
-        return null;
-      }
+    const hadCssRisk = hasCssLeakageRisk(trimmed);
+    const cleaned = sanitizeHtml(trimmed);
+    
+    // Solo disparar warning si realmente quedaron <head> o <style> después de la sanitización
+    // Backend should have normalized with normalizeHtmlFragment, so this should rarely trigger
+    const stillHasHead = cleaned.toLowerCase().includes('<head');
+    const stillHasStyle = cleaned.toLowerCase().includes('<style');
+    
+    // El warning solo debe disparar si realmente quedaron <head> o <style> después de la sanitización
+    if (stillHasHead || stillHasStyle) {
+      console.warn('[HTMLRenderer] CSS leakage risk detected and sanitized (defensive check — backend should have normalized):', {
+        hadHead: stillHasHead,
+        hadStyle: stillHasStyle,
+        originalLen: trimmed.length,
+        cleanedLen: cleaned.length
+      });
     }
     
-    return null;
-  };
-  
-  // TASK 1: If content is JSON wrapper, extract first
-  let processedContent = content;
-  const extracted = extractFromWrapper(content, 'A'); // Default to A for HTMLRenderer
-  if (extracted) {
-    processedContent = extracted;
-  }
-  
-  // TASK 1: If extracted content is HTML, render directly
-  const trimmed = processedContent.trim();
+    return cleaned;
+  }, [trimmed]);
+
+  // Part C: If the input content starts with <, render as sanitized HTML
+  // CRITICAL: Wrap in isolated container to prevent layout shrink (CSS leakage prevention)
   if (trimmed.startsWith('<')) {
-    // I2: Render as HTML using dangerouslySetInnerHTML
     return (
       <div 
-        className={`prose max-w-none ${className}`}
-        dangerouslySetInnerHTML={{ __html: trimmed }}
+        className={`evaluation-content-wrapper ${className}`}
         style={{
-          fontSize: '16px',
-          lineHeight: '1.7',
-          fontFamily: 'inherit',
-          padding: '20px 0'
+          isolation: 'isolate', // CSS isolation to prevent style bleed
+          contain: 'layout style', // Contain layout and styles
+          maxWidth: '100%', // Prevent width expansion
+          overflow: 'hidden' // Prevent content overflow
         }}
-      />
+      >
+        <div 
+          className="prose max-w-none"
+          dangerouslySetInnerHTML={{ __html: sanitizedContent }}
+          style={{
+            fontSize: '16px',
+            lineHeight: '1.7',
+            fontFamily: 'inherit',
+            padding: '20px 0',
+            width: '100%', // Explicit width to prevent shrink
+            boxSizing: 'border-box' // Include padding in width calculation
+          }}
+        />
+      </div>
     );
   }
   
-  // TASK 1: If content is still a wrapper after extraction, show error
-  if (trimmed.startsWith('{')) {
+  // If content starts with { or contains "versions" before any HTML, show error (never show wrapper)
+  const firstLt = trimmed.indexOf('<');
+  const versionsIdx = trimmed.indexOf('"versions"');
+  const wrapperDetected = trimmed.startsWith('{') || (versionsIdx >= 0 && (firstLt === -1 || versionsIdx < firstLt));
+  if (wrapperDetected) {
     return (
       <div className="p-4 bg-red-50 border border-red-200 rounded">
-        <strong>Error:</strong> Contenido no válido (wrapper JSON detectado)
+        <strong>Error:</strong> Contenido no válido (wrapper JSON detectado).
+        <div className="mt-2 text-xs font-mono whitespace-pre-wrap">
+          {trimmed.slice(0, 120)}
+        </div>
       </div>
     );
   }
@@ -277,7 +327,12 @@ export const HTMLRenderer: React.FC<HTMLRendererProps> = ({ content, className =
       .replace(/\*(.*?)\*/g, '<em>$1</em>');
   };
 
-  const htmlContent = parseContent(content);
+  // Process and sanitize content that is NOT already HTML
+  const htmlContent = useMemo(() => {
+    const parsed = parseContent(content);
+    // Double-check sanitization for processed content too
+    return sanitizeHtml(parsed);
+  }, [content]);
 
   return (
     <>

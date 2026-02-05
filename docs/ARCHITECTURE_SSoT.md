@@ -377,7 +377,7 @@ supabase/
 | Variable | Required | Location | Purpose |
 |----------|----------|----------|---------|
 | `VITE_SUPABASE_URL` | ✅ | `.env` (root) | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | ✅ | `.env` (root) | Supabase anonymous key (public) |
+| `VITE_SUPABASE_ANON_KEY` | ✅ | `.env` (root) | Supabase Publishable Key (public, formato: `sb_publishable_...`) |
 | `OPENAI_API_KEY` | ✅ | Supabase Dashboard | OpenAI API key for edge functions |
 | `SERVICE_ROLE_KEY` | ✅ | Supabase Dashboard | Supabase service role (admin) |
 

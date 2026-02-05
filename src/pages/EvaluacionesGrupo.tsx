@@ -65,6 +65,7 @@ interface EvaluationBundle {
   versions?: { A: string; B?: string | null; C?: string | null };
   responseOptionsIncluded?: boolean;
   responseOptionCount?: number;
+  finalAssignmentCounts?: { A: number; B: number; C: number }; // STEP 2: Store from backend
 }
 
 function getPersistedContemplaciones(studentId: number): string[] {
@@ -1191,71 +1192,38 @@ const EvaluacionesGrupo = () => {
         return;
       }
 
-      // B1: Defensive parser - extract HTML from JSON strings if needed
-      const extractHtmlFromJsonString = (value: any): string | null => {
-        if (!value) return null;
-        if (typeof value === 'string') {
-          // Check if it's a JSON string containing HTML
-          const trimmed = value.trim();
-          if (trimmed.startsWith('{') && (trimmed.includes('"versions"') || trimmed.includes('"A"') || trimmed.includes('"B"') || trimmed.includes('"C"'))) {
-            try {
-              const parsed = JSON.parse(trimmed);
-              // Try multiple extraction strategies
-              if (parsed.versions?.A) return parsed.versions.A;
-              if (parsed.A) return parsed.A;
-              if (parsed.evaluationBundle?.versions?.A) return parsed.evaluationBundle.versions.A;
-              if (parsed.html) return parsed.html;
-              if (parsed.content) return parsed.content;
-            } catch (e) {
-              // Not valid JSON, treat as HTML
-            }
-          }
-          // Check if it's a JSON string with direct HTML
-          if (trimmed.startsWith('{') && (trimmed.includes('"<') || trimmed.includes("'<"))) {
-            try {
-              const parsed = JSON.parse(trimmed);
-              return parsed.html || parsed.content || parsed.A || value;
-            } catch (e) {
-              // Not valid JSON, treat as HTML
-            }
-          }
-          return value;
-        }
-        return value;
-      };
+      // Backend guarantees HTML strings that start with "<"
+      // No parsing, no transformation, no validation needed
       
-      // Extract and clean HTML from each version
-      const extractVersionHtml = (versionData: any): string | null => {
-        const extracted = extractHtmlFromJsonString(versionData);
-        return extracted && typeof extracted === 'string' && extracted.trim().length > 0 ? extracted : null;
-      };
+      // STEP 3: Frontend DUMB - accept versions.* as strings from backend (no parsing)
+      const versionA = data.evaluationBundle?.versions?.A || data.evaluationBundle?.baseHtml || '';
+      const versionB = data.evaluationBundle?.versions?.B ?? data.evaluationBundle?.versionBHtml ?? null;
+      const versionC = data.evaluationBundle?.versions?.C ?? data.evaluationBundle?.versionCHtml ?? null;
       
-      // R3: Always use evaluationBundle.versions structure with defensive parsing
-      const rawVersionA = data.evaluationBundle?.versions?.A || data.evaluationBundle?.baseHtml || '';
-      const rawVersionB = data.evaluationBundle?.versions?.B ?? data.evaluationBundle?.versionBHtml ?? null;
-      const rawVersionC = data.evaluationBundle?.versions?.C ?? data.evaluationBundle?.versionCHtml ?? null;
-      
-      const cleanVersionA = extractVersionHtml(rawVersionA) || '';
-      const cleanVersionB = rawVersionB ? extractVersionHtml(rawVersionB) : null;
-      const cleanVersionC = rawVersionC ? extractVersionHtml(rawVersionC) : null;
+      // STEP 3: Type validation - if not string, log CRITICAL error
+      if (versionA && typeof versionA !== 'string') {
+        console.error('[EVAL_PIPELINE] CRITICAL: versionA from backend is not string!', typeof versionA, versionA);
+      }
+      if (versionB && typeof versionB !== 'string') {
+        console.error('[EVAL_PIPELINE] CRITICAL: versionB from backend is not string!', typeof versionB, versionB);
+      }
+      if (versionC && typeof versionC !== 'string') {
+        console.error('[EVAL_PIPELINE] CRITICAL: versionC from backend is not string!', typeof versionC, versionC);
+      }
       
       const evaluationBundleToSet: EvaluationBundle = {
-        baseHtml: cleanVersionA,
-        versionBHtml: cleanVersionB,
-        versionCHtml: cleanVersionC,
+        baseHtml: typeof versionA === 'string' ? versionA : '',
+        versionBHtml: typeof versionB === 'string' ? versionB : null,
+        versionCHtml: typeof versionC === 'string' ? versionC : null,
         versions: {
-          A: cleanVersionA,
-          B: cleanVersionB,
-          C: cleanVersionC
+          A: typeof versionA === 'string' ? versionA : '',
+          B: typeof versionB === 'string' ? versionB : null,
+          C: typeof versionC === 'string' ? versionC : null
         },
         responseOptionsIncluded: data.evaluationBundle?.responseOptionsIncluded ?? false,
-        responseOptionCount: data.evaluationBundle?.responseOptionCount ?? 2
+        responseOptionCount: data.evaluationBundle?.responseOptionCount ?? 2,
+        finalAssignmentCounts: data.finalAssignmentCounts // STEP 2: Store finalAssignmentCounts from backend
       };
-      
-      // Log if parsing was needed
-      if (rawVersionA !== cleanVersionA || (rawVersionB && rawVersionB !== cleanVersionB) || (rawVersionC && rawVersionC !== cleanVersionC)) {
-        console.warn('[EVAL_PIPELINE] Extracted HTML from JSON strings in response');
-      }
       
       setEvaluationBundle(evaluationBundleToSet);
       setGeneratedEvaluations([]); // R3: Use displayEvaluations computed from evaluationBundle
@@ -1265,10 +1233,16 @@ const EvaluacionesGrupo = () => {
       const edgeWarnings = Array.isArray(data?.warnings) ? data.warnings : [];
       setAssignmentWarnings([...edgeWarnings, ...normalizedResult.warnings]);
 
-      const reminders = Array.isArray(data?.teacherRemindersByStudent)
+      // STEP 4: Teacher reminders must come from backend teacherRemindersByStudent ONLY
+      // If not available, show empty state (NOT fallback to perStudentReminders which is for students)
+      const reminders = Array.isArray(data?.teacherRemindersByStudent) && data.teacherRemindersByStudent.length > 0
         ? data.teacherRemindersByStudent
-        : (effectivePlan.perStudentReminders || []);
+        : [];
       setTeacherReminders(reminders);
+      
+      if (!Array.isArray(data?.teacherRemindersByStudent) || data.teacherRemindersByStudent.length === 0) {
+        console.warn('[EVAL_PIPELINE] No teacher reminders available from backend, showing empty state');
+      }
 
       if (data?.estimatedTotalMinutes) {
         setEstimatedDurationMinutes(data.estimatedTotalMinutes);
@@ -1639,89 +1613,11 @@ const EvaluacionesGrupo = () => {
   const sid = (s: any): string => String(s?.studentId ?? s?.id ?? s?.student_id ?? '');
 
   /**
-   * STRICT normalizer that extracts EXACTLY the target version.
-   * NEVER returns JSON wrappers, NEVER fallbacks to A when key is B or C.
-   * If extraction fails, returns null (caller must show error block).
+   * Simple HTML guard for evaluation versions.
+   * Frontend should trust evaluationBundle.versions.* (backend guarantee).
    */
-  const normalizeVersionHtml = (value: any, key: 'A' | 'B' | 'C'): string | null => {
-    if (!value) return null;
-    
-    // Helper to escape and convert newlines to <br/>
-    const escapeAndBr = (text: string): string => {
-      return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
-        .replace(/\n/g, '<br/>');
-    };
-    
-    // Helper to extract specific key from object
-    const extractKeyFromObject = (obj: any, k: 'A' | 'B' | 'C'): string | null => {
-      if (!obj || typeof obj !== 'object') return null;
-      if (obj.versions?.[k]) return obj.versions[k];
-      if (obj[k]) return obj[k];
-      if (obj.evaluationBundle?.versions?.[k]) return obj.evaluationBundle.versions[k];
-      // Legacy fallbacks ONLY for A
-      if (k === 'A') {
-        if (obj.base_html || obj.baseHtml) return obj.base_html || obj.baseHtml;
-        if (obj.html) return obj.html;
-        if (obj.content) return obj.content;
-      }
-      return null;
-    };
-    
-    if (typeof value === 'string') {
-      const trimmed = value.trim();
-      
-      // B2: If string startsWith("{") => parse and extract EXACT key, recurse until HTML or plain text
-      if (trimmed.startsWith('{') || trimmed.includes('"versions"')) {
-        try {
-          const parsed = JSON.parse(trimmed);
-          const extracted = extractKeyFromObject(parsed, key);
-          if (extracted) {
-            // Recurse on extracted value (might be nested JSON or HTML)
-            return normalizeVersionHtml(extracted, key);
-          }
-          // Key not found, return null (NEVER fallback to A)
-          return null;
-        } catch (e) {
-          // Not valid JSON, if it's HTML that was incorrectly detected, return it
-          if (trimmed.startsWith('<')) {
-            return trimmed;
-          }
-          // Otherwise treat as plain text
-          if (trimmed.length > 0) {
-            return `<div>${escapeAndBr(trimmed)}</div>`;
-          }
-          return null;
-        }
-      }
-      
-      // B2: If string startsWith("<") => return as-is
-      if (trimmed.startsWith('<')) {
-        return trimmed;
-      }
-      
-      // B2: If plain text => wrap in <div> with <br/>
-      if (trimmed.length > 0) {
-        return `<div>${escapeAndBr(trimmed)}</div>`;
-      }
-      
-      return null;
-    }
-    
-    if (typeof value === 'object') {
-      const extracted = extractKeyFromObject(value, key);
-      if (extracted) {
-        return normalizeVersionHtml(extracted, key);
-      }
-      return null;
-    }
-    
-    return null;
-  };
+  const isHtmlString = (value: any): value is string =>
+    typeof value === 'string' && value.trim().startsWith('<');
 
   const displayEvaluations = useMemo(() => {
     if (!evaluationBundle?.baseHtml && !evaluationBundle?.versions?.A) {
@@ -1753,164 +1649,106 @@ const EvaluacionesGrupo = () => {
       };
     };
 
-    // REQUIREMENT 3: Determine which versions to display based on assignments
-    // Display ONLY versions that have count > 0 (except A, which is always shown)
-    const assignmentCounts = {
+    // STEP 2: Use finalAssignmentCounts from backend (after B may have been dropped)
+    // If not available, calculate from assignments (legacy/fallback)
+    const backendFinalCounts = evaluationBundle?.finalAssignmentCounts;
+    const assignmentCounts = backendFinalCounts ?? {
       A: Object.values(assignmentByStudentId).filter(v => v === 'A').length,
       B: Object.values(assignmentByStudentId).filter(v => v === 'B').length,
       C: Object.values(assignmentByStudentId).filter(v => v === 'C').length
     };
+    
+    // STEP 3: Log assignment counts for debugging
+    console.log('[UI_ASSIGNMENT_COUNTS]', {
+      backendFinalCounts,
+      calculated: {
+        A: Object.values(assignmentByStudentId).filter(v => v === 'A').length,
+        B: Object.values(assignmentByStudentId).filter(v => v === 'B').length,
+        C: Object.values(assignmentByStudentId).filter(v => v === 'C').length
+      },
+      final: assignmentCounts
+    });
 
-    // TASK 2: Get version source - use ONLY versions.* when available, legacy fields ONLY for backward compat
-    const getVersionSource = (bundle: EvaluationBundle | null): { A: any; B: any; C: any } => {
-      if (bundle?.versions) {
-        // If versions exists, use ONLY that (never fallback to legacy)
-        return {
-          A: bundle.versions.A,
-          B: bundle.versions.B,
-          C: bundle.versions.C
-        };
-      } else {
-        // Legacy: map legacy fields into versions shape (A only, for old records)
-        return {
-          A: bundle?.baseHtml || bundle?.baseHtml || null,
-          B: bundle?.versionBHtml || null,
-          C: bundle?.versionCHtml || null
-        };
-      }
-    };
+    // STEP 4: Frontend - remove any parsing, only accept string HTML
+    const versions = evaluationBundle?.versions ?? null;
+    const legacyA = !versions
+      ? (evaluationBundle?.baseHtml || evaluationBundle?.base_html || evaluationBundle?.content || evaluationBundle?.html || null)
+      : null;
     
-    const versionSource = getVersionSource(evaluationBundle);
-    const rawA = versionSource.A;
-    const rawB = versionSource.B;
-    const rawC = versionSource.C;
+    // STEP 4: Cards must use ONLY versions.<key> (no multi-layer extraction)
+    let rawA = versions ? (versions.A ?? null) : legacyA;
+    let rawB = versions ? (versions.B ?? null) : null;
+    let rawC = versions ? (versions.C ?? null) : null;
+
+    // STEP 4: If typeof rawA/B/C !== 'string' → error block (and log)
+    if (rawA && typeof rawA !== 'string') {
+      console.error('[EVAL_UI] CRITICAL: rawA is not a string, it is:', typeof rawA, rawA);
+      rawA = null; // Will trigger error block below
+    }
+    if (rawB && typeof rawB !== 'string') {
+      console.error('[EVAL_UI] CRITICAL: rawB is not a string, it is:', typeof rawB, rawB);
+      rawB = null;
+    }
+    if (rawC && typeof rawC !== 'string') {
+      console.error('[EVAL_UI] CRITICAL: rawC is not a string, it is:', typeof rawC, rawC);
+      rawC = null;
+    }
     
-    // TASK 3: Implement strict per-key extraction in FRONTEND
-    const extractVersionStrictFront = (value: any, key: 'A' | 'B' | 'C'): string | null => {
-      if (!value) return null;
-      
-      // Helper to escape and convert newlines to <br/>
-      const escapeAndBr = (text: string): string => {
-        return text
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&#39;')
-          .replace(/\n/g, '<br/>');
-      };
-      
-      // Helper to extract specific key from object
-      const extractKeyFromObject = (obj: any, k: 'A' | 'B' | 'C'): string | null => {
-        if (!obj || typeof obj !== 'object') return null;
-        if (obj.versions?.[k]) return obj.versions[k];
-        if (obj[k]) return obj[k];
-        if (obj.evaluationBundle?.versions?.[k]) return obj.evaluationBundle.versions[k];
-        // Legacy fallbacks ONLY for A
-        if (k === 'A') {
-          if (obj.base_html || obj.baseHtml) return obj.base_html || obj.baseHtml;
-          if (obj.html) return obj.html;
-          if (obj.content) return obj.content;
-        }
-        return null;
-      };
-      
-      if (typeof value === 'string') {
-        const trimmed = value.trim();
-        
-        // If already HTML, return it
-        if (trimmed.startsWith('<')) {
-          return trimmed;
-        }
-        
-        // If JSON wrapper, parse and extract EXACT key
-        if (trimmed.startsWith('{') || trimmed.includes('"versions"') || trimmed.includes("'versions'")) {
-          try {
-            // First attempt JSON.parse
-            let parsed: any;
-            try {
-              parsed = JSON.parse(trimmed);
-            } catch (e) {
-              // If JSON.parse fails, attempt to normalize single quotes to double quotes ONLY if safe
-              const normalized = trimmed.replace(/'/g, '"').replace(/(\w+):/g, '"$1":');
-              try {
-                parsed = JSON.parse(normalized);
-              } catch (e2) {
-                return null; // Cannot parse
-              }
-            }
-            
-            const extracted = extractKeyFromObject(parsed, key);
-            if (extracted) {
-              // Recurse if extracted is still a wrapper
-              return extractVersionStrictFront(extracted, key);
-            }
-            // NEVER fallback to A when key is C or B
-            return null;
-          } catch (e) {
-            return null;
-          }
-        }
-        
-        // Plain text: wrap into HTML
-        if (trimmed.length > 0) {
-          return `<div>${escapeAndBr(trimmed)}</div>`;
-        }
-        
-        return null;
-      }
-      
-      if (typeof value === 'object') {
-        const extracted = extractKeyFromObject(value, key);
-        if (extracted) {
-          return extractVersionStrictFront(extracted, key);
-        }
-        return null;
-      }
-      
-      return null;
-    };
+    // Backend guarantees HTML strings that start with "<"
+    // No wrapper detection, no JSON parsing, no transformation
+    // If it starts with "<", it's HTML final and use it as-is
+    const htmlA = (typeof rawA === 'string' && rawA.trim().startsWith('<')) ? rawA.trim() : null;
+    const htmlB = (typeof rawB === 'string' && rawB.trim().startsWith('<')) ? rawB.trim() : null;
+    const htmlC = (typeof rawC === 'string' && rawC.trim().startsWith('<')) ? rawC.trim() : null;
     
-    // TASK 3: Extract strictly before rendering
-    const extractedA = extractVersionStrictFront(rawA, 'A');
-    const extractedB = assignmentCounts.B > 0 ? extractVersionStrictFront(rawB, 'B') : null;
-    const extractedC = assignmentCounts.C > 0 ? extractVersionStrictFront(rawC, 'C') : null;
-    
-    // TASK 3: ABSOLUTE RULE: if extracted startsWith("{") => show error block (do not render)
-    const htmlA = extractedA && !extractedA.trim().startsWith('{') ? extractedA : null;
-    const htmlB = extractedB && !extractedB.trim().startsWith('{') ? extractedB : null;
-    const htmlC = extractedC && !extractedC.trim().startsWith('{') ? extractedC : null;
-    
-    // TASK 5: Runtime proof logs
-    console.log('[EVAL_UI] version-source', {
-      hasVersions: !!evaluationBundle?.versions,
-      rawStartsWith: {
-        A: String(rawA || '').slice(0, 15),
-        C: String(rawC || '').slice(0, 15)
+    // STEP 4: Console logs for debugging (informative only, no defensive checks)
+    console.log('[UI_VERSIONS_RAW]', {
+      A: { 
+        type: typeof rawA, 
+        isString: typeof rawA === 'string',
+        startsWithHtml: typeof rawA === 'string' && rawA.trim().startsWith('<'),
+        start: typeof rawA === 'string' ? rawA.slice(0, 40) : '(not string)', 
+        len: typeof rawA === 'string' ? rawA.length : 0
       },
-      extractedStartsWith: {
-        A: extractedA?.slice(0, 15) || 'null',
-        C: extractedC?.slice(0, 15) || 'null'
+      B: { 
+        type: typeof rawB, 
+        isString: typeof rawB === 'string',
+        startsWithHtml: typeof rawB === 'string' && rawB.trim().startsWith('<'),
+        start: typeof rawB === 'string' ? rawB.slice(0, 40) : '(not string)', 
+        len: typeof rawB === 'string' ? rawB.length : 0
       },
-      extractedIsWrapper: {
-        A: extractedA?.trim().startsWith('{') || false,
-        C: extractedC?.trim().startsWith('{') || false
+      C: { 
+        type: typeof rawC, 
+        isString: typeof rawC === 'string',
+        startsWithHtml: typeof rawC === 'string' && rawC.trim().startsWith('<'),
+        start: typeof rawC === 'string' ? rawC.slice(0, 40) : '(not string)', 
+        len: typeof rawC === 'string' ? rawC.length : 0
       },
-      extractedIsHtml: {
-        A: extractedA?.trim().startsWith('<') || false,
-        C: extractedC?.trim().startsWith('<') || false
-      }
+      assignmentCounts
     });
     
+    // PHASE 2B: Build cards with hard assertions (no mutation, no reuse)
     const evaluations: GeneratedEvaluation[] = [];
     
-    // B4: Add explicit UI error blocks rather than rendering garbage
+    // STEP 3: B card must be hidden if finalAssignmentCounts.B === 0 (even if triggers.versionB was initially true)
+    // Backend may have dropped B if no students were assigned to it after reassignment
+    const shouldShowB = assignmentCounts.B > 0;
+
+    // PHASE 2: Card A - always shown
     const baseAssigned = getAssigned('A');
-    // B4: If htmlA is null => show error block
+    const contentA = htmlA || '<div class="p-4 bg-red-50 border-2 border-red-400 rounded"><strong>Error:</strong> Version A missing. No se pudo extraer el contenido de la versión A.</div>';
+    
+    if (!htmlA) {
+      console.error('[EVAL_UI] Version A missing after extraction', {
+        rawA: String(rawA || '').slice(0, 50),
+        hasEvaluationBundle: !!evaluationBundle
+      });
+    }
+    
     evaluations.push({
       id: 'A',
       title: 'Versión A (Universal)',
-      content: htmlA || '<div><strong>Error:</strong> Version A missing</div>',
+      content: contentA,
       version: 1,
       versionKind: 'A',
       versionLabel: 'Versión A (Universal)',
@@ -1919,13 +1757,15 @@ const EvaluacionesGrupo = () => {
       assignedStudentIds: baseAssigned.ids
     });
 
-    // Version B: Only show if assigned
-    if (assignmentCounts.B > 0) {
+    // PHASE 2: Card B - only if assigned or forced
+    if (shouldShowB) {
       const assigned = getAssigned('B');
+      const contentB = htmlB || '<div class="p-4 bg-red-50 border-2 border-red-400 rounded"><strong>Error:</strong> Version B required but missing. No se pudo extraer el contenido de la versión B.</div>';
+      
       evaluations.push({
         id: 'B',
         title: 'Versión B (Equivalente)',
-        content: htmlB || '<div><strong>Error:</strong> Version B required but missing</div>',
+        content: contentB,
         version: 2,
         versionKind: 'B',
         versionLabel: 'Versión B (Equivalente)',
@@ -1935,14 +1775,22 @@ const EvaluacionesGrupo = () => {
       });
     }
 
-    // Version C: Only show if assigned
+    // PHASE 2: Card C - only if C is assigned
     if (assignmentCounts.C > 0) {
       const assigned = getAssigned('C');
-      // B4: If C required but null => show error block (NEVER show A as fallback)
+      const contentC = htmlC || '<div class="p-4 bg-red-50 border-2 border-red-400 rounded"><strong>Error:</strong> Version C required but missing. No se pudo extraer el contenido de la versión C.</div>';
+      
+      if (!htmlC) {
+        console.error('[EVAL_UI] Version C required but missing after extraction', {
+          rawC: String(rawC || '').slice(0, 50),
+          hasEvaluationBundle: !!evaluationBundle
+        });
+      }
+      
       evaluations.push({
         id: 'C',
         title: 'Versión C (Adecuación de contenido)',
-        content: htmlC || '<div><strong>Error:</strong> Version C required but missing</div>',
+        content: contentC,
         version: 3,
         versionKind: 'C',
         versionLabel: 'Versión C (Adecuación de contenido)',
@@ -1952,8 +1800,41 @@ const EvaluacionesGrupo = () => {
       });
     }
 
+    // PHASE 1: Log card content for debugging (after build)
+    console.log('[UI_CARDS_BUILT]', evaluations.map(e => ({
+      id: e.id,
+      contentStart: e.content.slice(0, 40),
+      contentLen: e.content.length
+    })));
+
     return evaluations;
   }, [evaluationBundle, evaluationDesignPlan, generatedEvaluations, selectedGroup, studentAssignments]);
+
+  // PHASE 1A: UI Version Integrity Panel (dev/flag only)
+  const debugRawAssignments = Object.keys(studentAssignments).length > 0
+    ? studentAssignments
+    : (evaluationDesignPlan?.assignmentByStudentId || {});
+  const debugAssignmentCounts = {
+    A: Object.values(debugRawAssignments).filter(v => v === 'A').length,
+    B: Object.values(debugRawAssignments).filter(v => v === 'B').length,
+    C: Object.values(debugRawAssignments).filter(v => v === 'C').length
+  };
+  const debugVersions = evaluationBundle?.versions ?? null;
+  const debugLegacyA = !debugVersions
+    ? (evaluationBundle?.baseHtml || evaluationBundle?.base_html || evaluationBundle?.content || evaluationBundle?.html || null)
+    : null;
+  const debugA = debugVersions ? debugVersions.A ?? null : debugLegacyA;
+  const debugB = debugVersions ? debugVersions.B ?? null : null;
+  const debugC = debugVersions ? debugVersions.C ?? null : null;
+  
+  // PHASE 1: Compute diff-style checks (card content vs source versions)
+  const cardA = displayEvaluations.find(e => e.id === 'A');
+  const cardB = displayEvaluations.find(e => e.id === 'B');
+  const cardC = displayEvaluations.find(e => e.id === 'C');
+  
+  const diffCheckA = cardA && debugA ? (cardA.content === debugA) : null;
+  const diffCheckB = cardB && debugB ? (cardB.content === debugB) : null;
+  const diffCheckC = cardC && debugC ? (cardC.content === debugC) : null;
 
   return (
     <ErrorBoundary>
@@ -2571,6 +2452,69 @@ const EvaluacionesGrupo = () => {
                     Guardar evaluación
                   </Button>
                 </div>
+
+                {/* PHASE 1A: Version Integrity Panel (only visible when VITE_DEBUG_EVAL_PIPELINE=true) */}
+                {showDebugPanel && (
+                  <Card className="mb-6 border-2 border-purple-300 bg-purple-50 dark:bg-purple-950/20">
+                    <CardHeader>
+                      <CardTitle className="text-sm text-purple-800 dark:text-purple-200">
+                        [UI_VERSION_DEBUG] - Forensic Panel
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="text-xs font-mono space-y-3">
+                      <div className="font-bold text-purple-900">RAW API BUNDLE FIELDS:</div>
+                      <div className={typeof debugA !== 'string' && debugA !== null ? 'text-red-600 font-bold' : ''}>
+                        A: type={typeof debugA} {typeof debugA === 'object' && debugA !== null ? `keys=[${Object.keys(debugA).join(',')}]` : ''} start="{String(debugA ?? '').slice(0, 40)}" len={String(debugA ?? '').length}
+                      </div>
+                      <div className={typeof debugB !== 'string' && debugB !== null ? 'text-red-600 font-bold' : ''}>
+                        B: type={typeof debugB} {typeof debugB === 'object' && debugB !== null ? `keys=[${Object.keys(debugB).join(',')}]` : ''} start="{String(debugB ?? '').slice(0, 40)}" len={String(debugB ?? '').length}
+                      </div>
+                      <div className={typeof debugC !== 'string' && debugC !== null ? 'text-red-600 font-bold' : ''}>
+                        C: type={typeof debugC} {typeof debugC === 'object' && debugC !== null ? `keys=[${Object.keys(debugC).join(',')}]` : ''} start="{String(debugC ?? '').slice(0, 40)}" len={String(debugC ?? '').length}
+                      </div>
+                      <div>assignmentCounts: A={debugAssignmentCounts.A}, B={debugAssignmentCounts.B}, C={debugAssignmentCounts.C}</div>
+                      <div>renderSource: A={debugVersions ? 'versions.A' : 'legacy'}, B={debugVersions ? 'versions.B' : 'null'}, C={debugVersions ? 'versions.C' : 'null'}</div>
+                      
+                      {(typeof debugA === 'object' && debugA !== null) || (typeof debugB === 'object' && debugB !== null) || (typeof debugC === 'object' && debugC !== null) && (
+                        <div className="mt-2 p-2 bg-red-100 border-2 border-red-500 rounded text-red-800 font-bold text-xs">
+                          ⚠️ BACKEND BUG: versions.* contains OBJECTS instead of strings!
+                        </div>
+                      )}
+                      
+                      <div className="font-bold text-purple-900 mt-4 pt-4 border-t border-purple-200">CARD CONTENT (FINAL):</div>
+                      {cardA && (
+                        <div>cardA.content: start="{cardA.content.slice(0, 40)}" len={cardA.content.length}</div>
+                      )}
+                      {cardB && (
+                        <div>cardB.content: start="{cardB.content.slice(0, 40)}" len={cardB.content.length}</div>
+                      )}
+                      {cardC && (
+                        <div>cardC.content: start="{cardC.content.slice(0, 40)}" len={cardC.content.length}</div>
+                      )}
+                      
+                      <div className="font-bold text-purple-900 mt-4 pt-4 border-t border-purple-200">DIFF-STYLE CHECK:</div>
+                      <div className={diffCheckA === false ? 'text-red-600 font-bold' : ''}>
+                        cardA.content === versions.A: {diffCheckA === null ? 'N/A' : (diffCheckA ? '✅ TRUE' : '❌ FALSE')}
+                      </div>
+                      {cardB && (
+                        <div className={diffCheckB === false ? 'text-red-600 font-bold' : ''}>
+                          cardB.content === versions.B: {diffCheckB === null ? 'N/A' : (diffCheckB ? '✅ TRUE' : '❌ FALSE')}
+                        </div>
+                      )}
+                      {cardC && (
+                        <div className={diffCheckC === false ? 'text-red-600 font-bold' : ''}>
+                          cardC.content === versions.C: {diffCheckC === null ? 'N/A' : (diffCheckC ? '✅ TRUE' : '❌ FALSE')}
+                        </div>
+                      )}
+                      
+                      {(diffCheckA === false || diffCheckB === false || diffCheckC === false) && (
+                        <div className="mt-4 p-3 bg-red-100 border-2 border-red-500 rounded text-red-800 font-bold">
+                          🚨 BIG RED FLAG: CARD CONTENT DOES NOT MATCH VERSIONS SOURCE
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
 
                 {assignmentWarnings.length > 0 && (
                   <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">

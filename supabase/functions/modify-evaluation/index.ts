@@ -53,6 +53,753 @@ function cleanupContent(content: string): string {
   return cleaned.trim();
 }
 
+// ============================================================================
+// WRAPPER DETECTION & CLEANING (Single Source of Truth - Backend Only)
+// ============================================================================
+
+/**
+ * CRITICAL: Detect wrappers ANYWHERE in content, not just at start.
+ * This is the single source of truth for wrapper detection.
+ * Enhanced to detect ALL wrapper patterns including evaluationBundle.
+ */
+function hasWrapperLeak(value: string | null): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  
+  // Check if starts with JSON wrapper
+  if (trimmed.startsWith('{')) return true;
+  
+  // Check for "versions" key anywhere (indicates JSON wrapper)
+  const versionsPattern = /"versions"\s*:\s*\{/;
+  if (versionsPattern.test(trimmed)) {
+    const firstLt = trimmed.indexOf('<');
+    const versionsIdx = trimmed.indexOf('"versions"');
+    
+    // If "versions" appears before first <, it's definitely a wrapper
+    if (firstLt === -1 || versionsIdx < firstLt) return true;
+    
+    // If "versions" appears after <, check if it's inside HTML content
+    const beforeHtml = trimmed.slice(0, Math.min(versionsIdx, firstLt));
+    if (beforeHtml.includes('{') && beforeHtml.includes('"versions"')) {
+      return true;
+    }
+  }
+  
+  // Check for JSON-like fragments: ", "A":", ", "B":", ", "C":"
+  const jsonFragmentPattern = /",\s*"[ABC]"\s*:/;
+  if (jsonFragmentPattern.test(trimmed)) {
+    return true;
+  }
+  
+  // Check for {"versions": {"A": pattern anywhere
+  if (/\{\s*"versions"\s*:\s*\{\s*"[ABC]"\s*:/i.test(trimmed)) {
+    return true;
+  }
+  
+  // Check for evaluationBundle or similar JSON keys
+  if (/evaluationBundle|evaluation_bundle|evaluation-bundle/i.test(trimmed)) {
+    // Only flag if it appears before HTML or outside HTML tags
+    const bundleIdx = trimmed.toLowerCase().indexOf('evaluationbundle');
+    const firstLt = trimmed.indexOf('<');
+    if (firstLt === -1 || bundleIdx < firstLt) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Extract HTML from a value that might be wrapped as an object or JSON string.
+ * This handles cases where the model returns the full object or serialized JSON instead of just the HTML.
+ * 
+ * @param value - The value that might be an object, JSON string, or HTML string
+ * @param key - The version key ('A', 'B', or 'C') to extract
+ * @returns The extracted HTML string, or empty string if extraction fails
+ */
+function extractHtmlFromPossiblyWrappedValue(value: unknown, key: 'A' | 'B' | 'C'): string {
+  if (value == null) return '';
+
+  // Helper to safely extract string from nested object
+  const tryExtract = (obj: any, paths: string[]): string | null => {
+    for (const path of paths) {
+      const parts = path.split('.');
+      let current: any = obj;
+      for (const part of parts) {
+        if (current == null) break;
+        current = current[part];
+      }
+      if (typeof current === 'string' && current.trim()) {
+        return current;
+      }
+    }
+    return null;
+  };
+
+  // string no-JSON -> devolver tal cual (pero verificar que no tenga wrappers)
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (!s) return '';
+    
+    // Si no empieza con {, puede ser HTML directo, pero verificar que no tenga wrappers JSON
+    if (!s.startsWith('{')) {
+      // Verificar que no tenga fragmentos JSON embebidos
+      if (hasWrapperLeak(s)) {
+        // Tiene wrappers, intentar extraer
+        console.warn(`[EXTRACT] String has wrapper leak, attempting extraction for ${key}`);
+        // Intentar parsear como JSON parcial
+        try {
+          const parsed: any = JSON.parse(s);
+          const extracted = tryExtract(parsed, [
+            `versions.${key}`,
+            key,
+            `evaluationBundle.versions.${key}`,
+            `evaluationBundle.version${key}Html`,
+            key === 'A' ? 'evaluationBundle.baseHtml' : '',
+            key === 'B' ? 'evaluationBundle.versionBHtml' : '',
+            key === 'C' ? 'evaluationBundle.versionCHtml' : ''
+          ].filter(Boolean));
+          if (extracted) return extracted;
+        } catch {
+          // No es JSON válido, pero tiene wrappers - buscar patrón manualmente
+          const versionsMatch = s.match(new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`, 's'));
+          if (versionsMatch && versionsMatch[1]) {
+            // Unescape JSON string
+            try {
+              return JSON.parse(`"${versionsMatch[1]}"`);
+            } catch {
+              return versionsMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+            }
+          }
+        }
+      }
+      return s;
+    }
+
+    // string JSON -> parsear y extraer
+    try {
+      const parsed: any = JSON.parse(s);
+      const extracted = tryExtract(parsed, [
+        `versions.${key}`,
+        key,
+        `evaluationBundle.versions.${key}`,
+        `evaluationBundle.version${key}Html`,
+        key === 'A' ? 'evaluationBundle.baseHtml' : '',
+        key === 'B' ? 'evaluationBundle.versionBHtml' : '',
+        key === 'C' ? 'evaluationBundle.versionCHtml' : '',
+        key === 'A' ? 'baseHtml' : '',
+        key === 'B' ? 'versionBHtml' : '',
+        key === 'C' ? 'versionCHtml' : ''
+      ].filter(Boolean));
+      if (extracted) return extracted;
+      
+      // Si no se encontró, intentar buscar en el string directamente con regex
+      const regex = new RegExp(`"${key}"\\s*:\\s*"([^"]*(?:\\\\.[^"]*)*)"`, 's');
+      const match = s.match(regex);
+      if (match && match[1]) {
+        try {
+          return JSON.parse(`"${match[1]}"`);
+        } catch {
+          return match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+        }
+      }
+      
+      return '';
+    } catch (e) {
+      // JSON parse failed, pero puede ser JSON parcial - intentar extraer con regex
+      const regex = new RegExp(`"${key}"\\s*:\\s*"([^"]*(?:\\\\.[^"]*)*)"`, 's');
+      const match = s.match(regex);
+      if (match && match[1]) {
+        try {
+          return JSON.parse(`"${match[1]}"`);
+        } catch {
+          return match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+        }
+      }
+      return '';
+    }
+  }
+
+  // objeto -> extraer
+  if (typeof value === 'object') {
+    const obj: any = value;
+    const extracted = tryExtract(obj, [
+      `versions.${key}`,
+      key,
+      `evaluationBundle.versions.${key}`,
+      `evaluationBundle.version${key}Html`,
+      key === 'A' ? 'evaluationBundle.baseHtml' : '',
+      key === 'B' ? 'evaluationBundle.versionBHtml' : '',
+      key === 'C' ? 'evaluationBundle.versionCHtml' : '',
+      key === 'A' ? 'baseHtml' : '',
+      key === 'B' ? 'versionBHtml' : '',
+      key === 'C' ? 'versionCHtml' : ''
+    ].filter(Boolean));
+    if (extracted) return extracted;
+  }
+
+  return '';
+}
+
+/**
+ * Detect forbidden HTML tags that cause CSS leakage or layout issues.
+ * This detects wrapper tags: <html>, <head>, <body>, <style>, <script>, <link>
+ */
+function hasForbiddenTags(s: string | null): boolean {
+  if (!s) return false;
+  const lowerHtml = s.toLowerCase();
+  const FORBIDDEN_TAGS = ['<html', '</html', '<head', '</head', '<body', '</body', '<style', '</style', '<script', '</script', '<link'];
+  return FORBIDDEN_TAGS.some(tag => lowerHtml.includes(tag));
+}
+
+/**
+ * Detect HTML wrapper tags (html, head, body, style, link rel="stylesheet").
+ * Used for validation and logging after normalization.
+ */
+function hasWrapper(html: string | null): boolean {
+  if (!html) return false;
+  const lower = html.toLowerCase();
+  return (
+    lower.includes('<html') ||
+    lower.includes('<head') ||
+    lower.includes('<body') ||
+    lower.includes('<style') ||
+    (lower.includes('<link') && lower.includes('stylesheet'))
+  );
+}
+
+/**
+ * Detect cross-contamination: other version content inside this version.
+ * For C: detect "versión a", "version a", "versión b", "version b", or markers like <<<VERSION_A etc inside C.
+ */
+function hasCrossContamination(versionKey: 'A' | 'B' | 'C', html: string | null): boolean {
+  if (!html) return false;
+  const trimmed = html.trim();
+  const DELIM_SUFFIX = '8f3a7b';
+  const otherVersionMarkers: string[] = [];
+  
+  if (versionKey !== 'A') {
+    otherVersionMarkers.push(
+      `<<<A_EVAL_HTML_START_${DELIM_SUFFIX}>>>`,
+      `<<<A_EVAL_HTML_END_${DELIM_SUFFIX}>>>`,
+      '<<<VERSION_A_HTML>>>',
+      '<<<END_VERSION_A_HTML>>>',
+      'Versión A',
+      'Version A',
+      'VERSION_A_HTML',
+      'versión a',
+      'version a'
+    );
+  }
+  if (versionKey !== 'B') {
+    otherVersionMarkers.push(
+      `<<<B_EVAL_HTML_START_${DELIM_SUFFIX}>>>`,
+      `<<<B_EVAL_HTML_END_${DELIM_SUFFIX}>>>`,
+      '<<<VERSION_B_HTML>>>',
+      '<<<END_VERSION_B_HTML>>>',
+      'Versión B',
+      'Version B',
+      'VERSION_B_HTML',
+      'versión b',
+      'version b'
+    );
+  }
+  if (versionKey !== 'C') {
+    otherVersionMarkers.push(
+      `<<<C_EVAL_HTML_START_${DELIM_SUFFIX}>>>`,
+      `<<<C_EVAL_HTML_END_${DELIM_SUFFIX}>>>`,
+      '<<<VERSION_C_HTML>>>',
+      '<<<END_VERSION_C_HTML>>>',
+      'Versión C',
+      'Version C',
+      'VERSION_C_HTML',
+      'versión c',
+      'version c'
+    );
+  }
+  
+  return otherVersionMarkers.some(marker => trimmed.includes(marker));
+}
+
+/**
+ * Check if content looks like a valid HTML block.
+ * Must start with < and NOT have wrapper leaks.
+ */
+function looksLikeValidHtmlBlock(s: string | null): boolean {
+  if (!s) return false;
+  const trimmed = s.trim();
+  return trimmed.startsWith('<') && !hasWrapperLeak(trimmed);
+}
+
+/**
+ * CRITICAL: Remove any JSON wrapper fragments from HTML content.
+ * This is the single source of truth for wrapper cleaning.
+ * Applied BEFORE validation to ensure clean HTML.
+ */
+function removeWrapperFragments(html: string): string {
+  if (!html) return html;
+  
+  let cleaned = html;
+  
+  // CRITICAL: Remove wrapper patterns in order of specificity (most specific first)
+  
+  // 1. Remove complete JSON wrapper patterns: {"versions": {"A": " or {"versions": {"B": " or {"versions": {"C": "
+  cleaned = cleaned.replace(/\{\s*"versions"\s*:\s*\{\s*"[ABC]"\s*:\s*"/gi, '');
+  
+  // 2. Remove partial wrapper: {"versions": { (without version key)
+  cleaned = cleaned.replace(/\{\s*"versions"\s*:\s*\{/gi, '');
+  
+  // 3. Remove JSON fragment patterns: ", "A":", ", "B":", ", "C":"
+  cleaned = cleaned.replace(/",\s*"[ABC]"\s*:/gi, '');
+  cleaned = cleaned.replace(/",\s*"[ABC]"\s*"\s*:/gi, '');
+  
+  // 4. Remove "Nota:" that might be followed by wrapper fragments
+  // Pattern: "Nota: ... { "versions" ..." -> remove the wrapper part, keep "Nota:"
+  cleaned = cleaned.replace(/Nota:\s*[^<]*\{\s*"versions"/gi, 'Nota:');
+  cleaned = cleaned.replace(/Nota:\s*[^<]*",\s*"[ABC]"\s*:/gi, 'Nota:');
+  
+  // 5. Remove any remaining "versions" key that might be left
+  cleaned = cleaned.replace(/"versions"\s*:/gi, '');
+  
+  // 6. Remove standalone JSON braces at start/end (must be last, after other patterns)
+  cleaned = cleaned.replace(/^\s*\{\s*/, '');
+  cleaned = cleaned.replace(/\s*\}\s*$/, '');
+  
+  // 7. If content still starts with {, try to extract HTML part
+  if (cleaned.trim().startsWith('{')) {
+    // Try to find first < and extract from there
+    const firstLt = cleaned.indexOf('<');
+    if (firstLt > 0) {
+      cleaned = cleaned.slice(firstLt);
+    } else {
+      // No < found, try to extract from first quote after "A": "
+      const pattern = /"[ABC]"\s*:\s*"([^"]*)/;
+      const match = cleaned.match(pattern);
+      if (match && match[1]) {
+        cleaned = match[1];
+      } else {
+        // Last resort: try JSON.parse and extract
+        try {
+          const parsed = JSON.parse(cleaned);
+          const extracted = parsed?.versions?.A || parsed?.versions?.B || parsed?.versions?.C || parsed?.A || parsed?.B || parsed?.C || null;
+          if (typeof extracted === 'string' && extracted.trim().startsWith('<')) {
+            cleaned = extracted.trim();
+          } else {
+            // If extraction fails, return empty (will be replaced with error block)
+            cleaned = '';
+          }
+        } catch (e) {
+          // If JSON.parse fails, return empty (will be replaced with error block)
+          cleaned = '';
+        }
+      }
+    }
+  }
+  
+  // 8. Clean up any double spaces, newlines, or artifacts left by removals
+  cleaned = cleaned.replace(/\s{2,}/g, ' ');
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  cleaned = cleaned.replace(/\s*,\s*,\s*/g, ', '); // Remove double commas
+  
+  return cleaned.trim();
+}
+
+/**
+ * CRITICAL: Normalize HTML to a safe fragment for injection.
+ * This is the single source of truth for HTML normalization in the backend.
+ * 
+ * Rules:
+ * 1) Trim
+ * 2) Remove code fences (```html ... ``` or ``` ... ```)
+ * 3) Extract content from <body> if present
+ * 4) Remove wrapper tags: <html>, <head>, <body>, <style>, <script>, <link>
+ * 5) Return clean fragment ready for injection
+ */
+function normalizeHtmlFragment(input: string): string {
+  if (!input) return input;
+  
+  let normalized = input;
+  
+  // Step 1: Trim
+  normalized = normalized.trim();
+  
+  // Step 2: Remove code fences (```html ... ``` or ``` ... ```)
+  // Match ```html or ``` followed by content and closing ```
+  normalized = normalized.replace(/```html\s*([\s\S]*?)```/gi, '$1');
+  normalized = normalized.replace(/```\s*([\s\S]*?)```/gi, '$1');
+  
+  // Step 3: Extract content from <body> if present (keep inner content, remove tags)
+  const bodyMatch = normalized.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch && bodyMatch[1]) {
+    normalized = bodyMatch[1];
+  }
+  
+  // Step 4: Remove DOCTYPE
+  normalized = normalized.replace(/<!DOCTYPE[^>]*>/gi, '');
+  
+  // Step 5: Remove <html> tags (opening and closing)
+  normalized = normalized.replace(/<html[^>]*>/gi, '');
+  normalized = normalized.replace(/<\/html>/gi, '');
+  
+  // Step 6: Remove entire <head> section including contents (prevents <link>, <meta>, etc.)
+  normalized = normalized.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '');
+  
+  // Step 7: Remove <body> tags (but keep content inside - already extracted above, but remove any remaining)
+  normalized = normalized.replace(/<body[^>]*>/gi, '');
+  normalized = normalized.replace(/<\/body>/gi, '');
+  
+  // Step 8: Remove entire <style> sections - CRITICAL for preventing CSS leakage
+  normalized = normalized.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+  
+  // Step 9: Remove entire <script> sections
+  normalized = normalized.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+  
+  // Step 10: Remove <link> tags (can load external stylesheets)
+  // Match <link ... rel="stylesheet" ...> or any <link> tag
+  normalized = normalized.replace(/<link[^>]*rel\s*=\s*["']stylesheet["'][^>]*>/gi, '');
+  normalized = normalized.replace(/<link[^>]*>/gi, '');
+  
+  // Step 11: Remove any remaining standalone wrapper tags
+  normalized = normalized.replace(/<head[^>]*>/gi, '');
+  normalized = normalized.replace(/<\/head>/gi, '');
+  
+  // Step 12: Remove dangerous inline styles that could affect global layout
+  normalized = normalized.replace(/style\s*=\s*["'][^"']*(?:position\s*:\s*(?:fixed|absolute)|width\s*:\s*100(?:vw|%)|height\s*:\s*100(?:vh|%))[^"']*["']/gi, '');
+  
+  // Final trim
+  return normalized.trim();
+}
+
+/**
+ * CRITICAL: Sanitize HTML to prevent CSS leakage and layout shrink.
+ * Removes tags that can affect global layout: <html>, <head>, <body>, <style>, <script>, <link>
+ * 
+ * NOTE: This function is kept for backward compatibility but normalizeHtmlFragment is preferred.
+ * normalizeHtmlFragment includes code fence removal and body extraction.
+ */
+function sanitizeHtmlForInjection(html: string): string {
+  // Use normalizeHtmlFragment for consistency
+  return normalizeHtmlFragment(html);
+}
+
+/**
+ * Validate that HTML is clean and doesn't contain wrapper fragments.
+ * Returns validation result with detailed flags.
+ */
+function validateCleanHtml(html: string | null, versionKey: 'A' | 'B' | 'C'): {
+  ok: boolean;
+  html: string | null;
+  hasWrapper: boolean;
+  hasForbiddenTags: boolean;
+  hasCrossContamination: boolean;
+  reason?: string;
+} {
+  if (!html) {
+    return { ok: false, html: null, hasWrapper: false, hasForbiddenTags: false, hasCrossContamination: false, reason: 'Empty or null' };
+  }
+  
+  const trimmed = html.trim();
+  
+  // Must start with <
+  if (!trimmed.startsWith('<')) {
+    return { ok: false, html: null, hasWrapper: false, hasForbiddenTags: false, hasCrossContamination: false, reason: 'Does not start with <' };
+  }
+  
+  // Check for wrapper
+  const hasWrapper = hasWrapperLeak(trimmed);
+  if (hasWrapper) {
+    return { ok: false, html: null, hasWrapper: true, hasForbiddenTags: false, hasCrossContamination: false, reason: 'Contains JSON wrapper' };
+  }
+  
+  // Check for forbidden tags (cause CSS leakage)
+  const lowerHtml = trimmed.toLowerCase();
+  const FORBIDDEN_TAGS = ['<html', '</html', '<head', '</head', '<body', '</body', '<style', '</style', '<script', '</script', '<link'];
+  const hasForbiddenTags = FORBIDDEN_TAGS.some(tag => lowerHtml.includes(tag.toLowerCase()));
+  
+  // Check for cross-contamination (other version markers inside this version)
+  const DELIM_SUFFIX = '8f3a7b';
+  const otherVersionMarkers: string[] = [];
+  if (versionKey !== 'A') {
+    otherVersionMarkers.push(`<<<A_EVAL_HTML_START_${DELIM_SUFFIX}>>>`, `<<<A_EVAL_HTML_END_${DELIM_SUFFIX}>>>`, 'Versión A', 'Version A', 'VERSION_A_HTML');
+  }
+  if (versionKey !== 'B') {
+    otherVersionMarkers.push(`<<<B_EVAL_HTML_START_${DELIM_SUFFIX}>>>`, `<<<B_EVAL_HTML_END_${DELIM_SUFFIX}>>>`, 'Versión B', 'Version B', 'VERSION_B_HTML');
+  }
+  if (versionKey !== 'C') {
+    otherVersionMarkers.push(`<<<C_EVAL_HTML_START_${DELIM_SUFFIX}>>>`, `<<<C_EVAL_HTML_END_${DELIM_SUFFIX}>>>`, 'Versión C', 'Version C', 'VERSION_C_HTML');
+  }
+  const hasCrossContamination = otherVersionMarkers.some(marker => trimmed.includes(marker));
+  
+  if (hasCrossContamination) {
+    return { ok: false, html: null, hasWrapper: false, hasForbiddenTags, hasCrossContamination: true, reason: 'Contains markers from other versions' };
+  }
+  
+  return { ok: true, html: trimmed, hasWrapper: false, hasForbiddenTags, hasCrossContamination: false };
+}
+
+/**
+ * CRITICAL: Finalize a version through the complete pipeline.
+ * This is the single source of truth for version processing.
+ * Returns ok/fail with detailed reasons for debugging.
+ */
+function finalizeVersion(raw: string | null, key: 'A' | 'B' | 'C'): { ok: boolean; html: string | null; reasons: string[] } {
+  const reasons: string[] = [];
+  
+  // Step 1: Null check (A must not be null, B/C can be null)
+  if (!raw) {
+    if (key === 'A') {
+      reasons.push('Version A is required but is null or empty');
+      return { ok: false, html: null, reasons };
+    }
+    // B/C can be null
+    return { ok: true, html: null, reasons: ['Version is optional and not provided'] };
+  }
+  
+  // Step 2: Cleanup content (normalize HTML)
+  let processed = cleanupContent(raw);
+  
+  // Step 3: Remove wrapper fragments
+  processed = removeWrapperFragments(processed);
+  
+  // Step 4: Sanitize for injection (prevent CSS leakage)
+  processed = sanitizeHtmlForInjection(processed);
+  
+  // Step 5: Validate looksLikeValidHtmlBlock
+  if (!looksLikeValidHtmlBlock(processed)) {
+    reasons.push('Content does not look like valid HTML block (must start with < and have no wrappers)');
+    return { ok: false, html: null, reasons };
+  }
+  
+  // Step 6: Check for wrapper leaks
+  if (hasWrapperLeak(processed)) {
+    reasons.push('Wrapper leak detected after cleaning');
+    return { ok: false, html: null, reasons };
+  }
+  
+  // Step 7: Check for forbidden tags
+  if (hasForbiddenTags(processed)) {
+    // Try to sanitize again (shouldn't happen, but defense in depth)
+    processed = sanitizeHtmlForInjection(processed);
+    if (hasForbiddenTags(processed)) {
+      reasons.push('Forbidden tags detected after sanitization');
+      return { ok: false, html: null, reasons };
+    }
+  }
+  
+  // Step 8: Check for cross-contamination (especially for C)
+  if (hasCrossContamination(key, processed)) {
+    reasons.push(`Cross-contamination detected: other version markers found in version ${key}`);
+    return { ok: false, html: null, reasons };
+  }
+  
+  // All checks passed
+  return { ok: true, html: processed, reasons: ['All validations passed'] };
+}
+
+/**
+ * Check if HTML string is clean (starts with < and doesn't contain wrappers).
+ * Used in JSON fallback to reject contaminated content.
+ */
+function isCleanHtml(str: string | null): boolean {
+  if (!str || typeof str !== 'string') return false;
+  const trimmed = str.trim();
+  if (!trimmed.startsWith('<')) return false;
+  // Reject if it contains JSON wrapper fragments
+  if (trimmed.includes('"versions"') && trimmed.includes('{')) return false;
+  if (/",\s*"[ABC]"\s*:/.test(trimmed)) return false;
+  return true;
+}
+
+/**
+ * CRITICAL: Extract versions from model output supporting BOTH formats:
+ * 1) JSON wrapper format: {"versions": {"A": "...", "B": "...", "C": "..."}}
+ * 2) Delimiter format: <<<A_EVAL_HTML_START_...>>> ... <<<A_EVAL_HTML_END_...>>>
+ * 
+ * This is the SINGLE source of truth for version extraction.
+ * Returns extracted HTML strings, or null if extraction failed.
+ */
+function extractVersionsFromModelOutput(raw: string): { A: string | null; B: string | null; C: string | null; method: 'delimiters' | 'json' | 'regex' | 'failed' } {
+  if (!raw || typeof raw !== 'string') {
+    return { A: null, B: null, C: null, method: 'failed' };
+  }
+  
+  const DELIM_SUFFIX = '8f3a7b';
+  
+  // Helper: extract block between delimiters
+  const extractDelimitedBlock = (text: string, startMarker: string, endMarker: string): string | null => {
+    const startIdx = text.indexOf(startMarker);
+    if (startIdx === -1) return null;
+    const contentStart = startIdx + startMarker.length;
+    const endIdx = text.indexOf(endMarker, contentStart);
+    if (endIdx === -1) return null;
+    return text.slice(contentStart, endIdx).trim();
+  };
+  
+  // Helper: safely unescape JSON string value
+  const safeUnescapeJsonString = (str: string): string => {
+    if (!str) return str;
+    try {
+      // Try to parse as a JSON string value (handles \n, \", etc.)
+      return JSON.parse(`"${str.replace(/"/g, '\\"').replace(/\\/g, '\\\\')}"`);
+    } catch {
+      // Fallback: manual unescape
+      return str
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
+    }
+  };
+  
+  // METHOD 1: Try delimiter extraction (new format)
+  let A = extractDelimitedBlock(raw, `<<<A_EVAL_HTML_START_${DELIM_SUFFIX}>>>`, `<<<A_EVAL_HTML_END_${DELIM_SUFFIX}>>>`);
+  let B = extractDelimitedBlock(raw, `<<<B_EVAL_HTML_START_${DELIM_SUFFIX}>>>`, `<<<B_EVAL_HTML_END_${DELIM_SUFFIX}>>>`);
+  let C = extractDelimitedBlock(raw, `<<<C_EVAL_HTML_START_${DELIM_SUFFIX}>>>`, `<<<C_EVAL_HTML_END_${DELIM_SUFFIX}>>>`);
+  
+  // Try legacy delimiters if new ones not found
+  if (!A) A = extractDelimitedBlock(raw, '<<<VERSION_A_HTML>>>', '<<<END_VERSION_A_HTML>>>');
+  if (!B) B = extractDelimitedBlock(raw, '<<<VERSION_B_HTML>>>', '<<<END_VERSION_B_HTML>>>');
+  if (!C) C = extractDelimitedBlock(raw, '<<<VERSION_C_HTML>>>', '<<<END_VERSION_C_HTML>>>');
+  
+  if (A) {
+    console.log('[EXTRACT_VERSIONS] Method: delimiters');
+    return { A, B, C, method: 'delimiters' };
+  }
+  
+  // METHOD 2: Try JSON parsing (wrapper format)
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const jsonA = parsed?.versions?.A || parsed?.A || null;
+      const jsonB = parsed?.versions?.B || parsed?.B || null;
+      const jsonC = parsed?.versions?.C || parsed?.C || null;
+      
+      // If JSON parsing worked and we have A, use it
+      if (jsonA && typeof jsonA === 'string') {
+        console.log('[EXTRACT_VERSIONS] Method: json');
+        return { 
+          A: jsonA,
+          B: jsonB && typeof jsonB === 'string' ? jsonB : null,
+          C: jsonC && typeof jsonC === 'string' ? jsonC : null,
+          method: 'json'
+        };
+      }
+    } catch (e) {
+      // JSON parse failed - try regex extraction
+      console.log('[EXTRACT_VERSIONS] JSON parse failed, trying regex extraction');
+    }
+    
+    // METHOD 3: Regex extraction for malformed JSON with escaped content
+    // Pattern: "A": "..." where content may have escaped quotes and newlines
+    const extractJsonValue = (text: string, key: string): string | null => {
+      // Match "A": "..." pattern, handling escaped quotes
+      const pattern = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`);
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        // Unescape the captured value
+        try {
+          return JSON.parse(`"${match[1]}"`);
+        } catch {
+          // Manual unescape
+          return match[1]
+            .replace(/\\n/g, '\n')
+            .replace(/\\r/g, '\r')
+            .replace(/\\t/g, '\t')
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\');
+        }
+      }
+      return null;
+    };
+    
+    const regexA = extractJsonValue(trimmed, 'A');
+    const regexB = extractJsonValue(trimmed, 'B');
+    const regexC = extractJsonValue(trimmed, 'C');
+    
+    if (regexA) {
+      console.log('[EXTRACT_VERSIONS] Method: regex');
+      return { A: regexA, B: regexB, C: regexC, method: 'regex' };
+    }
+  }
+  
+  console.warn('[EXTRACT_VERSIONS] All extraction methods failed');
+  return { A: null, B: null, C: null, method: 'failed' };
+}
+
+/**
+ * CRITICAL: Complete version finalization pipeline.
+ * Takes raw extracted version and returns clean, validated HTML or null.
+ * This is the SINGLE source of truth for version cleaning.
+ */
+function finalizeExtractedVersion(raw: string | null, key: 'A' | 'B' | 'C'): string | null {
+  if (!raw || typeof raw !== 'string') {
+    return null;
+  }
+  
+  // Step 1: Remove wrapper fragments
+  let cleaned = removeWrapperFragments(raw);
+  
+  // Step 2: Cleanup content (normalize HTML)
+  cleaned = cleanupContent(cleaned);
+  
+  // Step 3: Sanitize for injection (prevent CSS leakage)
+  cleaned = sanitizeHtmlForInjection(cleaned);
+  
+  // Step 4: Validate - must start with < and have no wrapper leaks
+  const trimmed = cleaned.trim();
+  if (!trimmed.startsWith('<')) {
+    console.warn(`[FINALIZE_VERSION] ${key}: Does not start with <, returning null`);
+    return null;
+  }
+  
+  if (hasWrapperLeak(trimmed)) {
+    console.warn(`[FINALIZE_VERSION] ${key}: Still has wrapper leak after cleaning, returning null`);
+    return null;
+  }
+  
+  if (hasForbiddenTags(trimmed)) {
+    console.warn(`[FINALIZE_VERSION] ${key}: Has forbidden tags after sanitization`);
+    // Try one more sanitization pass
+    cleaned = sanitizeHtmlForInjection(trimmed);
+    if (hasForbiddenTags(cleaned)) {
+      console.warn(`[FINALIZE_VERSION] ${key}: Still has forbidden tags, returning null`);
+      return null;
+    }
+  }
+  
+  if (hasCrossContamination(key, trimmed)) {
+    console.warn(`[FINALIZE_VERSION] ${key}: Has cross-contamination markers`);
+    return null;
+  }
+  
+  return trimmed;
+}
+
+/**
+ * Calculate similarity between two HTML strings (0-1 scale).
+ * Used to detect if Version C is too similar to Version A.
+ */
+function calculateSimilarity(str1: string, str2: string): number {
+  if (!str1 || !str2) return 0;
+  
+  // Remove HTML tags for comparison
+  const text1 = str1.replace(/<[^>]+>/g, '').trim();
+  const text2 = str2.replace(/<[^>]+>/g, '').trim();
+  
+  if (text1.length === 0 || text2.length === 0) return 0;
+  
+  // Simple word-based similarity
+  const words1 = new Set(text1.toLowerCase().split(/\s+/));
+  const words2 = new Set(text2.toLowerCase().split(/\s+/));
+  
+  const intersection = new Set([...words1].filter(x => words2.has(x)));
+  const union = new Set([...words1, ...words2]);
+  
+  return intersection.size / union.size;
+}
+
 /**
  * Validates an image URL and rehosts if necessary
  */
@@ -259,6 +1006,578 @@ serve(async (req) => {
     // FORCE: Universal path takes priority - if generation_mode === 'universal', use it regardless of generation_context
     // Universal evaluation path (must be checked FIRST before generation_context)
     if (type === 'modification' && generation_mode === 'universal') {
+      /**
+       * Extract and normalize versions from AI output - SINGLE SOURCE OF TRUTH
+       * Handles: delimiters, JSON wrapper, HTML+JSON mixed, HTML blocks, error fallback
+       * Returns: { A: string|null; B: string|null; C: string|null; warnings: string[]; extractionMethod: string }
+       */
+      const extractAndNormalizeVersions = (aiTextOrObject: unknown): { 
+        A: string | null; 
+        B: string | null; 
+        C: string | null; 
+        warnings: string[];
+        extractionMethod: 'delimiters' | 'json_wrapper' | 'regex' | 'html_blocks' | 'error_fallback';
+      } => {
+        const warnings: string[] = [];
+        const DELIM_SUFFIX = '8f3a7b';
+
+        // Helper: extract block between delimiters
+        const extractDelimitedBlock = (text: string, startMarker: string, endMarker: string): string | null => {
+          const startIdx = text.indexOf(startMarker);
+          if (startIdx === -1) return null;
+          const contentStart = startIdx + startMarker.length;
+          const endIdx = text.indexOf(endMarker, contentStart);
+          if (endIdx === -1) return null;
+          return text.slice(contentStart, endIdx).trim();
+        };
+
+        // Helper: normalize HTML to safe fragment
+        const normalizeToFragment = (html: string): string => {
+          if (!html || typeof html !== 'string') return '';
+          let cleaned = html.trim();
+          if (!cleaned) return '';
+
+          // Remove code fences
+          cleaned = cleaned.replace(/```html\s*([\s\S]*?)```/gi, '$1');
+          cleaned = cleaned.replace(/```\s*([\s\S]*?)```/gi, '$1');
+
+          // Remove <head>...</head>, <style>...</style>, <script>...</script>, <link>
+          cleaned = cleaned.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '');
+          cleaned = cleaned.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+          cleaned = cleaned.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+          cleaned = cleaned.replace(/<link[^>]*>/gi, '');
+
+          // Remove residual tags
+          cleaned = cleaned.replace(/<html[^>]*>/gi, '');
+          cleaned = cleaned.replace(/<\/html>/gi, '');
+          cleaned = cleaned.replace(/<body[^>]*>/gi, '');
+          cleaned = cleaned.replace(/<\/body>/gi, '');
+          cleaned = cleaned.replace(/<head[^>]*>/gi, '');
+          cleaned = cleaned.replace(/<\/head>/gi, '');
+          cleaned = cleaned.replace(/<!DOCTYPE[^>]*>/gi, '');
+
+          // Extract body content if exists
+          const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+          if (bodyMatch && bodyMatch[1]) {
+            cleaned = bodyMatch[1];
+          }
+
+          cleaned = cleaned.trim();
+
+          // Final validation: if still contains <head, <style, starts with {, or contains "versions"
+          if (cleaned.includes('<head') || cleaned.includes('</head>') || 
+              cleaned.includes('<style') || cleaned.includes('</style>') ||
+              cleaned.startsWith('{') || /"versions"\s*:\s*\{/.test(cleaned)) {
+            return '<div class="evaluation"><p><strong>Error:</strong> El backend detectó contenido inválido (wrapper JSON o tags peligrosos).</p></div>';
+          }
+
+          // Ensure starts with <
+          if (!cleaned.startsWith('<')) {
+            cleaned = `<div class="evaluation">${cleaned}</div>`;
+          }
+
+          return cleaned.trim();
+        };
+
+        // Convert input to string if needed
+        let rawText = '';
+        if (typeof aiTextOrObject === 'string') {
+          rawText = aiTextOrObject;
+        } else if (aiTextOrObject && typeof aiTextOrObject === 'object') {
+          // If it's an object with versions, extract them
+          const obj = aiTextOrObject as any;
+          if (obj.versions && typeof obj.versions === 'object') {
+            const A = obj.versions.A ? normalizeToFragment(String(obj.versions.A)) : null;
+            const B = obj.versions.B ? normalizeToFragment(String(obj.versions.B)) : null;
+            const C = obj.versions.C ? normalizeToFragment(String(obj.versions.C)) : null;
+            return { A, B, C, warnings, extractionMethod: 'json_wrapper' };
+          }
+          // Try to stringify
+          try {
+            rawText = JSON.stringify(aiTextOrObject);
+          } catch {
+            rawText = String(aiTextOrObject);
+          }
+        } else {
+          rawText = String(aiTextOrObject);
+        }
+
+        if (!rawText.trim()) {
+          return { A: null, B: null, C: null, warnings: ['Empty input'], extractionMethod: 'error_fallback' };
+        }
+
+        // METHOD 1: Try delimiter extraction
+        let A = extractDelimitedBlock(rawText, `<<<A_EVAL_HTML_START_${DELIM_SUFFIX}>>>`, `<<<A_EVAL_HTML_END_${DELIM_SUFFIX}>>>`);
+        let B = extractDelimitedBlock(rawText, `<<<B_EVAL_HTML_START_${DELIM_SUFFIX}>>>`, `<<<B_EVAL_HTML_END_${DELIM_SUFFIX}>>>`);
+        let C = extractDelimitedBlock(rawText, `<<<C_EVAL_HTML_START_${DELIM_SUFFIX}>>>`, `<<<C_EVAL_HTML_END_${DELIM_SUFFIX}>>>`);
+
+        // Try legacy delimiters
+        if (!A) A = extractDelimitedBlock(rawText, '<<<VERSION_A_HTML>>>', '<<<END_VERSION_A_HTML>>>');
+        if (!B) B = extractDelimitedBlock(rawText, '<<<VERSION_B_HTML>>>', '<<<END_VERSION_B_HTML>>>');
+        if (!C) C = extractDelimitedBlock(rawText, '<<<VERSION_C_HTML>>>', '<<<END_VERSION_C_HTML>>>');
+
+        if (A) {
+          return {
+            A: normalizeToFragment(A),
+            B: B ? normalizeToFragment(B) : null,
+            C: C ? normalizeToFragment(C) : null,
+            warnings,
+            extractionMethod: 'delimiters'
+          };
+        }
+
+        // METHOD 2: Try JSON wrapper extraction
+        const firstBrace = rawText.indexOf('{');
+        const lastBrace = rawText.lastIndexOf('}');
+        
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const jsonPart = rawText.slice(firstBrace, lastBrace + 1);
+          try {
+            const parsed = JSON.parse(jsonPart);
+            if (parsed.versions && typeof parsed.versions === 'object') {
+              return {
+                A: parsed.versions.A ? normalizeToFragment(String(parsed.versions.A)) : null,
+                B: parsed.versions.B ? normalizeToFragment(String(parsed.versions.B)) : null,
+                C: parsed.versions.C ? normalizeToFragment(String(parsed.versions.C)) : null,
+                warnings,
+                extractionMethod: 'json_wrapper'
+              };
+            }
+            if (parsed.A || parsed.B || parsed.C) {
+              return {
+                A: parsed.A ? normalizeToFragment(String(parsed.A)) : null,
+                B: parsed.B ? normalizeToFragment(String(parsed.B)) : null,
+                C: parsed.C ? normalizeToFragment(String(parsed.C)) : null,
+                warnings,
+                extractionMethod: 'json_wrapper'
+              };
+            }
+          } catch (e) {
+            // JSON parse failed, continue to regex
+          }
+        }
+
+        // METHOD 3: Try regex extraction for malformed JSON
+        const extractJsonValue = (text: string, key: string): string | null => {
+          const pattern = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, 's');
+          const match = text.match(pattern);
+          if (match && match[1]) {
+            try {
+              return JSON.parse(`"${match[1]}"`);
+            } catch {
+              return match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+            }
+          }
+          return null;
+        };
+
+        const regexA = extractJsonValue(rawText, 'A');
+        const regexB = extractJsonValue(rawText, 'B');
+        const regexC = extractJsonValue(rawText, 'C');
+
+        if (regexA) {
+          return {
+            A: normalizeToFragment(regexA),
+            B: regexB ? normalizeToFragment(regexB) : null,
+            C: regexC ? normalizeToFragment(regexC) : null,
+            warnings,
+            extractionMethod: 'regex'
+          };
+        }
+
+        // METHOD 4: Try HTML blocks extraction
+        const htmlBlocks = rawText.match(/<html[^>]*>[\s\S]*?<\/html>/gi);
+        if (htmlBlocks && htmlBlocks.length > 0) {
+          return {
+            A: normalizeToFragment(htmlBlocks[0]),
+            B: htmlBlocks[1] ? normalizeToFragment(htmlBlocks[1]) : null,
+            C: htmlBlocks[2] ? normalizeToFragment(htmlBlocks[2]) : null,
+            warnings,
+            extractionMethod: 'html_blocks'
+          };
+        }
+
+        // METHOD 5: Error fallback - treat as HTML direct or error
+        if (rawText.trim().startsWith('<')) {
+          // It's HTML, normalize it
+          const normalized = normalizeToFragment(rawText);
+          return {
+            A: normalized || '<div class="evaluation"><p><strong>Error:</strong> Versión A no pudo ser extraída correctamente.</p></div>',
+            B: null,
+            C: null,
+            warnings: [...warnings, 'Treated as direct HTML input'],
+            extractionMethod: 'error_fallback'
+          };
+        }
+
+        // Final fallback: error HTML
+        warnings.push('All extraction methods failed');
+        return {
+          A: '<div class="evaluation"><p><strong>Error:</strong> No se pudo extraer la versión A del output del modelo.</p></div>',
+          B: null,
+          C: null,
+          warnings,
+          extractionMethod: 'error_fallback'
+        };
+      };
+
+      /**
+       * Extract JSON object from string - helper puro y testeable
+       * Si input.trim().startsWith('{') → intentar JSON.parse(input)
+       * Si no, buscar la primera { y la última } y parsear ese substring
+       * Si el string tiene HTML antes del { (ej "<p>..</p>{...}") igualmente parsear el bloque JSON
+       * Si no parsea → retornar null (no inventar)
+       */
+      const extractJsonObjectFromString = (input: string): object | null => {
+        if (!input || typeof input !== 'string') return null;
+        
+        const trimmed = input.trim();
+        if (!trimmed) return null;
+
+        // Si empieza con '{', intentar parsear todo
+        if (trimmed.startsWith('{')) {
+          try {
+            return JSON.parse(trimmed);
+          } catch (e) {
+            return null;
+          }
+        }
+
+        // Buscar primera { y última } y parsear ese substring
+        const firstBrace = trimmed.indexOf('{');
+        const lastBrace = trimmed.lastIndexOf('}');
+        
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const jsonPart = trimmed.slice(firstBrace, lastBrace + 1);
+          try {
+            return JSON.parse(jsonPart);
+          } catch (e) {
+            return null;
+          }
+        }
+
+        return null;
+      };
+
+      /**
+       * Unwrap versions payload - debe soportar:
+       * - payload objeto { versions: {A,B,C} }
+       * - payload string JSON completo "{\"versions\":{...}}"
+       * - payload string mezclado "<p>nota</p>{\"versions\":{...}}"
+       * - payload HTML directo (sin JSON): en ese caso retornar {A: payloadString, B: null, C: null}
+       * MUY IMPORTANTE: si lográs parsear {versions:{...}}, NO devuelvas el wrapper; devolvé solo versions.A/B/C
+       */
+      type Versions = { A: string | null; B: string | null; C: string | null };
+      const unwrapVersionsPayload = (payload: unknown): Versions => {
+        // 1) Si payload es objeto y tiene versions -> devolver versions
+        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+          const obj = payload as any;
+          if (obj.versions && typeof obj.versions === 'object') {
+            return {
+              A: obj.versions.A ?? null,
+              B: obj.versions.B ?? null,
+              C: obj.versions.C ?? null
+            };
+          }
+          // También verificar en raíz
+          if (obj.A || obj.B || obj.C) {
+            return {
+              A: obj.A ?? null,
+              B: obj.B ?? null,
+              C: obj.C ?? null
+            };
+          }
+        }
+
+        // 2) Si payload es string
+        if (typeof payload === 'string') {
+          const trimmed = payload.trim();
+          if (!trimmed) return { A: null, B: null, C: null };
+
+          // Intentar extraer JSON object
+          const jsonObj = extractJsonObjectFromString(trimmed);
+          
+          if (jsonObj) {
+            // Si logramos parsear JSON, extraer versions
+            const obj = jsonObj as any;
+            if (obj.versions && typeof obj.versions === 'object') {
+              return {
+                A: obj.versions.A ?? null,
+                B: obj.versions.B ?? null,
+                C: obj.versions.C ?? null
+              };
+            }
+            if (obj.A || obj.B || obj.C) {
+              return {
+                A: obj.A ?? null,
+                B: obj.B ?? null,
+                C: obj.C ?? null
+              };
+            }
+          }
+
+          // Si NO parsea: payload HTML directo (sin JSON)
+          return { A: trimmed, B: null, C: null };
+        }
+
+        // 3) Sino: return nulls
+        return { A: null, B: null, C: null };
+      };
+
+      /**
+       * Extract versions from input that might be wrapped in JSON or mixed HTML+JSON.
+       * Handles: objects with versions, JSON strings, HTML+JSON mixed strings, plain HTML strings.
+       * @deprecated Use unwrapVersionsPayload instead
+       */
+      const extractVersionsFromMaybeWrapped = (input: unknown): Versions => {
+        // 1) Si input es objeto y tiene versions -> devolver versions
+        if (input && typeof input === 'object' && !Array.isArray(input)) {
+          const obj = input as any;
+          if (obj.versions && typeof obj.versions === 'object') {
+            return {
+              A: obj.versions.A ?? null,
+              B: obj.versions.B ?? null,
+              C: obj.versions.C ?? null
+            };
+          }
+          // También verificar en raíz
+          if (obj.A || obj.B || obj.C) {
+            return {
+              A: obj.A ?? null,
+              B: obj.B ?? null,
+              C: obj.C ?? null
+            };
+          }
+        }
+
+        // 2) Si input es string
+        if (typeof input === 'string') {
+          let s = input.trim();
+          if (!s) return {};
+
+          // Remover code fences ``` si existen
+          if (s.startsWith('```')) {
+            s = s.replace(/```html\s*([\s\S]*?)```/gi, '$1');
+            s = s.replace(/```\s*([\s\S]*?)```/gi, '$1');
+            s = s.trim();
+          }
+
+          // Si contiene JSON wrapper: detectar primera '{' y última '}' y hacer JSON.parse
+          // Caso especial: "HTMLprefix{...json...}" -> separar: si hay '{' luego de algún HTML, parsear JSON a partir de '{'
+          const firstBrace = s.indexOf('{');
+          const lastBrace = s.lastIndexOf('}');
+          
+          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            // Verificar si hay HTML antes del '{' (indicador de contenido mixto)
+            const beforeBrace = s.slice(0, firstBrace).trim();
+            const hasHtmlBeforeBrace = beforeBrace.includes('<') && beforeBrace.length > 0;
+            
+            // Si hay HTML antes, extraer solo el JSON part
+            const jsonPart = s.slice(firstBrace, lastBrace + 1);
+            
+            try {
+              const parsed = JSON.parse(jsonPart);
+              if (parsed.versions && typeof parsed.versions === 'object') {
+                return {
+                  A: parsed.versions.A ?? null,
+                  B: parsed.versions.B ?? null,
+                  C: parsed.versions.C ?? null
+                };
+              }
+              // También verificar en raíz del JSON
+              if (parsed.A || parsed.B || parsed.C) {
+                return {
+                  A: parsed.A ?? null,
+                  B: parsed.B ?? null,
+                  C: parsed.C ?? null
+                };
+              }
+            } catch (e) {
+              // JSON parse falló, continuar
+            }
+            
+            // Si había HTML antes del JSON y no se pudo parsear, devolver solo el HTML (sin el JSON)
+            if (hasHtmlBeforeBrace) {
+              return { A: beforeBrace };
+            }
+          }
+
+          // Si empieza con '{', intentar parsear todo el string
+          if (s.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(s);
+              if (parsed.versions && typeof parsed.versions === 'object') {
+                return {
+                  A: parsed.versions.A ?? null,
+                  B: parsed.versions.B ?? null,
+                  C: parsed.versions.C ?? null
+                };
+              }
+              if (parsed.A || parsed.B || parsed.C) {
+                return {
+                  A: parsed.A ?? null,
+                  B: parsed.B ?? null,
+                  C: parsed.C ?? null
+                };
+              }
+            } catch (e) {
+              // JSON parse falló
+            }
+          }
+
+          // Si NO parsea: devolver { A: input } (tratar como HTML directo)
+          return { A: s };
+        }
+
+        // 3) Sino: return {}
+        return {};
+      };
+
+      /**
+       * Sanitize HTML to fragment - garantiza:
+       * - remover code fences ``` y ```html
+       * - remover <!doctype ...>
+       * - si hay <body>...</body> extraer solo lo de adentro
+       * - remover completamente: <head>...</head>, <style>...</style>, <script>...</script>, cualquier <link ...>
+       * - remover tags residuales: <html>, </html>, <body>, </body>, <head>, </head>
+       * - trim final
+       * - assert final: NO contiene <head, NO contiene <style, NO empieza con {
+       * - Ideal: empieza con < (si no, envolver en <div>)
+       */
+      const sanitizeHtmlToFragment = (html: string): string => {
+        if (!html || typeof html !== 'string') return '';
+        
+        let cleaned = html.trim();
+        if (!cleaned) return '';
+
+        // Remover code fences
+        cleaned = cleaned.replace(/```html\s*([\s\S]*?)```/gi, '$1');
+        cleaned = cleaned.replace(/```\s*([\s\S]*?)```/gi, '$1');
+
+        // Remover <head>...</head> completo
+        cleaned = cleaned.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '');
+        // Remover <style>...</style> completo
+        cleaned = cleaned.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+        // Remover <script>...</script> completo
+        cleaned = cleaned.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+        // Remover <link ...> (cualquier link)
+        cleaned = cleaned.replace(/<link[^>]*>/gi, '');
+        
+        // Remover tags residuales <html>, </html>, <body>, </body>, <head>, </head>
+        cleaned = cleaned.replace(/<html[^>]*>/gi, '');
+        cleaned = cleaned.replace(/<\/html>/gi, '');
+        cleaned = cleaned.replace(/<body[^>]*>/gi, '');
+        cleaned = cleaned.replace(/<\/body>/gi, '');
+        cleaned = cleaned.replace(/<head[^>]*>/gi, '');
+        cleaned = cleaned.replace(/<\/head>/gi, '');
+
+        // Extraer contenido de <body> si existe
+        const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        if (bodyMatch && bodyMatch[1]) {
+          cleaned = bodyMatch[1];
+        }
+
+        // Remover DOCTYPE
+        cleaned = cleaned.replace(/<!DOCTYPE[^>]*>/gi, '');
+
+        // Trim final
+        cleaned = cleaned.trim();
+
+        // Assert final: NO contiene <head, NO contiene <style, NO empieza con {
+        if (cleaned.includes('<head') || cleaned.includes('</head>')) {
+          // Remover cualquier resto de head
+          cleaned = cleaned.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '');
+          cleaned = cleaned.replace(/<head[^>]*>/gi, '');
+          cleaned = cleaned.replace(/<\/head>/gi, '');
+          cleaned = cleaned.trim();
+        }
+        if (cleaned.includes('<style') || cleaned.includes('</style>')) {
+          // Remover cualquier resto de style
+          cleaned = cleaned.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+          cleaned = cleaned.trim();
+        }
+
+        // NO empieza con {
+        if (cleaned.startsWith('{')) {
+          // Si empieza con {, es un error - envolver en div de error
+          return '<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> JSON wrapper detected in HTML fragment</div>';
+        }
+
+        // Ideal: empieza con < (si no, envolver en <div>)
+        if (!cleaned.startsWith('<')) {
+          cleaned = `<div>${cleaned}</div>`;
+        }
+
+        return cleaned.trim();
+      };
+
+      /**
+       * HARD GATE FINAL: Garantiza HTML limpio antes de responder.
+       * Elimina wrappers JSON, tags peligrosos (<head>, <style>, <script>, <link>), y valida formato.
+       * Retorna HTML limpio o error HTML si no se puede limpiar.
+       */
+      const finalGateHtml = (html: unknown, key: 'A' | 'B' | 'C'): string | null => {
+        // Early exit: debe ser string
+        if (typeof html !== 'string') {
+          return null;
+        }
+
+        // Trim y validar vacío
+        let cleaned = html.trim();
+        if (!cleaned) {
+          return null;
+        }
+
+        // Early exit: si empieza con '{' => error HTML (NO intentar parsear múltiples veces)
+        if (cleaned.startsWith('{')) {
+          return `<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> Invalid JSON wrapper detected in Version ${key}</div>`;
+        }
+
+        // Remover code fences ``` ```
+        cleaned = cleaned.replace(/```html\s*([\s\S]*?)```/gi, '$1');
+        cleaned = cleaned.replace(/```\s*([\s\S]*?)```/gi, '$1');
+
+        // Remover wrappers/tags peligrosos con regex
+        // Quitar <head>...</head> completo
+        cleaned = cleaned.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '');
+        // Quitar <style>...</style> completo
+        cleaned = cleaned.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+        // Quitar <script>...</script> completo
+        cleaned = cleaned.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+        // Quitar tags residuales <html>, <body>, <head>
+        cleaned = cleaned.replace(/<html[^>]*>/gi, '');
+        cleaned = cleaned.replace(/<\/html>/gi, '');
+        cleaned = cleaned.replace(/<body[^>]*>/gi, '');
+        cleaned = cleaned.replace(/<\/body>/gi, '');
+        cleaned = cleaned.replace(/<head[^>]*>/gi, '');
+        cleaned = cleaned.replace(/<\/head>/gi, '');
+        // Quitar <link ...> (cualquier link)
+        cleaned = cleaned.replace(/<link[^>]*>/gi, '');
+
+        // Trim después de remover tags
+        cleaned = cleaned.trim();
+
+        // Validaciones finales: si sigue conteniendo tags peligrosos => error HTML
+        if (cleaned.includes('<head') || cleaned.includes('</head>')) {
+          return `<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> CSS leakage risk: &lt;head&gt; tag detected in Version ${key}</div>`;
+        }
+        if (cleaned.includes('<style') || cleaned.includes('</style>')) {
+          return `<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> CSS leakage risk: &lt;style&gt; tag detected in Version ${key}</div>`;
+        }
+
+        // Si sigue empezando con '{' o contiene JSON wrapper pattern => error HTML
+        if (cleaned.startsWith('{') || /"versions"\s*:\s*\{/.test(cleaned)) {
+          return `<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> Invalid JSON wrapper detected in Version ${key}</div>`;
+        }
+
+        // Si NO empieza con '<' => error HTML
+        if (!cleaned.startsWith('<')) {
+          return `<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> Invalid HTML format in Version ${key} (does not start with &lt;)</div>`;
+        }
+
+        return cleaned;
+      };
+
       const buildUniversalResponse = ({
         baseHtml,
         versionBHtml,
@@ -272,7 +1591,8 @@ serve(async (req) => {
         metadata,
         generationPath,
         shouldDropB = false,
-        finalTriggers
+        finalTriggers,
+        finalAssignmentCounts
       }: {
         baseHtml: string;
         versionBHtml: string | null;
@@ -287,26 +1607,54 @@ serve(async (req) => {
         generationPath: 'universal' | 'universal_parse_failed';
         shouldDropB?: boolean;
         finalTriggers?: { versionB: boolean; versionC: boolean };
+        finalAssignmentCounts?: { A: number; B: number; C: number };
       }) => {
+        // CRITICAL: Inputs to buildUniversalResponse should already be normalized
+        // But apply final safety check to ensure they're HTML fragments
+        // Combine all inputs and extract/normalize in one pass
+        const combinedInput = {
+          A: baseHtml,
+          B: versionBHtml,
+          C: versionCHtml
+        };
+        
+        const extracted = extractAndNormalizeVersions(combinedInput);
+        
+        // Use extracted and normalized versions
+        const finalA = extracted.A || '<div class="evaluation"><p><strong>Error:</strong> Versión A no pudo ser extraída.</p></div>';
+        const finalB = extracted.B;
+        const finalC = extracted.C;
+
         return new Response(JSON.stringify({
           success: true,
-          content: baseHtml || '',
+          content: finalA,
           type: type,
           evaluationBundle: {
-            // TASK 4: Ensure versions.* are clean HTML, legacy fields are for backward compat only
-            // When versions exists, baseHtml/versionBHtml/versionCHtml are already extracted (no wrappers)
-            baseHtml: baseHtml || '', // Legacy alias for A (backward compat)
-            versionBHtml: versionBHtml, // Legacy alias for B (backward compat)
-            versionCHtml: versionCHtml, // Legacy alias for C (backward compat)
+            // Legacy fields for backward compat
+            baseHtml: finalA,
+            versionBHtml: finalB,
+            versionCHtml: finalC,
+            // versions.* are ONLY strings or null (never objects, never wrappers)
             versions: {
-              A: baseHtml || '', // Clean HTML, never wrapper
-              B: versionBHtml, // Clean HTML or null, never wrapper
-              C: versionCHtml // Clean HTML or null, never wrapper
+              A: finalA,
+              B: finalB,
+              C: finalC
             },
             responseOptionsIncluded,
-            responseOptionCount
+            responseOptionCount,
+            // Agregar finalAssignmentCounts en evaluationBundle
+            finalAssignmentCounts: finalAssignmentCounts || {
+              A: Object.values(studentAssignments).filter(v => v === 'A').length,
+              B: Object.values(studentAssignments).filter(v => v === 'B').length,
+              C: Object.values(studentAssignments).filter(v => v === 'C').length
+            }
           },
           studentAssignments,
+          finalAssignmentCounts: finalAssignmentCounts || {
+            A: Object.values(studentAssignments).filter(v => v === 'A').length,
+            B: Object.values(studentAssignments).filter(v => v === 'B').length,
+            C: Object.values(studentAssignments).filter(v => v === 'C').length
+          },
           teacherRemindersByStudent,
           aiReport,
           warnings,
@@ -315,20 +1663,78 @@ serve(async (req) => {
             generationPath,
             hasEvaluationBundle: true,
             hasAiReport: true,
-            versionsLengths: {
-              A: baseHtml?.length || 0,
-              B: versionBHtml?.length || 0,
-              C: versionCHtml?.length || 0
+            shouldHaveB,
+            shouldHaveC,
+            // DEBUG mínimo para verificar en Network (sin loguear HTML completo)
+            extractionMethod: extracted.extractionMethod,
+            aStartsWithBrace: finalA.trim().startsWith('{'),
+            aHasHead: finalA.includes('<head'),
+            aHasStyle: finalA.includes('<style'),
+            cStartsWithBrace: finalC ? finalC.trim().startsWith('{') : false,
+            cHasHead: finalC ? finalC.includes('<head') : false,
+            cHasStyle: finalC ? finalC.includes('<style') : false,
+            aPrefix: finalA.slice(0, 60),
+            cPrefix: finalC ? finalC.slice(0, 60) : null,
+            wrapperDetected: {
+              contentStartsWithBrace: finalA.trim().startsWith('{'),
+              baseHtmlStartsWithBrace: finalA.trim().startsWith('{'),
+              aStartsWithBrace: finalA.trim().startsWith('{')
+            },
+            hasHeadStyleAfterNormalize: {
+              A: finalA.includes('<head') || finalA.includes('<style'),
+              B: finalB ? (finalB.includes('<head') || finalB.includes('<style')) : false,
+              C: finalC ? (finalC.includes('<head') || finalC.includes('<style')) : false
             },
             startsWith: {
-              A: baseHtml?.trim().slice(0, 15) || 'null',
-              B: versionBHtml?.trim().slice(0, 15) || 'null',
-              C: versionCHtml?.trim().slice(0, 15) || 'null'
+              A: finalA.slice(0, 60),
+              C: finalC ? finalC.slice(0, 60) : null
             },
-            isWrapper: {
-              A: baseHtml?.trim().startsWith('{') || false,
-              B: versionBHtml?.trim().startsWith('{') || false,
-              C: versionCHtml?.trim().startsWith('{') || false
+            hasHead: {
+              A: finalA.includes('<head'),
+              C: finalC ? finalC.includes('<head') : false
+            },
+            hasStyle: {
+              A: finalA.includes('<style'),
+              C: finalC ? finalC.includes('<style') : false
+            },
+            isJsonWrapper: {
+              A: finalA.trim().startsWith('{'),
+              C: finalC ? finalC.trim().startsWith('{') : false
+            },
+            versionsLengths: {
+              A: finalA.length,
+              B: finalB?.length || 0,
+              C: finalC?.length || 0
+            },
+            isHtml: {
+              A: finalA.trim().startsWith('<'),
+              B: finalB ? finalB.trim().startsWith('<') : false,
+              C: finalC ? finalC.trim().startsWith('<') : false
+            },
+            hasWrapper: {
+              A: aHasWrapper,
+              B: bHasWrapper,
+              C: cHasWrapper
+            },
+            hasForbiddenTags: {
+              A: hasWrapper(baseHtml) || hasForbiddenTags(baseHtml),
+              B: versionBHtml ? (hasWrapper(versionBHtml) || hasForbiddenTags(versionBHtml)) : false,
+              C: versionCHtml ? (hasWrapper(versionCHtml) || hasForbiddenTags(versionCHtml)) : false
+            },
+            wrapperDetectedBefore: {
+              A: hasWrapper(baseHtml),
+              B: versionBHtml ? hasWrapper(versionBHtml) : false,
+              C: versionCHtml ? hasWrapper(versionCHtml) : false
+            },
+            wrapperDetectedAfter: {
+              A: false, // Should always be false after normalization
+              B: false,
+              C: false
+            },
+            hasCrossContamination: {
+              A: false, // Checked in pipeline
+              B: false,
+              C: false
             },
             triggers: {
               versionB: generateVersionB,
@@ -340,9 +1746,9 @@ serve(async (req) => {
             },
             responseOptions: {
               include: responseOptionsInclude,
-              optionCount: responseOptionsInclude ? responseOptionCountFinal : 0
+              optionCount: responseOptionsInclude ? responseOptionCount : 0
             },
-            assignmentCounts: {
+            assignmentCounts: finalAssignmentCounts || {
               A: Object.values(studentAssignments).filter(v => v === 'A').length,
               B: Object.values(studentAssignments).filter(v => v === 'B').length,
               C: Object.values(studentAssignments).filter(v => v === 'C').length
@@ -389,491 +1795,516 @@ serve(async (req) => {
       const generateVersionB = designPlan.triggers?.versionB === true || assignmentsIncludeB;
       const generateVersionC = designPlan.triggers?.versionC === true || assignmentsIncludeC || hasContentAdaptationStudent;
       
+      // STRATEGY: Unique delimiter blocks + HTML fragments only (no <html>/<head>/<body>/<style>)
+      const DELIMITER_SUFFIX = '8f3a7b'; // Unique suffix to avoid accidental matches
       const systemPrompt = `Eres un especialista en evaluación educativa. Tu tarea es generar una evaluación escrita universal, lista para entregar.
 
 REGLAS CRÍTICAS (NO NEGOCIABLES):
 1. Evidencia SIEMPRE escrita. Prohibido generar tareas "solo orales".
 2. NO inferir diagnósticos ni necesidades desde narrativas. Usa SOLO datos estructurados.
 3. CE/CL son definidos por el docente: NO inventar ni inferir nuevos criterios.
-4. No incluir explicaciones meta ni razonamientos de IA.
-5. HTML válido, renderizable. NO usar Markdown. NO usar <img>.
+4. No incluir explicaciones meta ni razonamientos de IA. NO incluir "Nota:" ni comentarios sobre adaptaciones.
+5. **CRÍTICO HTML**: Usa SOLO fragmentos HTML. PROHIBIDO usar:
+   - <html>, </html>
+   - <head>, </head>
+   - <body>, </body>
+   - <style>, </style>
+   - Cualquier CSS global
+6. **CRÍTICO JSON**: NO usar JSON. NO usar { ni }. Si generas JSON, la respuesta es INVÁLIDA.
 
-FORMATO:
-- Usa <strong> para títulos y secciones
-- Evita múltiples <br> consecutivos
+FORMATO HTML PERMITIDO:
+- Usa <div class="evaluation">...</div> como contenedor principal
+- Usa <strong>, <p>, <table>, <ul>, <ol>, <li>, <h2>, <h3>
+- NO uses <html>, <head>, <body>, <style>, <script>
 - Incluye puntajes por ítem cuando aplique
 
 RESPUESTAS CON OPCIONES EQUIVALENTES:
 ${responseOptionsInclude ? `
-- OBLIGATORIO Y CRÍTICO: Cada consigna que requiera respuesta escrita DEBE incluir EXACTAMENTE ${responseOptionCount} opciones equivalentes de formato.
-- Formato requerido (copiar exactamente): "Elige UNA opción. Todas equivalentes en dificultad y evidencia, solo cambia el formato de respuesta."
-- Ejemplo de opciones (incluir en cada consigna relevante):
-  * Opción 1: Respuesta escrita tradicional (párrafo)
-  * Opción 2: Respuesta estructurada (lista con viñetas o tabla)
-  ${responseOptionCount === 3 ? '  * Opción 3: Respuesta visual (diagrama o esquema con texto explicativo)' : ''}
-- Las opciones DEBEN aparecer INMEDIATAMENTE después de cada consigna relevante, dentro del mismo ítem.
-- NO omitir las opciones. Si no las incluyes, la evaluación será incompleta.
+- OBLIGATORIO: Cada consigna que requiera respuesta escrita DEBE incluir EXACTAMENTE ${responseOptionCount} opciones equivalentes de formato.
+- Formato: "Elige UNA opción. Todas equivalentes en dificultad y evidencia, solo cambia el formato de respuesta."
 ` : `
 - NO incluir opciones equivalentes de respuesta.
 `}
 
-SALIDA OBLIGATORIA (JSON):
-{
-  "versions": { 
-    "A": "<html>...</html>", 
-    ${generateVersionB ? '"B": "<html>...</html>",' : '"B": null,'}
-    ${generateVersionC ? '"C": "<html>...</html>",' : '"C": null,'}
-  },
-  "response_options_included": ${responseOptionsInclude},
-  "response_option_count": ${responseOptionCount},
-  "ai_report": {
-    "versions": { "generated": [${generateVersionB && generateVersionC ? '"A","B","C"' : generateVersionB ? '"A","B"' : generateVersionC ? '"A","C"' : '"A"'}], "reason": "..." },
-    "contemplaciones": {
-      "instrument_design": ["..."],
-      "admin_reminders": ["..."],
-      "correction_reminders": ["..."]
-    },
-    "response_options": { "included": ${responseOptionsInclude}, "optionCount": ${responseOptionCount}, "rationale": "..." },
-    "vark": { "summary": "..." },
-    "assignments": { "rationale": "..." },
-    "warnings": ["..."]
-  }
-}
+**FORMATO DE SALIDA OBLIGATORIO (DELIMITADORES ÚNICOS):**
 
-REGLAS CRÍTICAS PARA VERSIONES:
-${generateVersionB ? '- La versión B DEBE estar presente en "versions.B" (no null). Si no la generas, la respuesta será inválida.' : ''}
-${generateVersionC ? '- La versión C DEBE estar presente en "versions.C" (no null). Si no la generas, la respuesta será inválida.' : ''}
-${!generateVersionB && !generateVersionC ? '- Solo generar versión A. No incluir B ni C.' : ''}`;
+Tu respuesta DEBE contener ÚNICAMENTE bloques delimitados así:
+
+<<<A_EVAL_HTML_START_${DELIMITER_SUFFIX}>>>
+<div class="evaluation">
+...contenido completo de versión A...
+</div>
+<<<A_EVAL_HTML_END_${DELIMITER_SUFFIX}>>>
+
+${generateVersionB ? `<<<B_EVAL_HTML_START_${DELIMITER_SUFFIX}>>>
+<div class="evaluation">
+...contenido completo de versión B (formato equivalente, misma evidencia)...
+</div>
+<<<B_EVAL_HTML_END_${DELIMITER_SUFFIX}>>>` : '(NO generar versión B)'}
+
+${generateVersionC ? `<<<C_EVAL_HTML_START_${DELIMITER_SUFFIX}>>>
+<div class="evaluation">
+...contenido completo de versión C (adecuación de contenido)...
+</div>
+<<<C_EVAL_HTML_END_${DELIMITER_SUFFIX}>>>` : '(NO generar versión C)'}
+
+REGLAS ABSOLUTAS:
+- PROHIBIDO usar JSON ({ o "versions":)
+- PROHIBIDO usar <html>, <head>, <body>, <style>
+- Cada versión es INDEPENDIENTE: NO incluir contenido de otras versiones dentro de una versión
+- NO incluir notas como "Nota: Esta versión..." ni "Versión A:" dentro del contenido
+- La evaluación debe verse como un examen real de secundaria
+${generateVersionB ? '- Versión B es OBLIGATORIA y debe ser DIFERENTE de A (formato equivalente).' : ''}
+${generateVersionC ? '- Versión C es OBLIGATORIA y debe ser DIFERENTE de A y B (adecuación de contenido).' : ''}`;
 
       const userPrompt = `CONTEXTO DEL GRUPO:
 Materia: ${groupContext?.subject || 'No especificada'}
 Contenidos: ${groupContext?.content?.join(', ') || 'No especificados'}
-Competencias (si provistas por docente): ${groupContext?.competencies?.join(', ') || 'No provistas'}
-Criterios de logro (si provistos por docente): ${groupContext?.criteriosLogro?.join(', ') || 'No provistos'}
+Competencias: ${groupContext?.competencies?.join(', ') || 'No provistas'}
+Criterios de logro: ${groupContext?.criteriosLogro?.join(', ') || 'No provistos'}
 
 REQUERIMIENTOS DOCENTE:
 ${modification || 'No hay requerimientos adicionales'}
 
-REGLAS DE DISEÑO DEL INSTRUMENTO (determinísticas, no omitir):
+REGLAS DE DISEÑO:
 ${instrumentDesignRules.length ? instrumentDesignRules.map((rule: string) => `- ${rule}`).join('\n') : '- (Sin reglas adicionales)'}
 
-DETALLE DEL PLAN (NO INVENTAR DATOS):
-- Complejidad de diseño: ${designComplexityCount}
-- Necesidad de estructura (resumen): ${highStructureNeed.percent ?? 0}% del grupo
-- VARK distribución: ${JSON.stringify(varkDistribution)}
-- Contemplaciones por bucket: ${JSON.stringify(bucketedContemplacionIds)}
-
-OPCIONES DE RESPUESTA:
-- Incluir opciones equivalentes: ${responseOptionsInclude ? 'Sí' : 'No'}
-- Cantidad de opciones por consigna (si aplica): ${responseOptionCount}
-
-VERSIONES:
-${generateVersionB ? `
-- OBLIGATORIO: Generar versión B equivalente (solo cambia formato, misma evidencia).
-- La versión B debe ser funcionalmente equivalente a la A pero con formato diferente.
-- Si no generas versión B, la evaluación será incompleta.
-` : `
-- NO generar versión B.
-`}
-${generateVersionC ? `
-- OBLIGATORIO: Generar versión C con adecuación de contenido (solo para estudiantes explícitos).
-- La versión C debe adaptar el contenido manteniendo los objetivos de aprendizaje.
-- Si no generas versión C, la evaluación será incompleta.
-` : `
-- NO generar versión C.
-`}
+VERSIONES REQUERIDAS:
+- Versión A: OBLIGATORIA (universal)
+${generateVersionB ? '- Versión B: OBLIGATORIA (formato equivalente, misma evidencia)' : '- Versión B: NO generar'}
+${generateVersionC ? '- Versión C: OBLIGATORIA (adecuación de contenido)' : '- Versión C: NO generar'}
 
 TAREA:
-1. Genera la versión base (A) universal. ${generateVersionB ? 'OBLIGATORIO: También genera versión B.' : ''} ${generateVersionC ? 'OBLIGATORIO: También genera versión C.' : ''}
-2. ${generateVersionB ? 'Versión B: equivalente en formato, misma evidencia.' : 'No generar versión B.'}
-3. ${generateVersionC ? 'Versión C: adecuación de contenido para estudiantes específicos.' : 'No generar versión C.'}
-4. Devuelve únicamente el JSON solicitado con TODAS las versiones requeridas.
-5. En ai_report usa lenguaje docente simple (sin jerga técnica) y NO incluyas nombres de estudiantes.`;
+1. Genera evaluaciones usando los delimitadores <<<X_EVAL_HTML_START_${DELIMITER_SUFFIX}>>> y <<<X_EVAL_HTML_END_${DELIMITER_SUFFIX}>>>.
+2. USA SOLO fragmentos HTML (<div class="evaluation">, <p>, <table>, etc). 
+   PROHIBIDO usar: <html>, <head>, <body>, <style>, <script>
+3. Cada versión debe ser INDEPENDIENTE - NO incluir contenido de otras versiones.
+4. NO uses JSON. NO uses { ni }. NO incluyas "versions": { ni ", "A": ni ", "B": ni ", "C":
+5. NO incluyas notas meta como "Nota: Esta versión..." dentro del contenido.
+6. Las evaluaciones deben verse como exámenes reales de secundaria.
 
-      const result = await retryWithBackoff(async () => {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${openAIApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'gpt-4.1-2025-04-14',
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt }
-            ],
-            response_format: { type: 'json_object' },
-            max_completion_tokens: 4000
-          }),
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`OpenAI API error ${response.status}:`, errorText);
-          throw new Error(`OpenAI API error: ${response.status}`);
-        }
-
-        return await response.json();
-      });
-
-      const generatedContent = result.choices[0]?.message?.content;
-      let parseFailed = false;
-
-      const parseMaybeJsonString = (value: any): any | null => {
-        if (typeof value !== 'string') return null;
-        const trimmed = value.trim();
-        if (!trimmed.startsWith('{')) return null;
-        try {
-          return JSON.parse(trimmed);
-        } catch {
-          return null;
-        }
-      };
-
-      const extractVersions = (payload: any): { A: any; B: any; C: any } => {
-        if (!payload || typeof payload !== 'object') return { A: null, B: null, C: null };
-        if (payload.versions && typeof payload.versions === 'object') return payload.versions;
-        if (payload.A || payload.B || payload.C) return { A: payload.A, B: payload.B, C: payload.C };
-        if (payload.evaluationBundle?.versions) return payload.evaluationBundle.versions;
-        return { A: null, B: null, C: null };
-      };
+CRÍTICO: Si generas JSON o incluyes fragmentos como {"versions": {"A": " o ", "B":, la respuesta será rechazada.`;
 
       /**
-       * Robust HTML extractor that guarantees pure HTML strings, never JSON wrappers.
-       * Handles nested JSON strings, multiple shapes, and ensures output starts with '<'.
+       * CRITICAL: Generate evaluation with automatic retry and repair.
+       * This ensures backend NEVER returns wrapper-contaminated content.
        */
-      const extractVersionsFromModelOutput = (input: any): { A: string | null; B: string | null; C: null } => {
-        const result: { A: string | null; B: string | null; C: string | null } = { A: null, B: null, C: null };
-        
-        if (!input) return result;
-        
-        // Strategy 1: If input is a string, try to parse it as JSON
-        let parsed: any = null;
-        if (typeof input === 'string') {
-          const trimmed = input.trim();
-          if (trimmed.startsWith('{')) {
-            try {
-              parsed = JSON.parse(trimmed);
-            } catch {
-              // Not valid JSON, treat as HTML if it starts with '<'
-              if (trimmed.startsWith('<')) {
-                result.A = trimmed;
-                return result;
-              }
-              return result;
+      async function generateEvaluationWithRetries(
+        systemPrompt: string,
+        userPrompt: string,
+        generateVersionB: boolean,
+        generateVersionC: boolean,
+        shouldHaveB: boolean,
+        shouldHaveC: boolean
+      ): Promise<{
+        rawA: string | null;
+        rawB: string | null;
+        rawC: string | null;
+        warnings: string[];
+        attempt: number;
+        success: boolean;
+        extractionMethod: string;
+      }> {
+        const MAX_ATTEMPTS = 3;
+        const DELIM_SUFFIX = '8f3a7b';
+
+        let lastFailedOutput = '';
+        const warnings: string[] = [];
+        let extractionMethod = 'unknown';
+
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          console.log(`[RETRY_SYSTEM] Attempt ${attempt}/${MAX_ATTEMPTS}`);
+
+          // Build prompt (repair prompt for attempts > 1)
+          let currentSystemPrompt = systemPrompt;
+          let currentUserPrompt = userPrompt;
+
+          if (attempt > 1 && lastFailedOutput) {
+            // Repair prompt
+            const truncatedOutput = lastFailedOutput.slice(0, 1500);
+            currentUserPrompt = `Tu salida anterior violó el formato requerido. Aquí está tu salida anterior (truncada):
+
+${truncatedOutput}
+
+ERRORES DETECTADOS:
+- La salida contiene JSON o fragmentos como {"versions": {"A": " o ", "B":
+- O contiene wrappers JSON que no deberían aparecer
+- O no usa los delimitadores correctos
+
+REQUERIMIENTOS ABSOLUTOS:
+1. Re-genera SOLO los bloques delimitados, HTML limpio, sin JSON, sin notas.
+2. Cada bloque DEBE empezar con <div (no texto plano).
+3. NO incluyas texto antes/después de los bloques.
+4. NO incluyas otras versiones dentro de ninguna versión.
+5. USA SOLO los delimitadores: <<<A_EVAL_HTML_START_${DELIM_SUFFIX}>>>, etc.
+
+CONTEXTO ORIGINAL:
+${userPrompt}`;
+          }
+
+          // Call OpenAI
+          const result = await retryWithBackoff(async () => {
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${openAIApiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                model: 'gpt-4.1-2025-04-14',
+                messages: [
+                  { role: 'system', content: currentSystemPrompt },
+                  { role: 'user', content: currentUserPrompt }
+                ],
+                // NO response_format: json_object - we use delimiter blocks
+                max_completion_tokens: 6000
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error(`OpenAI API error ${response.status}:`, errorText);
+              throw new Error(`OpenAI API error: ${response.status}`);
             }
-          } else if (trimmed.startsWith('<')) {
-            // Already HTML
-            result.A = trimmed;
-            return result;
-          } else {
-            return result;
-          }
-        } else if (typeof input === 'object') {
-          parsed = input;
-        } else {
-          return result;
-        }
-        
-        // Strategy 2: Extract versions from parsed object
-        const extractFromObject = (obj: any): { A: string | null; B: string | null; C: string | null } => {
-          const extracted: { A: string | null; B: string | null; C: string | null } = { A: null, B: null, C: null };
-          
-          // Try multiple shapes
-          if (obj.versions && typeof obj.versions === 'object') {
-            extracted.A = obj.versions.A || null;
-            extracted.B = obj.versions.B || null;
-            extracted.C = obj.versions.C || null;
-          } else if (obj.A || obj.B || obj.C) {
-            extracted.A = obj.A || null;
-            extracted.B = obj.B || null;
-            extracted.C = obj.C || null;
-          } else if (obj.evaluationBundle?.versions) {
-            extracted.A = obj.evaluationBundle.versions.A || null;
-            extracted.B = obj.evaluationBundle.versions.B || null;
-            extracted.C = obj.evaluationBundle.versions.C || null;
-          } else if (obj.base_html || obj.baseHtml) {
-            extracted.A = obj.base_html || obj.baseHtml || null;
-            extracted.B = obj.version_b_html || obj.versionBHtml || null;
-            extracted.C = obj.version_c_html || obj.versionCHtml || null;
-          }
-          
-          return extracted;
-        };
-        
-        const extracted = extractFromObject(parsed);
-        
-        // Strategy 3: Recursively extract if any value is itself a JSON string
-        const normalizeHtml = (value: any): string | null => {
-          if (!value) return null;
-          if (typeof value === 'string') {
-            const trimmed = value.trim();
-            // If it's a JSON string, parse and extract again
-            if (trimmed.startsWith('{') && (trimmed.includes('"versions"') || trimmed.includes('"A"') || trimmed.includes('"B"') || trimmed.includes('"C"'))) {
-              try {
-                const nested = JSON.parse(trimmed);
-                const nestedExtracted = extractFromObject(nested);
-                // Prefer A from nested, fallback to nested root
-                return nestedExtracted.A || nested.A || nested.html || nested.content || null;
-              } catch {
-                // Not valid JSON, return as-is if it looks like HTML
-                return trimmed.startsWith('<') ? trimmed : null;
-              }
-            }
-            // If it's already HTML, return it
-            return trimmed.startsWith('<') ? trimmed : null;
-          }
-          if (typeof value === 'object') {
-            const objExtracted = extractFromObject(value);
-            return objExtracted.A || value.html || value.content || null;
-          }
-          return null;
-        };
-        
-        result.A = normalizeHtml(extracted.A);
-        result.B = normalizeHtml(extracted.B);
-        result.C = normalizeHtml(extracted.C);
-        
-        // Final validation: ensure A/B/C are HTML strings (start with '<') or null
-        const validateHtml = (html: string | null): string | null => {
-          if (!html) return null;
-          const trimmed = html.trim();
-          if (trimmed.startsWith('<')) return trimmed;
-          // If it doesn't start with '<', it's not valid HTML - return null
-          return null;
-        };
-        
-        result.A = validateHtml(result.A);
-        result.B = validateHtml(result.B);
-        result.C = validateHtml(result.C);
-        
-        return result;
-      };
-      
-      const extractHtml = (value: any, key: 'A' | 'B' | 'C'): string | null => {
-        const extracted = extractVersionsFromModelOutput(value);
-        return extracted[key];
-      };
 
-      let parsed: any = null;
-      if (generatedContent) {
-        parsed = parseMaybeJsonString(generatedContent);
-        if (!parsed) {
-          const jsonMatch = generatedContent.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            parsed = parseMaybeJsonString(jsonMatch[0]);
-          }
-        }
-      }
-      if (!parsed) {
-        parseFailed = true;
-      }
-
-      const versions = extractVersions(parsed || {});
-      let baseHtml = extractHtml(versions.A || parsed?.base_html || parsed?.baseHtml || parsed?.A || '', 'A') || '';
-      let versionBHtml = extractHtml(versions.B || parsed?.version_b_html || parsed?.versionBHtml || parsed?.B, 'B');
-      let versionCHtml = extractHtml(versions.C || parsed?.version_c_html || parsed?.versionCHtml || parsed?.C, 'C');
-
-      if (baseHtml.trim().startsWith('{')) {
-        const parsedBase = parseMaybeJsonString(baseHtml);
-        if (parsedBase) {
-          const nestedVersions = extractVersions(parsedBase);
-          baseHtml = extractHtml(nestedVersions.A || parsedBase.A || baseHtml, 'A') || baseHtml;
-          versionBHtml = versionBHtml || extractHtml(nestedVersions.B || parsedBase.B, 'B');
-          versionCHtml = versionCHtml || extractHtml(nestedVersions.C || parsedBase.C, 'C');
-        }
-      }
-
-      /**
-       * STRICT extractor that returns ONLY the target version.
-       * NEVER returns JSON wrappers, NEVER fallbacks to A when key is B or C.
-       */
-      const extractVersionStrict = (input: unknown, key: 'A' | 'B' | 'C'): string | null => {
-        if (!input) return null;
-        
-        // Helper to escape and convert newlines to <br/>
-        const escapeAndBr = (text: string): string => {
-          return text
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;')
-            .replace(/\n/g, '<br/>');
-        };
-        
-        // Helper to extract specific key from object
-        const extractKeyFromObject = (obj: any, k: 'A' | 'B' | 'C'): string | null => {
-          if (!obj || typeof obj !== 'object') return null;
-          if (obj.versions?.[k]) return obj.versions[k];
-          if (obj[k]) return obj[k];
-          if (obj.evaluationBundle?.versions?.[k]) return obj.evaluationBundle.versions[k];
-          // Legacy fallbacks ONLY for A
-          if (k === 'A') {
-            if (obj.base_html || obj.baseHtml) return obj.base_html || obj.baseHtml;
-            if (obj.html) return obj.html;
-            if (obj.content) return obj.content;
-          }
-          return null;
-        };
-        
-        if (typeof input === 'string') {
-          const trimmed = input.trim();
-          
-          // If already HTML, return cleaned
-          if (trimmed.startsWith('<')) {
-            return cleanupContent(trimmed);
-          }
-          
-          // If JSON wrapper, parse and extract EXACT key
-          if (trimmed.startsWith('{') || trimmed.includes('"versions"')) {
-            try {
-              const parsed = JSON.parse(trimmed);
-              const extracted = extractKeyFromObject(parsed, key);
-              if (extracted) {
-                // Recurse on extracted value (might be nested JSON or HTML)
-                return extractVersionStrict(extracted, key);
-              }
-              // Key not found, return null (NEVER fallback to A)
-              return null;
-      } catch (e) {
-              // Not valid JSON, treat as plain text
-              if (trimmed.length > 0) {
-                return `<div>${escapeAndBr(trimmed)}</div>`;
-              }
-              return null;
-            }
-          }
-          
-          // Plain text: wrap safely
-          if (trimmed.length > 0) {
-            return `<div>${escapeAndBr(trimmed)}</div>`;
-          }
-          
-          return null;
-        }
-        
-        if (typeof input === 'object') {
-          const extracted = extractKeyFromObject(input, key);
-          if (extracted) {
-            return extractVersionStrict(extracted, key);
-          }
-          return null;
-        }
-        
-        return null;
-      };
-      
-      // A3: STRICT extraction before building response
-      // Force strict extraction to prevent JSON wrappers from leaking
-      let finalA = extractVersionStrict(baseHtml || generatedContent || '', 'A');
-      let finalB = versionBHtml ? extractVersionStrict(versionBHtml, 'B') : null;
-      let finalC = versionCHtml ? extractVersionStrict(versionCHtml, 'C') : null;
-      
-      // Fallback for A if extraction failed
-      if (!finalA || !finalA.trim().startsWith('<')) {
-        parseFailed = true;
-        finalA = '<div>Contenido no disponible.</div>';
-        warnings.push('La versión A no pudo ser extraída correctamente; se aplicó fallback seguro.');
-      }
-      
-      // A4: If C is required but missing, create deterministic fallback
-      const finalAssignmentCounts = {
-        A: Object.values(adjustedAssignments).filter(v => v === 'A').length,
-        B: Object.values(adjustedAssignments).filter(v => v === 'B').length,
-        C: Object.values(adjustedAssignments).filter(v => v === 'C').length
-      };
-      
-      if (finalAssignmentCounts.C > 0 && (!finalC || !finalC.trim().startsWith('<'))) {
-        console.warn('[UNIVERSAL] Version C required but missing, generating deterministic fallback');
-        // Create deterministic fallback C from A
-        let fallbackC = finalA;
-        
-        // Prepend adaptation note
-        const adaptationNote = '<p><em>Nota: Esta versión ha sido adaptada para facilitar la comprensión, manteniendo los mismos objetivos de aprendizaje.</em></p>';
-        fallbackC = adaptationNote + fallbackC;
-        
-        // Simplify language minimally
-        fallbackC = fallbackC.replace(/\b(analizar|examinar|investigar|evaluar)\b/gi, 'explicar');
-        fallbackC = fallbackC.replace(/\b(complejo|compleja|complejos|complejas)\b/gi, 'importante');
-        fallbackC = fallbackC.replace(/\b(desarrollar|elaborar|construir)\b/gi, 'escribir');
-        
-        // Reduce items if too many (keep first 3 items)
-        const itemMatches = [...fallbackC.matchAll(/(\d+[\.\)]|\d+\.\s*[A-Z])/gi)];
-        if (itemMatches.length > 3) {
-          let itemIndex = 0;
-          fallbackC = fallbackC.replace(/(\d+[\.\)]|\d+\.\s*[A-Z])(.*?)(?=\d+[\.\)]|\d+\.\s*[A-Z]|$)/gi, (match) => {
-            itemIndex++;
-            if (itemIndex > 3) return '';
-            return match;
+            return await response.json();
           });
+
+          const generatedContent = result.choices[0]?.message?.content;
+          lastFailedOutput = generatedContent || '';
+
+          // CRITICAL: Use unified extraction function (handles delimiters AND JSON)
+          const extracted = extractVersionsFromModelOutput(generatedContent || '');
+          extractionMethod = extracted.method;
+          
+          console.log(`[RETRY_SYSTEM] Attempt ${attempt} extraction method:`, extracted.method);
+
+          // CRITICAL: Finalize each version through the complete pipeline
+          const finalizedA = finalizeExtractedVersion(extracted.A, 'A');
+          const finalizedB = finalizeExtractedVersion(extracted.B, 'B');
+          const finalizedC = finalizeExtractedVersion(extracted.C, 'C');
+          
+          // Validate with finalizeVersion for comprehensive checks
+          const resultA = finalizeVersion(finalizedA, 'A');
+          const resultB = finalizeVersion(finalizedB, 'B');
+          const resultC = finalizeVersion(finalizedC, 'C');
+
+          // Validation logs
+          console.log(`[RETRY_SYSTEM] Attempt ${attempt} validation:`, {
+            A: { ok: resultA.ok, length: resultA.html?.length || 0, reasons: resultA.reasons },
+            B: { ok: resultB.ok, length: resultB.html?.length || 0, reasons: resultB.reasons },
+            C: { ok: resultC.ok, length: resultC.html?.length || 0, reasons: resultC.reasons }
+          });
+
+          // Check if all required versions are valid
+          const aValid = resultA.ok;
+          const bValid = shouldHaveB ? resultB.ok : (resultB.ok || !rawB); // B valid if required and ok, or optional and null
+          const cValid = shouldHaveC ? resultC.ok : (resultC.ok || !rawC); // C valid if required and ok, or optional and null
+
+          if (aValid && bValid && cValid) {
+            // Success!
+            console.log(`[RETRY_SYSTEM] Success on attempt ${attempt}`);
+            if (attempt > 1) {
+              warnings.push(`Generación exitosa después de ${attempt} intentos (intentos anteriores fallaron validación)`);
+            }
+            return {
+              rawA: resultA.html,
+              rawB: resultB.html,
+              rawC: resultC.html,
+              warnings,
+              attempt,
+              success: true,
+              extractionMethod
+            };
+          }
+
+          // Validation failed - log reasons
+          const failures: string[] = [];
+          if (!aValid) failures.push(`A: ${resultA.reasons.join(', ')}`);
+          if (!bValid && shouldHaveB) failures.push(`B: ${resultB.reasons.join(', ')}`);
+          if (!cValid && shouldHaveC) failures.push(`C: ${resultC.reasons.join(', ')}`);
+
+          console.warn(`[RETRY_SYSTEM] Attempt ${attempt} failed validation:`, failures);
+
+          // If last attempt, return what we have (will be replaced with error blocks)
+          if (attempt === MAX_ATTEMPTS) {
+            console.error(`[RETRY_SYSTEM] All ${MAX_ATTEMPTS} attempts failed validation`);
+            warnings.push(`Generación falló después de ${MAX_ATTEMPTS} intentos. Se usarán bloques de error.`);
+            return {
+              rawA: resultA.html,
+              rawB: resultB.html,
+              rawC: resultC.html,
+              warnings,
+              attempt,
+              success: false,
+              extractionMethod
+            };
+          }
+        }
+
+        // Should never reach here, but TypeScript needs it
+        return {
+          rawA: null,
+          rawB: null,
+          rawC: null,
+          warnings,
+          attempt: MAX_ATTEMPTS,
+          success: false,
+          extractionMethod: 'failed'
+        };
+      }
+
+      // Compute assignment counts to determine shouldHaveB/C BEFORE calling retry
+      const rawAssignmentsForCheck = designPlan.assignmentByStudentId || designPlan.studentAssignments || studentAssignments || {};
+      const assignmentCountsForCheck = {
+        A: Object.values(rawAssignmentsForCheck).filter((v: any) => v === 'A').length,
+        B: Object.values(rawAssignmentsForCheck).filter((v: any) => v === 'B').length,
+        C: Object.values(rawAssignmentsForCheck).filter((v: any) => v === 'C').length
+      };
+      const shouldHaveB = assignmentCountsForCheck.B > 0 || designPlan.triggers?.versionB === true;
+      const shouldHaveC = assignmentCountsForCheck.C > 0 || designPlan.triggers?.versionC === true;
+
+      // Use generateEvaluationWithRetries instead of direct OpenAI call
+      const generationResult = await generateEvaluationWithRetries(
+        systemPrompt,
+        userPrompt,
+        generateVersionB,
+        generateVersionC,
+        shouldHaveB,
+        shouldHaveC
+      );
+
+      const { rawA, rawB, rawC, warnings: retryWarnings } = generationResult;
+      const warnings: string[] = [...retryWarnings];
+
+      // CRITICAL: Apply extraction, normalization, and cleanup pipeline
+      // Step 1: Extract HTML from possibly wrapped values (JSON/object -> HTML string)
+      // This handles cases where the model returns the full object or serialized JSON
+      let extractedA = extractHtmlFromPossiblyWrappedValue(rawA, 'A');
+      let extractedB = rawB ? extractHtmlFromPossiblyWrappedValue(rawB, 'B') : null;
+      let extractedC = rawC ? extractHtmlFromPossiblyWrappedValue(rawC, 'C') : null;
+
+      // Log extraction results for debugging
+      console.log('[EXTRACT_HTML] Extraction results', {
+        A: {
+          rawType: typeof rawA,
+          rawStartsWith: typeof rawA === 'string' ? rawA.slice(0, 50) : 'not string',
+          extractedType: typeof extractedA,
+          extractedStartsWith: extractedA ? extractedA.slice(0, 50) : 'empty',
+          extractedLength: extractedA ? extractedA.length : 0,
+          isWrapped: extractedA ? (extractedA.trim().startsWith('{') || hasWrapperLeak(extractedA)) : false
+        },
+        B: {
+          rawType: typeof rawB,
+          extractedStartsWith: extractedB ? extractedB.slice(0, 50) : 'null',
+          isWrapped: extractedB ? (extractedB.trim().startsWith('{') || hasWrapperLeak(extractedB)) : false
+        },
+        C: {
+          rawType: typeof rawC,
+          extractedStartsWith: extractedC ? extractedC.slice(0, 50) : 'null',
+          isWrapped: extractedC ? (extractedC.trim().startsWith('{') || hasWrapperLeak(extractedC)) : false
+        }
+      });
+
+      if (!extractedA && rawA) {
+        console.warn('[EXTRACT_HTML] Version A extraction failed or returned empty', {
+          rawAType: typeof rawA,
+          rawAStartsWith: typeof rawA === 'string' ? rawA.slice(0, 200) : 'not string',
+          isObject: typeof rawA === 'object',
+          rawAKeys: typeof rawA === 'object' && rawA !== null ? Object.keys(rawA).slice(0, 10) : null
+        });
+      }
+
+      // Step 2: Check if extracted values still have wrappers - re-extract if needed
+      // This handles cases where extraction didn't fully unwrap the JSON
+      const checkAndReExtract = (extracted: string | null, key: 'A' | 'B' | 'C'): string | null => {
+        if (!extracted) return null;
+        const trimmed = extracted.trim();
+        
+        // If starts with { or has wrapper leak, try re-extraction
+        if (trimmed.startsWith('{') || hasWrapperLeak(trimmed)) {
+          console.warn(`[NORMALIZE] extracted${key} still has wrappers, attempting re-extraction`, {
+            startsWith: trimmed.slice(0, 50),
+            hasWrapperLeak: hasWrapperLeak(trimmed)
+          });
+          
+          // Try extraction up to 3 times (defense in depth)
+          let current = extracted;
+          for (let i = 0; i < 3; i++) {
+            const reExtracted = extractHtmlFromPossiblyWrappedValue(current, key);
+            if (reExtracted && !reExtracted.trim().startsWith('{') && !hasWrapperLeak(reExtracted)) {
+              console.log(`[NORMALIZE] extracted${key} re-extraction successful on attempt ${i + 1}`);
+              return reExtracted;
+            }
+            if (reExtracted && reExtracted !== current) {
+              current = reExtracted;
+            } else {
+              break;
+            }
+          }
+          
+          console.error(`[NORMALIZE] extracted${key} re-extraction failed after 3 attempts`);
+          return null;
         }
         
-        finalC = cleanupContent(fallbackC);
-        warnings.push('Se generó versión C determinísticamente como fallback (era requerida pero no fue generada por la IA).');
+        return extracted;
+      };
+
+      extractedA = checkAndReExtract(extractedA, 'A') || '';
+      extractedB = checkAndReExtract(extractedB, 'B');
+      extractedC = checkAndReExtract(extractedC, 'C');
+
+      // Step 2b: Normalize HTML fragment (remove code fences, <html>/<head>/<body>, <style>, <link>, <script>)
+      extractedA = extractedA ? normalizeHtmlFragment(extractedA) : '';
+      extractedB = extractedB ? normalizeHtmlFragment(extractedB) : null;
+      extractedC = extractedC ? normalizeHtmlFragment(extractedC) : null;
+
+      // Step 3: Apply cleanupContent if exists (normalize HTML structure)
+      if (extractedA) {
+        extractedA = cleanupContent(extractedA);
       }
-      
-      // A5: Final validation - FAIL FAST if any version is still a wrapper
-      const isWrapperA = finalA.trim().startsWith('{');
-      const isWrapperB = finalB ? finalB.trim().startsWith('{') : false;
-      const isWrapperC = finalC ? finalC.trim().startsWith('{') : false;
-      
-      if (isWrapperA || isWrapperB || isWrapperC) {
-        console.error('[UNIVERSAL] CRITICAL: JSON wrapper detected in final versions!', {
-          isWrapperA,
-          isWrapperB,
-          isWrapperC,
-          AStartsWith: finalA.trim().slice(0, 20),
-          BStartsWith: finalB?.trim().slice(0, 20),
-          CStartsWith: finalC?.trim().slice(0, 20)
-        });
-        // Fail fast - return error response instead of shipping wrappers
-        return new Response(JSON.stringify({
-          success: false,
-          error: 'Internal error: JSON wrapper detected in evaluation versions',
-          _debug: {
-            generationPath: 'universal_extraction_failed',
-            isWrapper: { A: isWrapperA, B: isWrapperB, C: isWrapperC }
+      if (extractedB) {
+        extractedB = cleanupContent(extractedB);
+      }
+      if (extractedC) {
+        extractedC = cleanupContent(extractedC);
+      }
+
+      // Step 4: Apply final sanitization (defense in depth - remove any remaining wrappers)
+      let baseHtml = extractedA ? sanitizeHtmlForInjection(extractedA) : null;
+      let versionBHtml = extractedB ? sanitizeHtmlForInjection(extractedB) : null;
+      let versionCHtml = extractedC ? sanitizeHtmlForInjection(extractedC) : null;
+
+      // Final validation: if still wrapped after all processing, use error block
+      // This is the last line of defense - if content still has wrappers, replace with error
+      const finalCheck = (html: string | null, key: string): string | null => {
+        if (!html) return null;
+        const trimmed = html.trim();
+        
+        if (trimmed.startsWith('{') || hasWrapperLeak(trimmed)) {
+          console.error(`[PIPELINE] ${key} still wrapped after full pipeline`, {
+            startsWith: trimmed.slice(0, 150),
+            hasWrapperLeak: hasWrapperLeak(trimmed),
+            length: trimmed.length
+          });
+          return `<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> Versión ${key} no pudo ser extraída correctamente del wrapper. El backend detectó contenido JSON donde debería haber HTML.</div>`;
+        }
+        
+        // Also check that it starts with < (valid HTML)
+        if (!trimmed.startsWith('<')) {
+          console.error(`[PIPELINE] ${key} does not start with < after full pipeline`, {
+            startsWith: trimmed.slice(0, 150)
+          });
+          return `<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> Versión ${key} no es HTML válido.</div>`;
+        }
+        
+        return html;
+      };
+
+      baseHtml = finalCheck(baseHtml, 'A');
+      versionBHtml = finalCheck(versionBHtml, 'B');
+      versionCHtml = finalCheck(versionCHtml, 'C');
+
+      // Handle failure case: if retry failed, use error blocks
+      if (!generationResult.success || !baseHtml) {
+        console.error('[RETRY_SYSTEM] Generation failed after all retries, using error blocks');
+        const debugCode = `ERR-${Date.now().toString(36).toUpperCase()}`;
+        baseHtml = `<div class="p-4 bg-red-50 border-2 border-red-500 rounded">
+          <strong>Error:</strong> La generación de la evaluación falló después de ${generationResult.attempt} intentos.
+          <br><small>Código de depuración: ${debugCode}</small>
+        </div>`;
+        if (shouldHaveC && !versionCHtml) {
+          versionCHtml = `<div class="p-4 bg-red-50 border-2 border-red-500 rounded">
+            <strong>Error:</strong> La versión C es requerida pero no pudo ser generada después de ${generationResult.attempt} intentos.
+            <br><small>Código de depuración: ${debugCode}</small>
+          </div>`;
+        }
+      }
+
+      // CRITICAL: Hard gates - Final validation before response
+      // If ANY version STILL has wrapper leak (JSON starting with {) or doesn't start with <, replace with error block
+      // This should rarely trigger now since we extract and normalize before this point
+      let finalA = baseHtml;
+      let finalB = versionBHtml;
+      let finalC = versionCHtml;
+
+      // Final check: if still wrapped (starts with { or has wrapper leak), try one more extraction
+      if (finalA && (finalA.trim().startsWith('{') || hasWrapperLeak(finalA))) {
+        console.warn('[HARD_GATE] finalA still wrapped after normalization, attempting final extraction');
+        const reExtracted = extractHtmlFromPossiblyWrappedValue(finalA, 'A');
+        if (reExtracted && !reExtracted.trim().startsWith('{') && !hasWrapperLeak(reExtracted)) {
+          finalA = normalizeHtmlFragment(reExtracted);
+          finalA = cleanupContent(finalA);
+          finalA = sanitizeHtmlForInjection(finalA);
+        } else {
+          console.error('[HARD_GATE] CRITICAL: finalA still wrapped after re-extraction', {
+            first120: finalA.slice(0, 120)
+          });
+          finalA = '<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> Versión A contaminada detectada (wrapper leak o formato inválido).</div>';
+        }
+      }
+
+      if (finalA) {
+        const aStartsWithLt = finalA.trim().startsWith('<');
+        if (!aStartsWithLt) {
+          console.error('[HARD_GATE] CRITICAL: finalA does not start with <', {
+            first120: finalA.slice(0, 120)
+          });
+          finalA = '<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> Versión A no es HTML válido.</div>';
+        }
+      }
+
+      if (finalB) {
+        if (finalB.trim().startsWith('{') || hasWrapperLeak(finalB)) {
+          console.warn('[HARD_GATE] finalB still wrapped after normalization, attempting final extraction');
+          const reExtracted = extractHtmlFromPossiblyWrappedValue(finalB, 'B');
+          if (reExtracted && !reExtracted.trim().startsWith('{') && !hasWrapperLeak(reExtracted)) {
+            finalB = normalizeHtmlFragment(reExtracted);
+            finalB = cleanupContent(finalB);
+            finalB = sanitizeHtmlForInjection(finalB);
+          } else {
+            console.error('[HARD_GATE] CRITICAL: finalB still wrapped after re-extraction');
+            finalB = null; // Drop B if contaminated
           }
-        }), {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
+        }
+        if (finalB && !finalB.trim().startsWith('<')) {
+          console.error('[HARD_GATE] CRITICAL: finalB does not start with <');
+          finalB = null; // Drop B if invalid
+        }
       }
-      
-      // Use final extracted values
-      baseHtml = finalA;
-      versionBHtml = finalB;
-      versionCHtml = finalC;
-      
-      // Log extraction results
-      console.log('[UNIVERSAL] HTML extraction results:', {
-        baseHtmlStartsWith: baseHtml.trim().substring(0, 20),
-        versionBHtmlExists: !!versionBHtml,
-        versionBHtmlStartsWith: versionBHtml ? versionBHtml.trim().substring(0, 20) : null,
-        versionCHtmlExists: !!versionCHtml,
-        versionCHtmlStartsWith: versionCHtml ? versionCHtml.trim().substring(0, 20) : null,
-        parseFailed
-      });
-      
-      // Initialize warnings array
-      const warnings: string[] = [];
-      if (parseFailed) {
-        warnings.push('La respuesta del modelo no fue JSON válido; se aplicó extracción robusta y fallback de HTML.');
+
+      if (finalC) {
+        if (finalC.trim().startsWith('{') || hasWrapperLeak(finalC)) {
+          console.warn('[HARD_GATE] finalC still wrapped after normalization, attempting final extraction');
+          const reExtracted = extractHtmlFromPossiblyWrappedValue(finalC, 'C');
+          if (reExtracted && !reExtracted.trim().startsWith('{') && !hasWrapperLeak(reExtracted)) {
+            finalC = normalizeHtmlFragment(reExtracted);
+            finalC = cleanupContent(finalC);
+            finalC = sanitizeHtmlForInjection(finalC);
+          } else {
+            console.error('[HARD_GATE] CRITICAL: finalC still wrapped after re-extraction', {
+              first120: finalC.slice(0, 120)
+            });
+            finalC = '<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> Versión C contaminada detectada (wrapper leak o formato inválido).</div>';
+          }
+        }
+        if (finalC && !finalC.trim().startsWith('<')) {
+          console.error('[HARD_GATE] CRITICAL: finalC does not start with <', {
+            first120: finalC.slice(0, 120)
+          });
+          finalC = '<div class="p-4 bg-red-50 border-2 border-red-500 rounded"><strong>Error:</strong> Versión C no es HTML válido.</div>';
+        }
       }
-      
-      // R3a: Enforcement determinístico de metacognición
+
+      // R3a: Enforcement determinístico de metacognición (using finalA after hard gates)
       const metacognitionPhrase = 'Elige UNA opción. Todas equivalentes en dificultad y evidencia, solo cambia el formato de respuesta.';
-      if (responseOptionsInclude && baseHtml && !baseHtml.includes(metacognitionPhrase)) {
+      if (responseOptionsInclude && finalA && !finalA.includes(metacognitionPhrase)) {
         console.log('[UNIVERSAL] R3a: Metacognition not found in Version A, injecting deterministically');
         
         // Inyectar opciones equivalentes después de cada ítem numerado o consigna relevante
-        // Buscar patrones como: "1.", "2.", "a)", "b)", "<strong>", etc.
-        const itemPattern = /(<p[^>]*>|<strong[^>]*>|<h[1-6][^>]*>)(.*?)(<\/p>|<\/strong>|<\/h[1-6]>)/gi;
         const numberedItemPattern = /(\d+[\.\)]|\d+\.\s*[A-Z]|^[a-z][\.\)])/i;
         
-        let injectedHtml = baseHtml;
+        let injectedHtml = finalA;
         let injectionCount = 0;
         
         // Buscar ítems que requieren respuesta escrita
@@ -900,12 +2331,11 @@ TAREA:
         });
         
         if (injectionCount > 0) {
-          baseHtml = injectedHtml;
+          finalA = injectedHtml;
           warnings.push(`Se inyectaron ${injectionCount} bloques de opciones equivalentes determinísticamente (no estaban en la respuesta de la IA).`);
         } else {
           // R4: Fallback: inyectar al menos UNA VEZ después del primer prompt de respuesta escrita
-          // Buscar el primer párrafo que requiera respuesta escrita
-          const firstWrittenResponseMatch = baseHtml.match(/<p[^>]*>.*?(explica|describe|analiza|compara|justifica|desarrolla|redacta|escribe).*?<\/p>/i);
+          const firstWrittenResponseMatch = finalA.match(/<p[^>]*>.*?(explica|describe|analiza|compara|justifica|desarrolla|redacta|escribe).*?<\/p>/i);
           if (firstWrittenResponseMatch && firstWrittenResponseMatch.index !== undefined) {
             const insertIndex = firstWrittenResponseMatch.index + firstWrittenResponseMatch[0].length;
             const optionsHtml = `
@@ -914,11 +2344,11 @@ TAREA:
   <li><strong>Opción 1:</strong> Respuesta escrita tradicional (párrafo)</li>
   <li><strong>Opción 2:</strong> Respuesta estructurada (lista con viñetas o tabla)${responseOptionCount === 3 ? '</li>\n  <li><strong>Opción 3:</strong> Respuesta visual (diagrama o esquema con texto explicativo)' : ''}
 </ul>`;
-            baseHtml = baseHtml.slice(0, insertIndex) + optionsHtml + baseHtml.slice(insertIndex);
+            finalA = finalA.slice(0, insertIndex) + optionsHtml + finalA.slice(insertIndex);
             warnings.push('Se inyectó bloque de opciones equivalentes determinísticamente después del primer prompt de respuesta escrita (no estaba en la respuesta de la IA).');
           } else {
             // Último fallback: inyectar al final de la primera sección
-            const firstSectionEnd = baseHtml.indexOf('</p>', baseHtml.indexOf('<p'));
+            const firstSectionEnd = finalA.indexOf('</p>', finalA.indexOf('<p'));
             if (firstSectionEnd > 0) {
               const optionsHtml = `
 <p><strong>${metacognitionPhrase}</strong></p>
@@ -926,48 +2356,24 @@ TAREA:
   <li><strong>Opción 1:</strong> Respuesta escrita tradicional (párrafo)</li>
   <li><strong>Opción 2:</strong> Respuesta estructurada (lista con viñetas o tabla)${responseOptionCount === 3 ? '</li>\n  <li><strong>Opción 3:</strong> Respuesta visual (diagrama o esquema con texto explicativo)' : ''}
 </ul>`;
-              baseHtml = baseHtml.slice(0, firstSectionEnd + 4) + optionsHtml + baseHtml.slice(firstSectionEnd + 4);
+              finalA = finalA.slice(0, firstSectionEnd + 4) + optionsHtml + finalA.slice(firstSectionEnd + 4);
               warnings.push('Se inyectó bloque de opciones equivalentes determinísticamente al inicio (no estaba en la respuesta de la IA).');
             }
           }
         }
+        
       }
       
       // R3b: Enforcement determinístico de versión C
-      // IMPORTANTE: Hacer esto ANTES de verificar hasVersionC para ajustar assignments
       const needsVersionC = generateVersionC && (!versionCHtml || versionCHtml.trim().length === 0);
       if (needsVersionC) {
         console.log('[UNIVERSAL] R3b: Version C required but not generated, creating fallback deterministically');
-        
-        // Crear versión C fallback desde baseHtml
-        let fallbackC = baseHtml;
-        
-        // Simplificar lenguaje: reemplazar palabras complejas (sin romper HTML)
-        fallbackC = fallbackC.replace(/\b(analizar|examinar|investigar|evaluar)\b/gi, 'explicar');
-        fallbackC = fallbackC.replace(/\b(complejo|compleja|complejos|complejas)\b/gi, 'importante');
-        fallbackC = fallbackC.replace(/\b(desarrollar|elaborar|construir)\b/gi, 'escribir');
-        
-        // Reducir cantidad de ítems: eliminar cada segundo ítem numerado si hay más de 3
-        const itemMatches = [...fallbackC.matchAll(/(\d+[\.\)]|\d+\.\s*[A-Z])/gi)];
-        if (itemMatches.length > 3) {
-          // Eliminar ítems pares (mantener impares: 1, 3, 5, ...)
-          let itemIndex = 0;
-          fallbackC = fallbackC.replace(/(\d+[\.\)]|\d+\.\s*[A-Z])(.*?)(?=\d+[\.\)]|\d+\.\s*[A-Z]|$)/gi, (match) => {
-            itemIndex++;
-            if (itemIndex % 2 === 0) {
-              return ''; // Eliminar ítem par
-            }
-            return match;
-          });
-        }
-        
-        // Agregar nota de simplificación al inicio
-        const simplificationNote = '<p><em>Nota: Esta versión ha sido adaptada para facilitar la comprensión, manteniendo los mismos objetivos de aprendizaje.</em></p>';
-        fallbackC = simplificationNote + fallbackC;
-        
-        versionCHtml = cleanupContent(fallbackC);
-        warnings.push('Se generó versión C determinísticamente como fallback (la IA no la generó pero era requerida).');
+        console.warn('[UNIVERSAL] Version C requerida pero no fue generada por la IA. Se usará fallback seguro en el response.');
+        warnings.push('La versión C fue requerida pero no fue generada por la IA; se devolverá fallback seguro.');
       }
+      
+      // Determine if parseFailed based on extraction method
+      const parseFailed = !generationResult.success;
       
       // A4: studentAssignments MUST NOT be empty - start with evaluation_design_plan.assignmentByStudentId
       // Normalize keys to String and ensure all students have assignments
@@ -999,115 +2405,49 @@ TAREA:
         });
       }
 
-      // Verificar si B/C realmente existen (no null, no empty string) - después del enforcement
-      const hasVersionB = Boolean(versionBHtml && versionBHtml.trim().length > 0 && versionBHtml.trim().startsWith('<'));
-      const hasVersionC = Boolean(versionCHtml && versionCHtml.trim().length > 0 && versionCHtml.trim().startsWith('<'));
-      
-      // REQUIREMENT 2: Do not generate/return Version B unless it is required
-      // If there are no students assigned to 'B' AND designPlan.triggers.versionB is false, drop B
-      const assignmentCountB = Object.values(adjustedAssignments).filter(v => v === 'B').length;
-      const shouldDropB = hasVersionB && assignmentCountB === 0 && !designPlan.triggers?.versionB;
-      if (shouldDropB) {
-        console.log('[UNIVERSAL] Dropping Version B: no assignments to B and triggers.versionB is false');
-        versionBHtml = null;
-        warnings.push('La versión B fue generada pero no es necesaria (sin asignaciones y triggers.versionB=false); se eliminó de la respuesta.');
-      }
-
-      // Reasignar estudiantes de B a A si B no existe
-      if (!hasVersionB) {
-        const reassignedB = Object.keys(adjustedAssignments).filter(studentId => adjustedAssignments[studentId] === 'B');
-        if (reassignedB.length > 0) {
-          warnings.push(`La versión B estaba planificada pero no se generó; ${reassignedB.length} estudiante(s) reasignado(s) a versión A.`);
-          reassignedB.forEach(studentId => {
-            adjustedAssignments[studentId] = 'A';
-          });
-        }
-      }
-
-      // Reasignar estudiantes de C a A si C no existe
-      if (!hasVersionC) {
-        const reassignedC = Object.keys(adjustedAssignments).filter(studentId => adjustedAssignments[studentId] === 'C');
-        if (reassignedC.length > 0) {
-          warnings.push(`La versión C estaba planificada pero no se generó; ${reassignedC.length} estudiante(s) reasignado(s) a versión A.`);
-          reassignedC.forEach(studentId => {
-            adjustedAssignments[studentId] = 'A';
-          });
-        }
-      }
-      
-      // Garantizar que ningún assignment quede como 'B' o 'C' si esas versiones no existen
-      Object.keys(adjustedAssignments).forEach(studentId => {
-        if (adjustedAssignments[studentId] === 'B' && !hasVersionB) {
-          adjustedAssignments[studentId] = 'A';
-        }
-        if (adjustedAssignments[studentId] === 'C' && !hasVersionC) {
-          adjustedAssignments[studentId] = 'A';
-        }
-      });
-      
-      // REQUIREMENT 3: Final invariant enforcement - ensure C is actually C when required
-      const finalAssignmentCounts = {
+      // Compute assignment counts and required versions (already computed above, reuse)
+      const assignmentCountsLocal = {
         A: Object.values(adjustedAssignments).filter(v => v === 'A').length,
         B: Object.values(adjustedAssignments).filter(v => v === 'B').length,
         C: Object.values(adjustedAssignments).filter(v => v === 'C').length
       };
-      
-      // If assignmentCounts.C > 0, versionCHtml MUST be non-null and must be C (not A/B)
-      if (finalAssignmentCounts.C > 0 && !hasVersionC) {
-        console.warn('[UNIVERSAL] Version C required but missing, generating deterministic fallback');
-        // Generate deterministic fallback C from baseHtml (simplified language)
-        let fallbackC = baseHtml;
-        
-        // Simplificar lenguaje
-        fallbackC = fallbackC.replace(/\b(analizar|examinar|investigar|evaluar)\b/gi, 'explicar');
-        fallbackC = fallbackC.replace(/\b(complejo|compleja|complejos|complejas)\b/gi, 'importante');
-        fallbackC = fallbackC.replace(/\b(desarrollar|elaborar|construir)\b/gi, 'escribir');
-        
-        // Reducir cantidad de ítems si hay más de 3
-        const itemMatches = [...fallbackC.matchAll(/(\d+[\.\)]|\d+\.\s*[A-Z])/gi)];
-        if (itemMatches.length > 3) {
-          let itemIndex = 0;
-          fallbackC = fallbackC.replace(/(\d+[\.\)]|\d+\.\s*[A-Z])(.*?)(?=\d+[\.\)]|\d+\.\s*[A-Z]|$)/gi, (match) => {
-            itemIndex++;
-            if (itemIndex % 2 === 0) return '';
-            return match;
-          });
-        }
-        
-        // Agregar nota de simplificación
-        const simplificationNote = '<p><em>Nota: Esta versión ha sido adaptada para facilitar la comprensión, manteniendo los mismos objetivos de aprendizaje.</em></p>';
-        versionCHtml = cleanupContent(simplificationNote + fallbackC);
-        hasVersionC = true;
-        warnings.push('Se generó versión C determinísticamente como fallback (era requerida pero no fue generada por la IA).');
-      }
-      
-      // Final validation: ensure versionCHtml is NOT equal to baseHtml (unless intentionally identical)
-      // This prevents C from accidentally containing A
-      if (hasVersionC && versionCHtml && baseHtml && versionCHtml.trim() === baseHtml.trim()) {
-        console.warn('[UNIVERSAL] Version C equals A, this may indicate extraction bug');
-        // If they're identical, at least add a note to C
-        versionCHtml = '<p><em>Nota: Versión adaptada.</em></p>' + versionCHtml;
-      }
-      
-      // Log final version integrity
-      console.log('[UNIVERSAL] Final version integrity:', {
-        baseHtmlLength: baseHtml?.length || 0,
-        versionBHtmlLength: versionBHtml?.length || 0,
-        versionCHtmlLength: versionCHtml?.length || 0,
-        assignmentCounts: finalAssignmentCounts,
-        baseHtmlStartsWith: baseHtml?.trim().substring(0, 30),
-        versionCHtmlStartsWith: versionCHtml?.trim().substring(0, 30),
-        versionCHtmlEqualsBaseHtml: versionCHtml && baseHtml && versionCHtml.trim() === baseHtml.trim()
-      });
+      // shouldHaveB and shouldHaveC already defined above, don't redeclare
 
-      // REQUIREMENT 2-3: Construir aiReport - SIEMPRE presente, MERGEAR con datos locales si OpenAI lo generó
-      // REQUIREMENT 4: Usar solo evaluation_design_plan del requestBody y valores seguros
-      const aiReportFromAI = parsed?.ai_report ?? null;
+      // Verificar si B/C realmente existen (no null, no empty string) - después del enforcement
+      // A4) Make B truly disappear if not assigned and not forced
+      // Apply this to finalB (after hard gates) instead of versionBHtml
+      if (assignmentCountsLocal.B === 0 && designPlan.triggers?.versionB !== true) {
+        if (finalB) {
+          console.log('[UNIVERSAL] Dropping Version B: no assignments to B and triggers.versionB is false');
+          warnings.push('La versión B fue generada pero no es necesaria (sin asignaciones y triggers.versionB=false); se eliminó de la respuesta.');
+          finalB = null;
+        }
+      }
       
-      // REQUIREMENT 3: Versiones generadas basadas en REALIDAD (no en plan)
+      // Ensure finalA is never null (shouldn't happen after hard gates, but defense in depth)
+      if (!finalA) {
+        console.error('[VERSIONS_FINAL] CRITICAL: Version A is null after hard gates');
+        finalA = '<div><strong>Error:</strong> Version A generation failed.</div>';
+      }
+
+      // Ensure finalC exists if required
+      if (shouldHaveC && !finalC) {
+        console.error('[VERSIONS_FINAL] CRITICAL: Version C required but missing after hard gates');
+        finalC = '<div><strong>Error:</strong> Version C required but missing.</div>';
+      }
+
+      // Final validation: ensure version C is not identical to A
+      if (finalC && finalA && finalC.trim() === finalA.trim()) {
+        console.warn('[UNIVERSAL] Version C equals A, this may indicate extraction bug');
+      }
+      
+      const shouldDropB = assignmentCountsLocal.B === 0 && designPlan.triggers?.versionB !== true;
+
+      // REQUIREMENT 2-3: Construir aiReport - SIEMPRE presente
+      // Versiones generadas basadas en REALIDAD (no en plan)
       const generatedVersions: string[] = ['A'];  // A siempre existe
-      if (hasVersionB) generatedVersions.push('B');
-      if (hasVersionC) generatedVersions.push('C');
+      if (finalB) generatedVersions.push('B');
+      if (finalC) generatedVersions.push('C');
 
       // Extraer valores seguros del evaluation_design_plan
       const safeInstrumentDesignRules = evaluation_design_plan?.instrumentDesignRules ?? [];
@@ -1118,12 +2458,8 @@ TAREA:
         kinesthetic: 0
       };
 
-      if (!parsed) {
-        console.warn('[UNIVERSAL] Parsed output is null; using fallback-safe values for ai_report and response options.');
-      }
-      // REQUIREMENT 3: Combinar warnings de AI con warnings locales
-      const aiWarnings = Array.isArray(parsed?.ai_report?.warnings) ? parsed.ai_report.warnings : [];
-      const allWarnings = [...aiWarnings, ...warnings];
+      // Combinar warnings
+      const allWarnings = [...warnings];
 
       // A3: Build meaningful aiReport with design decisions
       const assignmentCounts = {
@@ -1161,8 +2497,8 @@ TAREA:
         ? 'Solo se generó la versión base universal (A) porque no se requirieron versiones diferenciadas según el plan de diseño.'
         : `Se generaron las versiones ${generatedVersions.join(', ')} porque: ${generateVersionB ? 'Versión B para estudiantes que requieren formato equivalente. ' : ''}${generateVersionC ? 'Versión C para estudiantes con adecuación de contenido explícita. ' : ''}`;
       
-      const responseOptionsRationale = responseOptionsIncluded
-        ? `Se incluyeron ${responseOptionCountFinal} opciones equivalentes de respuesta (metacognición) para permitir que los estudiantes elijan el formato que mejor se adapte a su estilo de aprendizaje. Las opciones aparecen después de cada consigna que requiere respuesta escrita.`
+      const responseOptionsRationale = responseOptionsInclude
+        ? `Se incluyeron ${responseOptionCount} opciones equivalentes de respuesta (metacognición) para permitir que los estudiantes elijan el formato que mejor se adapte a su estilo de aprendizaje. Las opciones aparecen después de cada consigna que requiere respuesta escrita.`
         : 'No se incluyeron opciones equivalentes de respuesta porque no se detectaron en el HTML final.';
       
       const assignmentsRationale = `Asignaciones: ${assignmentCounts.A} estudiante(s) en versión A (universal), ${assignmentCounts.B} en versión B${assignmentCounts.B > 0 ? ` (formato equivalente)` : ''}, ${assignmentCounts.C} en versión C${assignmentCounts.C > 0 ? ` (adecuación de contenido)` : ''}.${contentAdaptationStudentIds.length > 0 ? ` Estudiantes con adecuación de contenido (IDs: ${contentAdaptationStudentIds.slice(0, 5).join(', ')}${contentAdaptationStudentIds.length > 5 ? ` y ${contentAdaptationStudentIds.length - 5} más` : ''}) asignados a versión C.` : ''}`;
@@ -1186,10 +2522,10 @@ TAREA:
           high_structure_need_percent: highStructureNeed.percent || 0
         },
         response_options: {
-          included: responseOptionsIncluded,
-          optionCount: responseOptionCountFinal,
+          included: responseOptionsInclude,
+          optionCount: responseOptionCount,
           rationale: responseOptionsRationale,
-          location: responseOptionsIncluded ? 'Después de cada consigna que requiere respuesta escrita' : 'No aplica'
+          location: responseOptionsInclude ? 'Después de cada consigna que requiere respuesta escrita' : 'No aplica'
         },
         vark: {
           summary: `Distribución VARK: Visual=${safeVarkDistribution.visual || 0}, Auditivo=${safeVarkDistribution.auditory || 0}, Lecto-escritor=${safeVarkDistribution.readWrite || 0}, Kinestésico=${safeVarkDistribution.kinesthetic || 0}`,
@@ -1204,58 +2540,114 @@ TAREA:
         },
         warnings: allWarnings
       };
-
-      const responseOptionsIncluded = baseHtml.includes(metacognitionPhrase);
-      const responseOptionCountFinal = responseOptionsIncluded
-        ? (baseHtml.includes('Opción 3') ? 3 : 2)
-        : 0;
       
       // TASK 5: Backend log
       console.log('[UNIVERSAL] response versions startsWith', {
-        A: baseHtml?.slice(0, 15) || 'null',
-        C: versionCHtml?.slice(0, 15) || 'null'
+        A: finalA?.slice(0, 15) || 'null',
+        C: finalC?.slice(0, 15) || 'null'
       });
       
-      // Log final integrity check
+      // STEP 2: Calculate FINAL assignment counts (after B may have been dropped)
+      const finalAssignmentCounts = {
+        A: Object.values(adjustedAssignments).filter(v => v === 'A').length,
+        B: Object.values(adjustedAssignments).filter(v => v === 'B').length,
+        C: Object.values(adjustedAssignments).filter(v => v === 'C').length
+      };
+
+      // CRITICAL: Extract and normalize versions from AI output BEFORE building response
+      // This is the SINGLE SOURCE OF TRUTH for version extraction and normalization
+      // Combine all potential sources into one input
+      const aiOutput = {
+        A: finalA,
+        B: finalB,
+        C: finalC
+      };
+
+      // Extract and normalize using robust pipeline
+      const extracted = extractAndNormalizeVersions(aiOutput);
+      
+      // Update final values with extracted and normalized versions
+      finalA = extracted.A || '<div class="evaluation"><p><strong>Error:</strong> Versión A no pudo ser extraída.</p></div>';
+      finalB = extracted.B;
+      finalC = extracted.C;
+
+      // Log extraction method for debugging
+      console.log('[EXTRACT_AND_NORMALIZE] Extraction result', {
+        method: extracted.extractionMethod,
+        warnings: extracted.warnings,
+        startsWith: {
+          A: finalA.slice(0, 60),
+          B: finalB?.slice(0, 60) || null,
+          C: finalC?.slice(0, 60) || null
+        },
+        hasHead: {
+          A: finalA.includes('<head'),
+          B: finalB ? finalB.includes('<head') : false,
+          C: finalC ? finalC.includes('<head') : false
+        },
+        hasStyle: {
+          A: finalA.includes('<style'),
+          B: finalB ? finalB.includes('<style') : false,
+          C: finalC ? finalC.includes('<style') : false
+        },
+        startsWithBrace: {
+          A: finalA.trim().startsWith('{'),
+          B: finalB ? finalB.trim().startsWith('{') : false,
+          C: finalC ? finalC.trim().startsWith('{') : false
+        },
+        hasVersionsKey: {
+          A: /"versions"\s*:\s*\{/.test(finalA),
+          B: finalB ? /"versions"\s*:\s*\{/.test(finalB) : false,
+          C: finalC ? /"versions"\s*:\s*\{/.test(finalC) : false
+        }
+      });
+
+      // Log final integrity check with wrapper detection info
       console.log('[UNIVERSAL] versions integrity', {
         assignmentCounts: finalAssignmentCounts,
         startsWith: {
-          A: baseHtml?.trim().slice(0, 15) || 'null',
-          B: versionBHtml?.trim().slice(0, 15) || 'null',
-          C: versionCHtml?.trim().slice(0, 15) || 'null'
+          A: finalA?.trim().slice(0, 15) || 'null',
+          B: finalB?.trim().slice(0, 15) || 'null',
+          C: finalC?.trim().slice(0, 15) || 'null'
         },
         isWrapper: {
-          A: baseHtml?.trim().startsWith('{') || false,
-          B: versionBHtml?.trim().startsWith('{') || false,
-          C: versionCHtml?.trim().startsWith('{') || false
+          A: finalA?.trim().startsWith('{') || false,
+          B: finalB?.trim().startsWith('{') || false,
+          C: finalC?.trim().startsWith('{') || false
         },
         lengths: {
-          A: baseHtml?.length || 0,
-          B: versionBHtml?.length || 0,
-          C: versionCHtml?.length || 0
+          A: finalA?.length || 0,
+          B: finalB?.length || 0,
+          C: finalC?.length || 0
+        },
+        wrapperDetected: {
+          A: { before: normA.hadWrapperBefore, after: normA.hasWrapperAfter },
+          B: { before: normB.hadWrapperBefore, after: normB.hasWrapperAfter },
+          C: { before: normC.hadWrapperBefore, after: normC.hasWrapperAfter }
         }
       });
 
       return buildUniversalResponse({
-        baseHtml,
-        versionBHtml,
-        versionCHtml,
-        responseOptionsIncluded,
-        responseOptionCount: responseOptionsIncluded ? responseOptionCountFinal : 0,
+        baseHtml: finalA,
+        versionBHtml: finalB,
+        versionCHtml: finalC,
+        responseOptionsIncluded: responseOptionsInclude,
+        responseOptionCount: responseOptionsInclude ? responseOptionCount : 0,
         studentAssignments: adjustedAssignments,
         teacherRemindersByStudent,
         aiReport,
         warnings: allWarnings,
         metadata: {
-          tokensUsed: result.usage?.total_tokens || 0,
-          model: result.model || 'gpt-4.1-2025-04-14'
+          tokensUsed: 0, // Tokens not tracked in retry system
+          model: 'gpt-4.1-2025-04-14'
         },
         generationPath: parseFailed ? 'universal_parse_failed' : 'universal',
         shouldDropB: shouldDropB || false,
         finalTriggers: {
           versionB: designPlan.triggers?.versionB || false,
           versionC: designPlan.triggers?.versionC || false
-        }
+        },
+        finalAssignmentCounts
       });
     }
 

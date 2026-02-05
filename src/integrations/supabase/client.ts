@@ -24,12 +24,30 @@ if (!SUPABASE_ANON_KEY) {
   );
 }
 
-// Validate anon key length (should be a reasonable length for a JWT)
-if (import.meta.env.DEV && SUPABASE_ANON_KEY.length < 50) {
-  console.warn(
-    '[Supabase Client Warning] VITE_SUPABASE_ANON_KEY seems too short. ' +
-    'Make sure you are using the "anon public" key from Supabase Dashboard, not the service_role key.'
-  );
+// Validate anon key format
+// New publishable keys start with "sb_publishable_" and are ~40 chars
+// Legacy JWT keys start with "eyJ" and are ~200+ chars
+if (import.meta.env.DEV) {
+  const isPublishableKey = SUPABASE_ANON_KEY.startsWith('sb_publishable_');
+  const isLegacyJWT = SUPABASE_ANON_KEY.startsWith('eyJ');
+  
+  if (!isPublishableKey && !isLegacyJWT) {
+    console.warn(
+      '[Supabase Client Warning] VITE_SUPABASE_ANON_KEY format unexpected. ' +
+      'Expected format: "sb_publishable_..." (new) or "eyJ..." (legacy JWT). ' +
+      'Make sure you are using the "Publishable Key" from Supabase Dashboard → Project Settings → API.'
+    );
+  } else if (isPublishableKey && SUPABASE_ANON_KEY.length < 30) {
+    console.warn(
+      '[Supabase Client Warning] VITE_SUPABASE_ANON_KEY seems too short for a publishable key. ' +
+      'Expected length: ~40 characters. Verify you copied the complete key.'
+    );
+  } else if (isLegacyJWT && SUPABASE_ANON_KEY.length < 200) {
+    console.warn(
+      '[Supabase Client Warning] VITE_SUPABASE_ANON_KEY seems too short for a legacy JWT key. ' +
+      'Expected length: ~200+ characters. Verify you copied the complete key.'
+    );
+  }
 }
 
 // Import the supabase client like this:

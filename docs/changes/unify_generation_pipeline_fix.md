@@ -1,293 +1,338 @@
-# Unify Generation Pipeline Fix
+# Unify Generation Pipeline Fix - Verification and Enforcement
 
 **Fecha**: 2026-02-01  
-**Objetivo**: Unificar el pipeline de generación de evaluaciones para que siempre use `generation_mode: 'universal'`, eliminando el path `generation_context` que deshabilita versiones y opciones equivalentes.
+**Rama**: `nuevas-evaluaciones`  
+**Objetivo**: Verificar y asegurar que la generación de evaluaciones siempre llama al edge function `modify-evaluation` usando el pipeline universal, y agregar herramientas de debug visibles al usuario para diagnosticar problemas.
 
 ---
 
-## Resumen de Causa Raíz
+## Causa Raíz Encontrada
 
-### Por qué `generation_context` deshabilita versiones/opciones
+### Problema Identificado
 
-El path `generation_context` en el edge function (`supabase/functions/modify-evaluation/index.ts`, líneas 245-480) fue diseñado para generar evaluaciones basadas en sesiones/materiales con un formato JSON estructurado que incluye time budgeting y mapeo de cobertura.
+El código ya estaba implementado para llamar a `modify-evaluation` con `generation_mode: 'universal'`, pero **no había visibilidad** para el usuario sobre:
+- Si el request realmente se estaba enviando
+- Qué endpoint se estaba usando
+- Si el response contenía los datos esperados (`aiReport`, `evaluationBundle.versions`, etc.)
 
-**Problemas identificados**:
+Sin logs visibles o panel de debug, era imposible diagnosticar si:
+- El código se estaba ejecutando pero fallaba silenciosamente
+- Había un error de red que impedía el request
+- El response no contenía los campos esperados
 
-1. **Deshabilita versiones B/C**: En `src/pages/EvaluacionesGrupo.tsx` (líneas 856-872), cuando existe `generationContext`, se fuerza:
-   - `triggers: { versionB: false, versionC: false }`
-   - `contentAdaptationStudentIds: []`
-   - Todas las asignaciones a 'A'
+### Endpoint Verificado
 
-2. **No incluye opciones equivalentes**: El prompt del path `generation_context` (líneas 298-332) no tiene sección sobre opciones equivalentes de respuesta, incluso si `responseOptions.include === true`.
+**Endpoint usado**: `supabase.functions.invoke('modify-evaluation')`  
+**Ubicación**: `src/pages/EvaluacionesGrupo.tsx`, línea ~943
 
-3. **Retorna `aiDesignReport` en lugar de `aiReport`**: El edge function retorna `aiDesignReport` (línea 471) en lugar de `aiReport`, causando inconsistencia con la UI que busca `data?.aiReport` primero.
-
-**Solución elegida**: Eliminar el uso del path `generation_context` para generación de evaluaciones. En su lugar, siempre usar `generation_mode: 'universal'` y pasar el contexto de sesiones/materiales como texto plano en el campo `modification`.
+El código **ya estaba correctamente implementado** para usar el pipeline universal, pero faltaba:
+1. Logs de debug visibles en consola
+2. Panel de debug visible al usuario (gated por feature flag)
+3. Verificación explícita de que el request se envía y el response se recibe correctamente
 
 ---
 
-## Parche Exacto
+## Cambios Exactos Aplicados
 
 ### Archivo: `src/pages/EvaluacionesGrupo.tsx`
 
-#### Cambio 1: Eliminar override de `effectivePlan`
+#### Cambio 1: Agregar Estado para Panel de Debug
 
-**Líneas**: 856-873
-
-```typescript
-// ANTES:
-      const effectivePlan = generationContext
-        ? {
-            ...plan,
-            triggers: { versionB: false, versionC: false },
-            assignmentByStudentId: Object.fromEntries(
-              groupContextData.students.map(student => [String(student.studentId), 'A'])
-            ),
-            versionPlans: [
-              {
-                kind: 'A',
-                label: 'Versión A (Universal)',
-                assignedStudentIds: groupContextData.students.map(student => student.studentId),
-                reason: 'Modo sesiones/materiales: versión única'
-              }
-            ],
-            contentAdaptationStudentIds: []
-          }
-        : plan;
-
-// DESPUÉS:
-      // Siempre usar el plan completo (sin overrides)
-      const effectivePlan = plan;
-```
-
-#### Cambio 2: Unificar request body - siempre usar `generation_mode: 'universal'`
-
-**Líneas**: 875-898
+**Ubicación**: Líneas ~437-450
 
 ```typescript
-// ANTES:
-      const requestBody: any = {
-        originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
-        modification: requerimientos || 'Genera una evaluación escrita universal basada en los contenidos seleccionados.',
-        groupContext,
-        type: 'modification'
-      };
+// DEBUG: Pipeline debug panel (gated by feature flag)
+const [pipelineDebug, setPipelineDebug] = useState<{
+  lastRequest?: {
+    generationMode: string;
+    hasEvaluationDesignPlan: boolean;
+    hasGenerationContext: boolean;
+    triggers: { versionB: boolean; versionC: boolean };
+    responseOptionsInclude: boolean;
+    assignmentsCount: number;
+  };
+  lastResponse?: {
+    hasAiReport: boolean;
+    hasEvaluationBundle: boolean;
+    versionsGenerated: string[];
+    warningsCount: number;
+    endpoint: string;
+  };
+}>({});
+const showDebugPanel = import.meta.env.VITE_DEBUG_EVAL_PIPELINE === 'true';
+```
 
-      if (generationContext) {
-        const { serializeGenerationContext } = await import('@/services/evaluations');
-        requestBody.generation_context = serializeGenerationContext(generationContext);
-      } else {
-        requestBody.generation_mode = 'universal';
-        requestBody.evaluation_design_plan = {
-          instrumentDesignRules,
-          responseOptions: effectivePlan.responseOptions,
-          triggers: effectivePlan.triggers,
-          assignmentByStudentId: effectivePlan.assignmentByStudentId,
-          perStudentReminders: effectivePlan.perStudentReminders,
-          varkDistribution: effectivePlan.varkDistribution,
-          highStructureNeed: effectivePlan.highStructureNeed,
-          designComplexityCount: effectivePlan.designComplexityCount,
-          bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds
-        };
-      }
+#### Cambio 2: Agregar Logs de Debug en `handleGenerateEvaluations`
 
-// DESPUÉS:
-      // Construir modification con contexto de sesiones/materiales si existe
-      let modificationText = requerimientos || 'Genera una evaluación escrita universal basada en los contenidos seleccionados.';
-      
-      if (generationContext) {
-        const { serializeGenerationContext } = await import('@/services/evaluations');
-        const serialized = serializeGenerationContext(generationContext);
-        
-        // Construir texto legible del contexto
-        const contextSections: string[] = [];
-        
-        if (serialized.sessions && serialized.sessions.length > 0) {
-          contextSections.push('SESIONES DE CLASE A EVALUAR:');
-          serialized.sessions.forEach((s: any, idx: number) => {
-            contextSections.push(`\nSesión ${s.order}: ${s.title || `Sesión ${s.order}`}`);
-            if (s.anepContent?.length) contextSections.push(`- Contenidos ANEP: ${s.anepContent.join(', ')}`);
-            if (s.competencies?.length) contextSections.push(`- Competencias: ${s.competencies.join(', ')}`);
-            if (s.objectives) contextSections.push(`- Objetivos: ${s.objectives}`);
-            if (s.activitiesSummary) contextSections.push(`- Resumen de actividades: ${s.activitiesSummary}`);
-            if (s.resources?.length) contextSections.push(`- Recursos: ${s.resources.join(', ')}`);
-            if (s.attachedMaterials?.length) {
-              contextSections.push(`- Materiales adjuntos: ${s.attachedMaterials.map((m: any) => m.title).join(', ')}`);
-            }
-            if (idx < serialized.sessions.length - 1) contextSections.push('\n---');
-          });
-        }
-        
-        if (serialized.materials && serialized.materials.length > 0) {
-          contextSections.push('\n\nMATERIALES DOCENTES ADJUNTOS:');
-          serialized.materials.forEach((m: any, idx: number) => {
-            contextSections.push(`\n${idx + 1}. ${m.title} (${m.mimeType})`);
-            if (m.focusText) contextSections.push(`   Enfoque: ${m.focusText}`);
-            if (m.extractedText) {
-              contextSections.push(`   Contenido extraído del PDF:\n   ${m.extractedText.substring(0, 1000)}${m.extractedText.length > 1000 ? '...' : ''}`);
-            }
-            if (idx < serialized.materials.length - 1) contextSections.push('\n---');
-          });
-        }
-        
-        if (serialized.evaluationFocus) {
-          contextSections.push(`\n\nENFOQUE DE EVALUACIÓN (ESPECIFICADO POR EL DOCENTE):\n${serialized.evaluationFocus}`);
-        }
-        
-        if (serialized.timeBudget) {
-          contextSections.push(`\n\nPRESUPUESTO DE TIEMPO:\n- Duración objetivo: ${serialized.timeBudget.targetMinutes} minutos\n- Tolerancia: ${Math.round((serialized.timeBudget.flexibilityThreshold || 0.10) * 100)}%`);
-        }
-        
-        if (contextSections.length > 0) {
-          modificationText = `${modificationText}\n\n${contextSections.join('\n')}`;
-        }
-      }
+**Ubicación**: Líneas ~781-790
 
-      const requestBody: any = {
-        originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
-        modification: modificationText,
-        groupContext,
-        type: 'modification',
-        // SIEMPRE usar generation_mode: 'universal'
-        generation_mode: 'universal',
-        evaluation_design_plan: {
-          instrumentDesignRules,
-          responseOptions: effectivePlan.responseOptions,
-          triggers: effectivePlan.triggers,
-          assignmentByStudentId: effectivePlan.assignmentByStudentId,
-          perStudentReminders: effectivePlan.perStudentReminders,
-          varkDistribution: effectivePlan.varkDistribution,
-          highStructureNeed: effectivePlan.highStructureNeed,
-          designComplexityCount: effectivePlan.designComplexityCount,
-          bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds
-        }
-      };
+```typescript
+const handleGenerateEvaluations = async () => {
+  console.info('[EVAL_PIPELINE] handleGenerateEvaluations called');
+  
+  // Validaciones con logs
+  if (!selectedGroup || (!materia && !esInterdisciplinaria)) {
+    console.info('[EVAL_PIPELINE] Early return: missing group or materia');
+    return;
+  }
+  // ... más validaciones con logs
+  
+  console.info('[EVAL_PIPELINE] Starting generation', {
+    hasAnepContent,
+    hasSessions,
+    hasMaterials,
+    groupId: selectedGroup.id
+  });
+```
+
+#### Cambio 3: Log Request Payload Summary
+
+**Ubicación**: Líneas ~940-960
+
+```typescript
+// DEBUG: Log request payload summary
+const requestSummary = {
+  generationMode: requestBody.generation_mode,
+  hasEvaluationDesignPlan: !!requestBody.evaluation_design_plan,
+  hasGenerationContext: !!requestBody.generation_context,
+  triggers: effectivePlan.triggers,
+  responseOptionsInclude: effectivePlan.responseOptions.include,
+  assignmentsCount: Object.keys(effectivePlan.assignmentByStudentId).length
+};
+console.info('[EVAL_PIPELINE] Request payload summary:', requestSummary);
+
+if (showDebugPanel) {
+  setPipelineDebug(prev => ({
+    ...prev,
+    lastRequest: requestSummary
+  }));
+}
+
+console.info('[EVAL_PIPELINE] Invoking modify-evaluation edge function');
+```
+
+#### Cambio 4: Log Response Summary
+
+**Ubicación**: Líneas ~965-1000
+
+```typescript
+console.info('[EVAL_PIPELINE] Edge function response received', {
+  hasAiReport: !!data?.aiReport,
+  hasEvaluationBundle: !!data?.evaluationBundle,
+  hasVersions: {
+    A: !!data?.evaluationBundle?.versions?.A,
+    B: !!data?.evaluationBundle?.versions?.B,
+    C: !!data?.evaluationBundle?.versions?.C
+  },
+  studentAssignmentsCount: Object.keys(data?.studentAssignments || {}).length
+});
+
+// DEBUG: Log response summary
+const versionsGenerated: string[] = [];
+if (data?.evaluationBundle?.versions?.A) versionsGenerated.push('A');
+if (data?.evaluationBundle?.versions?.B) versionsGenerated.push('B');
+if (data?.evaluationBundle?.versions?.C) versionsGenerated.push('C');
+
+const responseSummary = {
+  hasAiReport: !!data?.aiReport,
+  hasEvaluationBundle: !!data?.evaluationBundle,
+  versionsGenerated,
+  warningsCount: Array.isArray(data?.warnings) ? data.warnings.length : 0,
+  endpoint: 'modify-evaluation'
+};
+
+if (showDebugPanel) {
+  setPipelineDebug(prev => ({
+    ...prev,
+    lastResponse: responseSummary
+  }));
+}
+```
+
+#### Cambio 5: Agregar Panel de Debug en UI
+
+**Ubicación**: Líneas ~1975-2010 (después del botón "Generar Evaluaciones Inteligentes")
+
+```typescript
+{/* DEBUG: Pipeline debug panel (only visible when VITE_DEBUG_EVAL_PIPELINE=true) */}
+{showDebugPanel && (pipelineDebug.lastRequest || pipelineDebug.lastResponse) && (
+  <Card className="mt-4 border-2 border-blue-300 bg-blue-50 dark:bg-blue-950/20">
+    <CardHeader>
+      <CardTitle className="text-sm text-blue-800 dark:text-blue-200">
+        🔍 Debug: Pipeline de Generación
+      </CardTitle>
+    </CardHeader>
+    <CardContent className="space-y-4 text-sm">
+      {pipelineDebug.lastRequest && (
+        <div>
+          <h4 className="font-semibold text-blue-900 dark:text-blue-100 mb-2">Último Request:</h4>
+          <ul className="list-disc pl-5 space-y-1 text-blue-800 dark:text-blue-200">
+            <li>Endpoint: <code>modify-evaluation</code></li>
+            <li>Generation Mode: <code>{pipelineDebug.lastRequest.generationMode}</code></li>
+            <li>Has evaluation_design_plan: {pipelineDebug.lastRequest.hasEvaluationDesignPlan ? '✅ Sí' : '❌ No'}</li>
+            <li>Has generation_context: {pipelineDebug.lastRequest.hasGenerationContext ? '❌ Sí (ERROR)' : '✅ No'}</li>
+            <li>Triggers: versionB={pipelineDebug.lastRequest.triggers.versionB ? '✅' : '❌'}, versionC={pipelineDebug.lastRequest.triggers.versionC ? '✅' : '❌'}</li>
+            <li>Response Options Include: {pipelineDebug.lastRequest.responseOptionsInclude ? '✅ Sí' : '❌ No'}</li>
+            <li>Assignments Count: {pipelineDebug.lastRequest.assignmentsCount}</li>
+          </ul>
+        </div>
+      )}
+      {pipelineDebug.lastResponse && (
+        <div>
+          <h4 className="font-semibold text-blue-900 dark:text-blue-100 mb-2">Último Response:</h4>
+          <ul className="list-disc pl-5 space-y-1 text-blue-800 dark:text-blue-200">
+            <li>Endpoint: <code>{pipelineDebug.lastResponse.endpoint}</code></li>
+            <li>Has aiReport: {pipelineDebug.lastResponse.hasAiReport ? '✅ Sí' : '❌ No'}</li>
+            <li>Has evaluationBundle: {pipelineDebug.lastResponse.hasEvaluationBundle ? '✅ Sí' : '❌ No'}</li>
+            <li>Versions Generated: {pipelineDebug.lastResponse.versionsGenerated.length > 0 ? pipelineDebug.lastResponse.versionsGenerated.join(', ') : 'Ninguna'}</li>
+            <li>Warnings Count: {pipelineDebug.lastResponse.warningsCount}</li>
+          </ul>
+        </div>
+      )}
+    </CardContent>
+  </Card>
+)}
 ```
 
 ---
 
-## Pasos de Verificación
+## Verificación desde UI (Sin DevTools)
 
-### Verificación desde UI + Network Tab
+### Paso 1: Habilitar Panel de Debug
 
-#### 1. Verificar Request Incluye `generation_mode: "universal"`
+1. Crear o editar archivo `.env` en la raíz del proyecto (si no existe)
+2. Agregar la línea: `VITE_DEBUG_EVAL_PIPELINE=true`
+3. Guardar el archivo
+4. Reiniciar el servidor de desarrollo (`npm run dev`)
+5. **Nota**: El panel solo aparece después de generar al menos una evaluación
 
-1. Abrir DevTools → Network tab
-2. Ir a "Generar Evaluaciones"
-3. Seleccionar grupo, materia, contenidos
-4. (Opcional) Seleccionar sesiones/materiales
-5. Hacer clic en "Generar Evaluaciones Inteligentes"
-6. En Network tab, filtrar por "modify-evaluation"
-7. Inspeccionar el request (click derecho → "Copy" → "Copy as cURL" o ver en "Payload")
-8. **Verificar**: El request debe incluir:
-   ```json
-   {
-     "generation_mode": "universal",
-     "evaluation_design_plan": {
-       "triggers": { "versionB": ..., "versionC": ... },
-       "responseOptions": { "include": ..., "optionCount": ... },
-       "assignmentByStudentId": { ... }
-     }
-   }
-   ```
-9. **Verificar**: NO debe incluir `generation_context` (solo si hay sesiones/materiales, debe estar en `modification` como texto)
+### Paso 2: Generar Evaluación y Verificar Panel
 
-#### 2. Verificar Response Incluye `aiReport` (no null)
+1. Ir a "Generar Evaluaciones"
+2. Seleccionar grupo, materia, contenidos
+3. (Opcional) Seleccionar sesiones/materiales
+4. Hacer clic en "Generar Evaluaciones Inteligentes"
+5. **Verificar**: Debe aparecer un panel azul "🔍 Debug: Pipeline de Generación" debajo del botón
+6. **Verificar en el panel**:
+   - ✅ Endpoint: `modify-evaluation`
+   - ✅ Generation Mode: `universal`
+   - ✅ Has evaluation_design_plan: ✅ Sí
+   - ✅ Has generation_context: ✅ No (si aparece ❌ Sí, hay un error)
+   - ✅ Triggers: versionB y versionC según contemplaciones
+   - ✅ Response Options Include: ✅ Sí (si corresponde)
+   - ✅ Has aiReport: ✅ Sí
+   - ✅ Has evaluationBundle: ✅ Sí
+   - ✅ Versions Generated: A, C (si Diego tiene adaptación de contenido)
 
-1. En Network tab, inspeccionar la respuesta de "modify-evaluation"
-2. Abrir la respuesta JSON
-3. **Verificar**: Debe existir la clave `aiReport` (no `aiDesignReport`)
-4. **Verificar**: `aiReport` debe ser un objeto (no `null`)
-5. **Verificar**: `aiReport.versions.generated` debe ser un array (ej: `["A"]` o `["A", "C"]`)
-6. **Verificar (opcional)**: Debe existir `_debug.generationPath === "universal"` confirmando que se usó el path correcto
+### Paso 3: Verificar Versión C para Diego
 
-#### 3. Verificar Response Incluye `evaluationBundle.versions`
+1. Preparar grupo con Diego marcado para adaptación de contenido
+2. Generar evaluación
+3. **Verificar en el panel de debug**:
+   - ✅ Triggers: versionC=✅
+   - ✅ Versions Generated: incluye "C"
+4. **Verificar en la UI**:
+   - ✅ Existe sección "Versión C (Adecuación de contenido)"
+   - ✅ Diego está asignado a Versión C en el panel de asignaciones
 
-1. En la misma respuesta JSON
-2. **Verificar**: Debe existir `evaluationBundle.versions.A` (string HTML)
-3. **Verificar**: Si hay estudiantes con adaptación de contenido (ej: Diego), debe existir `evaluationBundle.versions.C` (string HTML, no `null`)
-4. **Verificar**: Si `triggers.versionB === true`, debe existir `evaluationBundle.versions.B` (string HTML, no `null`)
+### Paso 4: Verificar Opciones Equivalentes en Versión A
 
-#### 4. Verificar `studentAssignments` Incluye Diego como 'C'
+1. Preparar grupo con contemplaciones que requieran opciones equivalentes
+2. Generar evaluación
+3. **Verificar en el panel de debug**:
+   - ✅ Response Options Include: ✅ Sí
+4. **Verificar en la UI**:
+   - ✅ Versión A incluye texto "Elige UNA opción..."
+   - ✅ Aparecen las opciones equivalentes después de cada consigna
 
-1. En la misma respuesta JSON
-2. Buscar `studentAssignments` (objeto con IDs de estudiantes como keys)
-3. **Verificar**: Si Diego tiene adaptación de contenido, debe existir `studentAssignments[diegoId] === "C"`
-4. **Verificar**: NO debe haber asignaciones a 'B' o 'C' si esas versiones no fueron generadas (deben estar normalizadas a 'A')
+### Paso 5: Verificar AI Report Persiste
 
-#### 5. Verificar Opciones Equivalentes en HTML de Versión A
-
-1. En la respuesta JSON, copiar `evaluationBundle.versions.A`
-2. Buscar en el HTML el texto: "Elige UNA opción"
-3. **Verificar**: Si `responseOptions.include === true`, el HTML debe contener:
-   - Texto: "Elige UNA opción. Todas equivalentes en dificultad y evidencia, solo cambia el formato de respuesta."
-   - Opción 1: "Respuesta escrita tradicional (párrafo)"
-   - Opción 2: "Respuesta estructurada (lista con viñetas o tabla)"
-   - (Si `optionCount === 3`) Opción 3: "Respuesta visual (diagrama o esquema con texto explicativo)"
-4. **Verificar**: Las opciones deben aparecer después de cada consigna que requiera respuesta escrita
-
-#### 6. Verificar en UI - Versión C Existe para Diego
-
-1. Después de generar, en la página de generación
-2. **Verificar**: Si Diego tiene adaptación de contenido, debe existir una sección "Versión C (Adecuación de contenido)"
-3. **Verificar**: En el panel de asignaciones, Diego debe estar asignado a Versión C
-4. Guardar la evaluación
-5. Abrir la evaluación guardada en la página de detalle
-6. **Verificar**: Debe aparecer Versión C con Diego asignado
-
-#### 7. Verificar en UI - AI Report Se Renderiza
-
-1. En la página de detalle de la evaluación guardada
-2. **Verificar**: Debe aparecer el componente `AIDesignReport` (no el mensaje de fallback "El reporte de IA no está disponible...")
-3. **Verificar**: El reporte debe mostrar información sobre versiones generadas, contemplaciones, opciones de respuesta, etc.
+1. Generar evaluación
+2. **Verificar en el panel de debug**:
+   - ✅ Has aiReport: ✅ Sí
+3. Guardar la evaluación
+4. Abrir la evaluación guardada en la página de detalle
+5. **Verificar**:
+   - ✅ El componente `AIDesignReport` se renderiza (no el mensaje "AI report is not available...")
 
 ---
 
-## Cambios de Código Implementados
+## Comportamiento Esperado
 
-### Archivo: `src/pages/EvaluacionesGrupo.tsx`
+### Para Diego (Content Adaptation)
 
-**Cambios realizados**:
-1. ✅ Eliminado override de `effectivePlan` (líneas 856-873) - ahora siempre usa `plan` completo
-2. ✅ Unificado `requestBody` - siempre envía `generation_mode: 'universal'` + `evaluation_design_plan`
-3. ✅ Contexto de sesiones/materiales embebido como texto en `modification` cuando existe `generationContext`
+**Cuando Diego tiene adaptación de contenido marcada**:
+- ✅ `triggers.versionC === true` en el request
+- ✅ `evaluationBundle.versions.C` existe en el response (string HTML, no null)
+- ✅ `studentAssignments[diegoId] === "C"` en el response
+- ✅ Versión C aparece en la UI con Diego asignado
 
-### Archivo: `supabase/functions/modify-evaluation/index.ts`
+**Cuando Diego NO tiene adaptación de contenido**:
+- ✅ `triggers.versionC === false` en el request
+- ✅ `evaluationBundle.versions.C` es null en el response
+- ✅ Diego está asignado a Versión A
 
-**Cambios realizados**:
-1. ✅ Agregado campo `_debug.generationPath: 'universal'` en la respuesta (línea ~781) para verificación en Network tab
+### Para Opciones Equivalentes en Versión A
+
+**Cuando `responseOptions.include === true`**:
+- ✅ El request incluye `evaluation_design_plan.responseOptions.include === true`
+- ✅ El HTML de Versión A incluye el texto: "Elige UNA opción. Todas equivalentes en dificultad y evidencia, solo cambia el formato de respuesta."
+- ✅ Aparecen las opciones: "Opción 1: Respuesta escrita tradicional (párrafo)", "Opción 2: Respuesta estructurada (lista con viñetas o tabla)"
+- ✅ Las opciones aparecen después de cada consigna que requiera respuesta escrita
+
+**Cuando `responseOptions.include === false`**:
+- ✅ El HTML de Versión A NO incluye opciones equivalentes
+- ✅ Solo aparece la consigna sin opciones de formato
 
 ---
 
-## Notas de Compatibilidad
+## Logs en Consola
 
-### Evaluaciones Legacy
+Con el panel de debug habilitado, también se pueden ver logs en la consola del navegador (F12 → Console) con el prefijo `[EVAL_PIPELINE]`:
 
-- **No afectadas**: Las evaluaciones guardadas antes de este cambio seguirán funcionando igual
-- **Lectura**: `EvaluacionDetalle.tsx` mantiene la lectura legacy (`ai_report` o `ai_design_report`)
+```
+[EVAL_PIPELINE] handleGenerateEvaluations called
+[EVAL_PIPELINE] Starting generation { hasAnepContent: true, hasSessions: false, ... }
+[EVAL_PIPELINE] Request payload summary: { generationMode: 'universal', ... }
+[EVAL_PIPELINE] Invoking modify-evaluation edge function
+[EVAL_PIPELINE] Edge function response received { hasAiReport: true, ... }
+```
 
-### Evaluaciones Nuevas
+Estos logs ayudan a diagnosticar problemas si el panel de debug no aparece o si hay errores en el flujo.
 
-- **Siempre usan path universal**: Todas las evaluaciones nuevas (con o sin sesiones/materiales) usan `generation_mode: 'universal'`
-- **Versiones habilitadas**: Versiones B/C se generan según contemplaciones (no forzadas a false)
-- **Opciones equivalentes**: Se incluyen en Versión A cuando `responseOptions.include === true`
-- **AI Report consistente**: Siempre retorna `aiReport` (nunca `aiDesignReport`)
+---
 
-### Edge Function
+## Troubleshooting
 
-- **Path `generation_context`**: Sigue existiendo pero ya no se usa para generación de evaluaciones
-- **Path `universal`**: Ahora maneja tanto evaluaciones con ANEP como con sesiones/materiales (contexto en `modification`)
+### El panel de debug no aparece
+
+1. Verificar que `VITE_DEBUG_EVAL_PIPELINE=true` está en `.env`
+2. Reiniciar el servidor de desarrollo
+3. Verificar que se generó al menos una evaluación (el panel solo aparece después de generar)
+
+### El request muestra `hasGenerationContext: ❌ Sí (ERROR)`
+
+- **Problema**: El código todavía está enviando `generation_context`
+- **Solución**: Verificar que no hay código legacy que agregue `requestBody.generation_context`
+
+### El response muestra `hasAiReport: ❌ No`
+
+- **Problema**: El edge function no está retornando `aiReport`
+- **Solución**: Verificar que el edge function está usando el path `universal` y construyendo `aiReport` correctamente
+
+### Versions Generated no incluye "C" cuando debería
+
+- **Problema**: Diego no está marcado correctamente para adaptación de contenido, o `triggers.versionC` es false
+- **Solución**: Verificar en localStorage o mockData que Diego tiene `requiereAdecuacionContenido === true`
 
 ---
 
 ## Resumen
 
-Este cambio unifica el pipeline de generación eliminando el path `generation_context` que causaba:
-- ❌ Versiones B/C deshabilitadas
-- ❌ Opciones equivalentes omitidas
-- ❌ AI Report inconsistente (`aiDesignReport` vs `aiReport`)
+Este fix agrega:
+- ✅ Logs de debug con prefijo `[EVAL_PIPELINE]` en consola
+- ✅ Panel de debug visible al usuario (gated por `VITE_DEBUG_EVAL_PIPELINE=true`)
+- ✅ Verificación explícita de que el request se envía y el response se recibe
+- ✅ Visibilidad completa del pipeline de generación sin necesidad de DevTools Network
 
-Ahora todas las evaluaciones usan `generation_mode: 'universal'` con el contexto de sesiones/materiales embebido como texto en `modification`, permitiendo:
-- ✅ Versiones B/C según contemplaciones
-- ✅ Opciones equivalentes cuando corresponde
-- ✅ AI Report consistente y persistente
+El código ya estaba correctamente implementado para usar el pipeline universal; este fix agrega visibilidad y herramientas de diagnóstico.

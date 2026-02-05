@@ -23,41 +23,29 @@ export const CleanEvaluationDisplay: React.FC<CleanEvaluationDisplayProps> = ({
   // It MUST NEVER import or use enforceForEvaluation() or inject reminders.
   // Reminders belong ONLY in SimplifiedSmartRubric student cards, never in evaluation content.
   
-  // TASK 1: Extract from JSON wrapper if present BEFORE cleaning
-  const extractFromWrapper = (text: string): string => {
-    const trimmed = text.trim();
-    if (trimmed.startsWith('{') || trimmed.includes('"versions"') || trimmed.includes("'versions'")) {
-      try {
-        let parsed: any;
-        try {
-          parsed = JSON.parse(trimmed);
-        } catch (e) {
-          // Try normalizing single quotes
-          const normalized = trimmed.replace(/'/g, '"').replace(/(\w+):/g, '"$1":');
-          try {
-            parsed = JSON.parse(normalized);
-          } catch (e2) {
-            return text; // Cannot parse, return original
-          }
-        }
-        // Extract A (default for this component)
-        const extracted = parsed.versions?.A || parsed.A || parsed.evaluationBundle?.versions?.A;
-        if (extracted && typeof extracted === 'string') {
-          // Recurse if still a wrapper
-          if (extracted.trim().startsWith('{') || extracted.includes('"versions"')) {
-            return extractFromWrapper(extracted);
-          }
-          return extracted;
-        }
-      } catch (e) {
-        // Fall through to original
-      }
-    }
-    return text;
-  };
+  // STEP 3: CleanEvaluationDisplay should receive already-extracted HTML only
+  // If content is a wrapper, show error instead of extracting (extraction should happen upstream)
+  const trimmed = evaluation.content.trim();
+  const firstLt = trimmed.indexOf('<');
+  const versionsIdx = trimmed.indexOf('"versions"');
+  const wrapperDetected = trimmed.startsWith('{') || (versionsIdx >= 0 && (firstLt === -1 || versionsIdx < firstLt));
+  if (wrapperDetected) {
+    // Content is a wrapper - this should not happen if extraction is done correctly upstream
+    console.warn('[CleanEvaluationDisplay] Received wrapper content, expected extracted HTML', {
+      contentPreview: trimmed.slice(0, 50)
+    });
+    return (
+      <div className="p-4 bg-red-50 border border-red-200 rounded">
+        <strong>Error:</strong> Contenido no válido (wrapper JSON detectado).
+        <div className="mt-2 text-xs font-mono whitespace-pre-wrap">
+          {trimmed.slice(0, 120)}
+        </div>
+      </div>
+    );
+  }
   
-  // Extract from wrapper first
-  const extractedContent = extractFromWrapper(evaluation.content);
+  // Use content directly (should already be extracted HTML)
+  const extractedContent = evaluation.content;
   
   // Limpiar contenido para mostrar solo la evaluación pura
   const { pureContent } = ContentCleaner.extractPureEvaluation(extractedContent);

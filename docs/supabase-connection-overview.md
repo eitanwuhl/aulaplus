@@ -59,14 +59,21 @@ cp .env.example .env
 VITE_SUPABASE_URL=https://tu-proyecto-id.supabase.co
 ```
 
-### Paso 4: Copiar anon public key
+### Paso 4: Copiar Publishable Key
 1. En la misma página, busca la sección **Project API keys**
-2. Localiza la clave **"anon public"** (NO uses "service_role")
-3. Copia la clave completa
-4. Pégala en `.env` como valor de `VITE_SUPABASE_ANON_KEY`:
+2. Localiza la clave **"Publishable Key"** (también llamada "anon public" en versiones anteriores)
+   - **Formato nuevo**: Empieza con `sb_publishable_` (~40 caracteres)
+   - **Formato legacy**: Empieza con `eyJ...` (JWT, ~200+ caracteres) - ya no se recomienda
+3. **IMPORTANTE**: NO uses la clave "service_role" (tiene permisos completos y nunca debe exponerse en el frontend)
+4. Copia la clave completa
+5. Pégala en `.env` como valor de `VITE_SUPABASE_ANON_KEY`:
 
 ```env
-VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+# Formato nuevo (recomendado):
+VITE_SUPABASE_ANON_KEY=sb_publishable_5D-oXfd9WLrn1eP7fwkSaQ_pLY8-Aym
+
+# Formato legacy (aún funciona pero no recomendado):
+# VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
 ### Paso 5: Verificar el formato del archivo `.env`
@@ -86,7 +93,7 @@ VITE_SUPABASE_ANON_KEY='eyJ...'                           # Comillas
 **✅ Correcto:**
 ```env
 VITE_SUPABASE_URL=https://tu-proyecto-id.supabase.co
-VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+VITE_SUPABASE_ANON_KEY=sb_publishable_5D-oXfd9WLrn1eP7fwkSaQ_pLY8-Aym
 ```
 
 ### Paso 6: Reiniciar el servidor de desarrollo
