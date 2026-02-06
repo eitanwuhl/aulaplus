@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { motion } from "framer-motion";
 import { Upload, FileText, MessageCircle, ThumbsUp, ThumbsDown, RefreshCw, Lightbulb, ChevronDown, ChevronUp, Save, AlertTriangle } from 'lucide-react';
-import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Input } from "@/components/ui/input";
@@ -24,10 +24,13 @@ import { getCompetenciasEspecificasLiteratura, getCriteriosLogroPorCompetenciasL
 import { getCompetenciasEspecificasCiudadania, getCriteriosLogroPorCompetenciasCiudadania } from "@/data/competenciasCiudadania";
 import { RubricaIntegrada } from "@/components/RubricaIntegrada";
 import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
-import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport, EvaluationAssignmentsPanel, TeacherRemindersPanel } from "@/components/evaluaciones";
+import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport, EvaluationAssignmentsPanel, TeacherRemindersPanel, BetaToggle } from "@/components/evaluaciones";
+import { EvaluationRendererV2, V2InfoPanels } from "@/components/evaluaciones/v2";
+import type { V2Response } from "@/services/evaluations/v2Types";
 import type { AIDesignReportData } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { EvaluationDesignPlan, StudentReminders, MissingTemplateError } from "@/services/evaluations";
+import { requestEvaluation, getBetaToggleState } from "@/services/evaluations/requestService";
 
 interface ResultadoEvaluacion {
   grupo: string;
@@ -437,6 +440,14 @@ const EvaluacionesGrupo = () => {
   const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState<number | null>(null);
   const [timeBreakdown, setTimeBreakdown] = useState<any>(null);
   const [aiDesignReport, setAiDesignReport] = useState<string | null>(null);
+  
+  // PHASE 4: V2 Beta - JSON-based evaluation rendering
+  const [useBetaV2, setUseBetaV2] = useState<boolean>(getBetaToggleState());
+  const [v2RawResponse, setV2RawResponse] = useState<V2Response | null>(null);
+  const [v2SelectedVersion, setV2SelectedVersion] = useState<'A' | 'B' | 'C'>('A');
+  
+  // Configuration panel collapse state (auto-collapse after generation)
+  const [isConfigCollapsed, setIsConfigCollapsed] = useState<boolean>(false);
   
   // DEBUG: Pipeline debug panel (gated by feature flag)
   const [pipelineDebug, setPipelineDebug] = useState<{
@@ -1087,10 +1098,104 @@ const EvaluacionesGrupo = () => {
       // ENFORCE: Clear any previous errors
       setGenerationError(null);
       
-      console.info('[EVAL_PIPELINE] Invoking modify-evaluation edge function');
-      const { data, error } = await supabase.functions.invoke('modify-evaluation', {
-        body: requestBody
-      });
+      // Clear previous v2 response
+      setV2RawResponse(null);
+      
+      // =======================================================================
+      // V2 MODE: Call modify-evaluation-v2 if beta toggle is enabled
+      // =======================================================================
+      let data: any = null;
+      let error: any = null;
+      let usedV2Endpoint = false;
+      
+      if (useBetaV2) {
+        console.info('[EVAL_PIPELINE] V2 Beta enabled, invoking modify-evaluation-v2 edge function');
+        
+        const v2RequestBody = {
+          modification: modificationText,
+          groupContext,
+          evaluation_design_plan: {
+            instrumentDesignRules,
+            responseOptions: effectivePlan.responseOptions,
+            triggers: effectivePlan.triggers,
+            assignmentByStudentId: effectivePlan.assignmentByStudentId,
+            perStudentReminders: effectivePlan.perStudentReminders,
+            varkDistribution: effectivePlan.varkDistribution,
+            highStructureNeed: effectivePlan.highStructureNeed,
+            designComplexityCount: effectivePlan.designComplexityCount,
+            bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds
+          }
+        };
+        
+        const v2Result = await supabase.functions.invoke('modify-evaluation-v2', {
+          body: v2RequestBody
+        });
+        
+        if (v2Result.error) {
+          console.warn('[EVAL_PIPELINE] V2 endpoint error, falling back to V1:', v2Result.error.message);
+          // Fallback to V1 below
+        } else if (!v2Result.data) {
+          console.warn('[EVAL_PIPELINE] V2 returned no data, falling back to V1');
+          // Fallback to V1 below
+        } else if (!v2Result.data.success) {
+          console.warn('[EVAL_PIPELINE] V2 returned success=false, falling back to V1:', v2Result.data.warnings);
+          // Fallback to V1 below
+        } else {
+          // V2 succeeded! Store raw response for V2 renderer
+          console.info('[EVAL_PIPELINE] V2 response received successfully');
+          const v2Response = v2Result.data as V2Response;
+          
+          // DEBUG: Log full V2 response structure
+          console.log('[EVAL_PIPELINE] V2 Response structure:', {
+            success: v2Response.success,
+            hasEvaluationSpec: !!v2Response.evaluationSpec,
+            evaluationSpecVersion: v2Response.evaluationSpec?.version,
+            sectionsCount: v2Response.evaluationSpec?.sections?.length,
+            firstSectionTitle: v2Response.evaluationSpec?.sections?.[0]?.title,
+            firstSectionItemsCount: v2Response.evaluationSpec?.sections?.[0]?.items?.length,
+            requestedVersions: v2Response.requestedVersions,
+            hasAiReport: !!v2Response.aiReport,
+            teacherRemindersCount: v2Response.teacherRemindersByStudent?.length,
+            warningsCount: v2Response.warnings?.length
+          });
+          
+          setV2RawResponse(v2Response);
+          usedV2Endpoint = true;
+          
+          // Auto-collapse configuration panel after successful V2 generation
+          setIsConfigCollapsed(true);
+          
+          // Convert V2 to V1-compatible format for state management
+          // (evaluationBundle, studentAssignments, etc. are still used by other parts)
+          data = {
+            evaluationBundle: {
+              versions: { A: '', B: null, C: null }, // V2 renders directly from JSON
+              baseHtml: '',
+              versionBHtml: null,
+              versionCHtml: null,
+              responseOptionsIncluded: v2Response.aiReport?.responseOptions?.included ?? false,
+              responseOptionCount: v2Response.aiReport?.responseOptions?.count ?? 2
+            },
+            aiReport: v2Response.aiReport,
+            studentAssignments: {}, // V2 manages this internally
+            teacherRemindersByStudent: v2Response.teacherRemindersByStudent,
+            warnings: v2Response.warnings?.map(w => w.message) || [],
+            _v2Mode: true // Flag to skip v1 validation
+          };
+        }
+      }
+      
+      // =======================================================================
+      // V1 MODE: Call modify-evaluation (default or fallback)
+      // =======================================================================
+      if (!usedV2Endpoint) {
+        console.info('[EVAL_PIPELINE] Invoking modify-evaluation edge function (V1)');
+        const v1Result = await supabase.functions.invoke('modify-evaluation', {
+          body: requestBody
+        });
+        data = v1Result.data;
+        error = v1Result.error;
+      }
 
       if (error) {
         console.error('[EVAL_PIPELINE] Edge function error:', error);
@@ -1105,7 +1210,7 @@ const EvaluacionesGrupo = () => {
         throw error;
       }
       
-      // ENFORCE: Verify that modify-evaluation was actually called and returned data
+      // ENFORCE: Verify that edge function was actually called and returned data
       if (!data) {
         console.error('[EVAL_PIPELINE] Edge function returned no data');
         setGenerationError({
@@ -1192,7 +1297,9 @@ const EvaluacionesGrupo = () => {
 
       // R3: Build generatedEvaluations from evaluationBundle.versions (A, B, C)
       // R5: Remove silent fallback - if critical fields missing, show error
-      const hasVersionA = Boolean(
+      // V2 MODE: Skip version A check - V2 uses JSON rendering, not HTML
+      const isV2Mode = data?._v2Mode === true;
+      const hasVersionA = isV2Mode || Boolean(
         data?.evaluationBundle?.versions?.A || 
         data?.evaluationBundle?.baseHtml
       );
@@ -1304,7 +1411,8 @@ const EvaluacionesGrupo = () => {
       console.info('[EVAL_PIPELINE] Generation completed successfully');
       
       // R2: Verify that edge function returned aiReport and evaluationBundle.versions
-      if (!data?.evaluationBundle) {
+      // V2 MODE: Skip evaluationBundle check - V2 uses JSON rendering
+      if (!isV2Mode && !data?.evaluationBundle) {
         console.error('[EVAL_PIPELINE] Response missing evaluationBundle');
         setGenerationError({
           message: 'Error en la respuesta del servidor',
@@ -1321,7 +1429,8 @@ const EvaluacionesGrupo = () => {
       }
       
       // R2: Verify aiReport is present (should always be non-null from universal path)
-      if (!data?.aiReport) {
+      // V2 MODE: aiReport is guaranteed by v2Response, so skip strict check
+      if (!isV2Mode && !data?.aiReport) {
         console.error('[EVAL_PIPELINE] Response missing aiReport (critical field)');
         setGenerationError({
           message: 'Error en la respuesta del servidor',
@@ -1339,6 +1448,9 @@ const EvaluacionesGrupo = () => {
       
       // ENFORCE: Clear error state on success
       setGenerationError(null);
+      
+      // Auto-collapse configuration panel after successful generation (V1)
+      setIsConfigCollapsed(true);
       
       setActiveTab('results');
     } catch (error: any) {
@@ -1383,6 +1495,7 @@ const EvaluacionesGrupo = () => {
       setMissingTemplateErrors([]);
       setAssignmentWarnings([]);
       setAiDesignReport(null);
+      setV2RawResponse(null); // Clear V2 response on error
       
       // ENFORCE: Set visible error state (already set above, but ensure it's visible)
       if (!generationError) {
@@ -1917,11 +2030,21 @@ const EvaluacionesGrupo = () => {
           </Card>
         )}
 
-        <Card className="mb-8 border-2 border-green-200 bg-white/80">
-          <CardHeader>
-            <CardTitle className="text-green-700">Configuración</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
+        {/* Configuration Panel - Collapsible after generation */}
+        <Collapsible open={!isConfigCollapsed} onOpenChange={(open) => setIsConfigCollapsed(!open)}>
+          <Card className="mb-8 border-2 border-green-200 bg-white/80">
+            <CollapsibleTrigger asChild>
+              <CardHeader className="cursor-pointer hover:bg-muted/30 transition-colors">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-green-700">Configuración</CardTitle>
+                  <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                    {isConfigCollapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                  </Button>
+                </div>
+              </CardHeader>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <CardContent className="space-y-6">
             <div className="space-y-6">
               <div className="space-y-2">
                 <Label>Grupo *</Label>
@@ -2399,6 +2522,14 @@ const EvaluacionesGrupo = () => {
                 </div>
               )}
               
+              {/* PHASE 4: Beta V2 Toggle */}
+              <div className="flex items-center justify-between py-3 px-4 bg-muted/50 rounded-lg">
+                <BetaToggle 
+                  onChange={(enabled) => setUseBetaV2(enabled)}
+                  showHelperText={true}
+                />
+              </div>
+              
               <Button 
                 onClick={handleGenerateEvaluations} 
                 disabled={
@@ -2471,9 +2602,12 @@ const EvaluacionesGrupo = () => {
               )}
             </div>
           </CardContent>
+        </CollapsibleContent>
         </Card>
+        </Collapsible>
 
-        {displayEvaluations.length > 0 && (
+        {/* Show results section if we have V1 evaluations OR V2 response */}
+        {(displayEvaluations.length > 0 || (useBetaV2 && v2RawResponse)) && (
           <div className="space-y-6">
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="grid w-full grid-cols-1">
@@ -2563,98 +2697,142 @@ const EvaluacionesGrupo = () => {
                   </Card>
                 )}
 
-                {assignmentWarnings.length > 0 && (
-                  <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
-                    <CardHeader>
-                      <CardTitle className="text-sm text-amber-800 dark:text-amber-200 flex items-center gap-2">
-                        <AlertTriangle className="h-4 w-4" />
-                        Ajustes automáticos de versiones
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <ul className="list-disc pl-5 text-sm text-amber-700 dark:text-amber-300">
-                        {assignmentWarnings.map((warning, idx) => (
-                          <li key={idx}>{warning}</li>
-                        ))}
-                      </ul>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {Object.keys(studentAssignments).length > 0 && (
-                  <EvaluationAssignmentsPanel
-                    assignments={studentAssignments}
-                    students={selectedGroup?.students || []}
-                  />
-                )}
-                {(teacherReminders.length > 0 || missingTemplateErrors.length > 0) && (
-                  <TeacherRemindersPanel 
-                    reminders={teacherReminders} 
-                    students={selectedGroup?.students || []}
-                    missingTemplateErrors={missingTemplateErrors}
-                  />
-                )}
-                {displayEvaluations.map((evaluation) => (
-                  <EvaluacionVisualRenderer
-                    key={evaluation.id}
-                    evaluation={evaluation}
-                    subject={esInterdisciplinaria 
-                      ? materiasSeleccionadas.map(m => m).join(', ') 
-                      : materia || ''
-                    }
-                    selectedContent={selectedSubtemas.map(id => {
-                      const subtema = getSubtemaPorId(id);
-                      return { nombre: subtema?.contenido || id };
-                    })}
-                    duration="90 minutos"
-                    requirements={requerimientos}
-                    students={selectedGroup?.students}
-                    criteriosLogro={selectedCriteriosLogro}
-                    onFeedback={(evaluationId, feedback) => {
-                      setCurrentFeedback(prev => ({
-                        ...prev,
-                        [evaluationId]: { 
-                          liked: '',
-                          disliked: '',
-                          suggestions: feedback
-                        }
-                      }));
-                      handleFeedback(evaluationId);
-                    }}
-                    onRegenerate={(evaluationId) => handleRegenerate(evaluationId)}
-                  />
-                ))}
-                
-                {/* Reporte de IA con fallback */}
-                {aiDesignReport ? (
-                  <AIDesignReport 
-                    reportData={JSON.parse(aiDesignReport) as AIDesignReportData} 
-                    className="mt-6"
-                  />
+                {/* ============================================================ */}
+                {/* V2 MODE: Use V2InfoPanels + EvaluationRendererV2             */}
+                {/* ============================================================ */}
+                {useBetaV2 && v2RawResponse ? (
+                  <>
+                    {/* V2 Info Panels - consumes V2Response data directly */}
+                    <V2InfoPanels 
+                      v2Response={v2RawResponse}
+                      students={selectedGroup?.students || []}
+                      studentAssignments={studentAssignments}
+                    />
+                    
+                    {/* V2 Evaluation Content Renderer */}
+                    <EvaluationRendererV2
+                      v2Response={v2RawResponse}
+                      selectedVersion={v2SelectedVersion}
+                      onVersionChange={setV2SelectedVersion}
+                      isLoading={isGenerating}
+                      showDebug={showDebugPanel}
+                      onRenderError={(reason) => {
+                        console.warn('[EVAL_PIPELINE] V2 render error, using V1 fallback:', reason);
+                        setV2RawResponse(null);
+                        toast({
+                          title: "Usando formato estándar",
+                          description: "El formato beta no está disponible, mostrando versión estándar.",
+                          duration: 3000
+                        });
+                      }}
+                    />
+                  </>
                 ) : (
-                  <Card className="mt-6 border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
-                    <CardHeader>
-                      <CardTitle className="text-sm text-amber-800 dark:text-amber-200">
-                        Reporte de IA
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-amber-700 dark:text-amber-300">
-                        El reporte de IA no está disponible para esta evaluación (legacy o generación previa).
-                      </p>
-                    </CardContent>
-                  </Card>
-                )}
-                
-                {selectedCriteriosLogro.length > 0 && (
-                  <Card className="border-2 border-green-300">
-                    <CardHeader>
-                      <CardTitle className="text-green-700">Criterios de logro seleccionados para evaluar</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      {criteriosLogroBox(selectedCompetenciasIds, esInterdisciplinaria ? materiasSeleccionadas : [materia as Materia])}
-                    </CardContent>
-                  </Card>
+                  /* ============================================================ */
+                  /* V1 MODE: Use v1 panels + EvaluacionVisualRenderer            */
+                  /* ============================================================ */
+                  <>
+                    {/* V1: Assignment Warnings */}
+                    {assignmentWarnings.length > 0 && (
+                      <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+                        <CardHeader>
+                          <CardTitle className="text-sm text-amber-800 dark:text-amber-200 flex items-center gap-2">
+                            <AlertTriangle className="h-4 w-4" />
+                            Ajustes automáticos de versiones
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <ul className="list-disc pl-5 text-sm text-amber-700 dark:text-amber-300">
+                            {assignmentWarnings.map((warning, idx) => (
+                              <li key={idx}>{warning}</li>
+                            ))}
+                          </ul>
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {/* V1: Student Assignments Panel */}
+                    {Object.keys(studentAssignments).length > 0 && (
+                      <EvaluationAssignmentsPanel
+                        assignments={studentAssignments}
+                        students={selectedGroup?.students || []}
+                      />
+                    )}
+                    
+                    {/* V1: Teacher Reminders Panel */}
+                    {(teacherReminders.length > 0 || missingTemplateErrors.length > 0) && (
+                      <TeacherRemindersPanel 
+                        reminders={teacherReminders} 
+                        students={selectedGroup?.students || []}
+                        missingTemplateErrors={missingTemplateErrors}
+                      />
+                    )}
+                    
+                    {/* V1: Evaluation Content Renderer (HTML-based) */}
+                    {displayEvaluations.map((evaluation) => (
+                      <EvaluacionVisualRenderer
+                        key={evaluation.id}
+                        evaluation={evaluation}
+                        subject={esInterdisciplinaria 
+                          ? materiasSeleccionadas.map(m => m).join(', ') 
+                          : materia || ''
+                        }
+                        selectedContent={selectedSubtemas.map(id => {
+                          const subtema = getSubtemaPorId(id);
+                          return { nombre: subtema?.contenido || id };
+                        })}
+                        duration="90 minutos"
+                        requirements={requerimientos}
+                        students={selectedGroup?.students}
+                        criteriosLogro={selectedCriteriosLogro}
+                        onFeedback={(evaluationId, feedback) => {
+                          setCurrentFeedback(prev => ({
+                            ...prev,
+                            [evaluationId]: { 
+                              liked: '',
+                              disliked: '',
+                              suggestions: feedback
+                            }
+                          }));
+                          handleFeedback(evaluationId);
+                        }}
+                        onRegenerate={(evaluationId) => handleRegenerate(evaluationId)}
+                      />
+                    ))}
+                    
+                    {/* V1: AI Design Report */}
+                    {aiDesignReport ? (
+                      <AIDesignReport 
+                        reportData={JSON.parse(aiDesignReport) as AIDesignReportData} 
+                        className="mt-6"
+                      />
+                    ) : (
+                      <Card className="mt-6 border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+                        <CardHeader>
+                          <CardTitle className="text-sm text-amber-800 dark:text-amber-200">
+                            Reporte de IA
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-sm text-amber-700 dark:text-amber-300">
+                            El reporte de IA no está disponible para esta evaluación (legacy o generación previa).
+                          </p>
+                        </CardContent>
+                      </Card>
+                    )}
+                    
+                    {/* V1: Criterios de Logro */}
+                    {selectedCriteriosLogro.length > 0 && (
+                      <Card className="border-2 border-green-300">
+                        <CardHeader>
+                          <CardTitle className="text-green-700">Criterios de logro seleccionados para evaluar</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          {criteriosLogroBox(selectedCompetenciasIds, esInterdisciplinaria ? materiasSeleccionadas : [materia as Materia])}
+                        </CardContent>
+                      </Card>
+                    )}
+                  </>
                 )}
               </TabsContent>
             </Tabs>
