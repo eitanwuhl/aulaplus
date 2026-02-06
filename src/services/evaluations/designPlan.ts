@@ -61,11 +61,31 @@ export interface EvaluationDesignPlan {
     total: number;
   };
   perStudentReminders: StudentReminders[];
+  /** Internal validation result - contains missing template errors if any */
+  _reminderValidation?: BuildRemindersResult;
 }
 
 export interface EvaluationDesignPlanInput {
   groupContext: GroupContextForAI;
   teacherRequirementsText?: string;
+}
+
+/**
+ * Error thrown when a contemplacion has a bucket assignment but no template defined
+ */
+export interface MissingTemplateError {
+  contemplacionId: string;
+  bucket: ContemplacionBucket;
+  studentId: string | number;
+  expectedTemplateLocation: string;
+}
+
+/**
+ * Result of building per-student reminders with validation
+ */
+export interface BuildRemindersResult {
+  reminders: StudentReminders[];
+  missingTemplates: MissingTemplateError[];
 }
 
 const STRUCTURE_NEED_CONTEMPLACIONES = new Set([
@@ -156,9 +176,39 @@ function buildReminderText(
   return null;
 }
 
-function buildPerStudentReminders(students: StudentForAI[]): StudentReminders[] {
-  return students.map(student => {
+/**
+ * Build per-student reminders from contemplaciones with fail-fast validation.
+ * 
+ * This function is exported for testing purposes.
+ * 
+ * @param students Array of students with contemplacionesEvaluaciones
+ * @returns Object containing reminders array and any missing template errors
+ */
+export function buildPerStudentReminders(students: StudentForAI[]): BuildRemindersResult {
+  // DIAGNOSTIC: Log input students (DEV only)
+  if (import.meta.env.DEV) {
+    console.log('[DIAG:buildPerStudentReminders] Input students:', 
+      students.map(s => ({
+        studentId: s.studentId,
+        contemplacionesEvaluaciones: s.contemplacionesEvaluaciones,
+        contemplacionesCount: s.contemplacionesEvaluaciones?.length || 0
+      }))
+    );
+  }
+  
+  const missingTemplates: MissingTemplateError[] = [];
+  
+  const reminders = students.map(student => {
     const buckets = getEvaluationBucketsForStudent(student.contemplacionesEvaluaciones);
+    
+    // DIAGNOSTIC: Log buckets per student (DEV only)
+    if (import.meta.env.DEV) {
+      console.log(`[DIAG:buildPerStudentReminders] Student ${student.studentId}:`, {
+        inputContemplaciones: student.contemplacionesEvaluaciones,
+        buckets: Object.fromEntries(buckets),
+        hasBuckets: buckets.size > 0
+      });
+    }
     const admin = new Set<string>();
     const correction = new Set<string>();
     const allowances = new Set<string>();
@@ -167,10 +217,28 @@ function buildPerStudentReminders(students: StudentForAI[]): StudentReminders[] 
       for (const rawId of ids) {
         const normalizedId = normalizeContemplacionId(rawId);
         const contemplacion = getContemplacionById(normalizedId);
-        if (!contemplacion) continue;
+        if (!contemplacion) {
+          // Contemplacion not found in catalog - this is a data integrity issue
+          console.error(`[buildPerStudentReminders] Contemplacion not found in catalog: ${normalizedId}`);
+          continue;
+        }
 
         const reminder = buildReminderText(contemplacion, bucket);
-        if (!reminder) continue;
+        
+        // FAIL-FAST: If a contemplacion is bucketed but has no template, record the error
+        if (!reminder) {
+          const expectedLocation = bucket === 'INSTRUMENT_DESIGN'
+            ? 'EVALUATION_DESIGN_RULES in src/lib/contemplaciones/enforcement.ts'
+            : 'EVALUATION_REMINDER_TEMPLATES in src/lib/contemplaciones/enforcement.ts';
+          
+          missingTemplates.push({
+            contemplacionId: normalizedId,
+            bucket,
+            studentId: student.studentId,
+            expectedTemplateLocation: expectedLocation
+          });
+          continue;
+        }
 
         if (bucket === 'ADMIN_REMINDER') admin.add(reminder);
         if (bucket === 'CORRECTION_REMINDER') correction.add(reminder);
@@ -185,6 +253,8 @@ function buildPerStudentReminders(students: StudentForAI[]): StudentReminders[] 
       allowances: Array.from(allowances)
     };
   });
+
+  return { reminders, missingTemplates };
 }
 
 export function buildEvaluationDesignPlan(input: EvaluationDesignPlanInput): EvaluationDesignPlan {
@@ -301,6 +371,16 @@ export function buildEvaluationDesignPlan(input: EvaluationDesignPlanInput): Eva
     optionCount = 3;
   }
 
+  // Build reminders once and extract both results
+  const reminderResult = buildPerStudentReminders(students);
+  
+  // Log warning if missing templates detected (fail-fast in UI layer)
+  if (reminderResult.missingTemplates.length > 0) {
+    console.warn('[buildEvaluationDesignPlan] Missing reminder templates detected:', 
+      reminderResult.missingTemplates.map(mt => `${mt.contemplacionId} (${mt.bucket})`).join(', ')
+    );
+  }
+
   return {
     versionPlans,
     assignmentByStudentId,
@@ -329,7 +409,8 @@ export function buildEvaluationDesignPlan(input: EvaluationDesignPlanInput): Eva
     },
     contentAdaptationStudentIds,
     varkDistribution: vark,
-    perStudentReminders: buildPerStudentReminders(students)
+    perStudentReminders: reminderResult.reminders,
+    _reminderValidation: reminderResult
   };
 }
 

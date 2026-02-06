@@ -27,7 +27,7 @@ import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVi
 import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport, EvaluationAssignmentsPanel, TeacherRemindersPanel } from "@/components/evaluaciones";
 import type { AIDesignReportData } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import type { EvaluationDesignPlan, StudentReminders } from "@/services/evaluations";
+import type { EvaluationDesignPlan, StudentReminders, MissingTemplateError } from "@/services/evaluations";
 
 interface ResultadoEvaluacion {
   grupo: string;
@@ -391,6 +391,7 @@ const EvaluacionesGrupo = () => {
   const [evaluationDesignPlan, setEvaluationDesignPlan] = useState<EvaluationDesignPlan | null>(null);
   const [studentAssignments, setStudentAssignments] = useState<Record<string, 'A' | 'B' | 'C'>>({});
   const [teacherReminders, setTeacherReminders] = useState<StudentReminders[]>([]);
+  const [missingTemplateErrors, setMissingTemplateErrors] = useState<MissingTemplateError[]>([]);
   const [assignmentWarnings, setAssignmentWarnings] = useState<string[]>([]);
   const [currentFeedback, setCurrentFeedback] = useState<Record<string, { liked: string; disliked: string; suggestions: string }>>({});
   const [isGenerating, setIsGenerating] = useState(false);
@@ -909,6 +910,26 @@ const EvaluacionesGrupo = () => {
     try {
       const { supabase } = await import('@/integrations/supabase/client');
       const { getGroupContextForAI } = await import('@/services/groupContext/provider');
+      const { seedDefaultsForStudent } = await import('@/lib/contemplaciones/seeding');
+      
+      // PROACTIVE SEEDING: Ensure evaluation contemplaciones exist for ALL students
+      // in the selected group BEFORE loading the group context.
+      // This fixes the issue where reminders were empty because teachers
+      // hadn't opened each student's profile to trigger seeding.
+      // NOTE: seedDefaultsForStudent respects the user_touched flag,
+      // so manual teacher selections are NOT overwritten.
+      if (selectedGroup?.students) {
+        const isDev = import.meta.env.DEV;
+        if (isDev) {
+          console.log('[EVAL_PIPELINE] Proactive seeding: ensuring contemplaciones exist for all students');
+        }
+        for (const student of selectedGroup.students) {
+          seedDefaultsForStudent(student.id, student.name, false); // Suppress verbose logs
+        }
+        if (isDev) {
+          console.log(`[EVAL_PIPELINE] Proactive seeding complete for ${selectedGroup.students.length} students`);
+        }
+      }
       
       // Load unified group context for AI generation
       const groupContextData = await getGroupContextForAI(selectedGroup.id, { purpose: 'evaluation' });
@@ -1240,6 +1261,15 @@ const EvaluacionesGrupo = () => {
         : [];
       setTeacherReminders(reminders);
       
+      // STEP 4b: Check for missing template errors from design plan validation
+      const validationResult = effectivePlan._reminderValidation;
+      if (validationResult?.missingTemplates && validationResult.missingTemplates.length > 0) {
+        console.error('[EVAL_PIPELINE] Missing reminder templates detected:', validationResult.missingTemplates);
+        setMissingTemplateErrors(validationResult.missingTemplates);
+      } else {
+        setMissingTemplateErrors([]);
+      }
+      
       if (!Array.isArray(data?.teacherRemindersByStudent) || data.teacherRemindersByStudent.length === 0) {
         console.warn('[EVAL_PIPELINE] No teacher reminders available from backend, showing empty state');
       }
@@ -1350,6 +1380,7 @@ const EvaluacionesGrupo = () => {
       setEvaluationDesignPlan(null);
       setStudentAssignments({});
       setTeacherReminders([]);
+      setMissingTemplateErrors([]);
       setAssignmentWarnings([]);
       setAiDesignReport(null);
       
@@ -2556,8 +2587,12 @@ const EvaluacionesGrupo = () => {
                     students={selectedGroup?.students || []}
                   />
                 )}
-                {teacherReminders.length > 0 && (
-                  <TeacherRemindersPanel reminders={teacherReminders} students={selectedGroup?.students || []} />
+                {(teacherReminders.length > 0 || missingTemplateErrors.length > 0) && (
+                  <TeacherRemindersPanel 
+                    reminders={teacherReminders} 
+                    students={selectedGroup?.students || []}
+                    missingTemplateErrors={missingTemplateErrors}
+                  />
                 )}
                 {displayEvaluations.map((evaluation) => (
                   <EvaluacionVisualRenderer

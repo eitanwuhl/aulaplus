@@ -424,6 +424,14 @@ export async function getGroupContextForAI(
           'evaluaciones'
         );
         
+        // DIAGNOSTIC: Log contemplaciones loaded from localStorage (DEV only)
+        if (import.meta.env.DEV && (contemplacionesClase.length > 0 || contemplacionesEvaluaciones.length > 0)) {
+          console.log(`[DIAG:getGroupContextForAI] Student ${student.id} contemplaciones:`, {
+            clase: contemplacionesClase,
+            evaluaciones: contemplacionesEvaluaciones
+          });
+        }
+        
         // Check content adaptation with explicit source tracking
         const contentAdaptationInfo = checkContentAdaptation(student);
         

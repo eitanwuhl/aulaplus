@@ -14,7 +14,8 @@ export type {
 } from './sessionDigests';
 
 export {
-  buildEvaluationDesignPlan
+  buildEvaluationDesignPlan,
+  buildPerStudentReminders
 } from './designPlan';
 
 export type {
@@ -22,5 +23,7 @@ export type {
   EvaluationDesignPlanInput,
   EvaluationVersionPlan,
   ResponseOptionsPlan,
-  StudentReminders
+  StudentReminders,
+  MissingTemplateError,
+  BuildRemindersResult
 } from './designPlan';
