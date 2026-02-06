@@ -146,60 +146,145 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     return () => subscription.unsubscribe();
   }, [isInitialized]);
 
+
+  // Load user from localStorage on mount and sync with Supabase session
+  useEffect(() => {
+    const initializeUser = async () => {
+      // First, check if there's a Supabase session
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      
+      if (currentSession?.user) {
+        setSession(currentSession);
+        // If we have a session but no user in state, restore from localStorage or create
+        const savedUser = localStorage.getItem('auth_user');
+        if (savedUser) {
+          try {
+            const parsedUser = JSON.parse(savedUser);
+            // Only restore if it's a teacher (students don't use Supabase auth)
+            if (parsedUser.role === 'teacher' && parsedUser.id === currentSession.user.id) {
+              setUser(parsedUser);
+            }
+          } catch (e) {
+            console.error('Error parsing saved user:', e);
+          }
+        }
+      } else {
+        // No Supabase session, check localStorage for student users
+        const savedUser = localStorage.getItem('auth_user');
+        if (savedUser) {
+          try {
+            const parsedUser = JSON.parse(savedUser);
+            // Only restore student users (teachers need Supabase session)
+            if (parsedUser.role === 'student') {
+              setUser(parsedUser);
+            }
+          } catch (e) {
+            console.error('Error parsing saved user:', e);
+          }
+        }
+      }
+    };
+
+    initializeUser();
+  }, []);
+
+  // Login function - accepts ANY credentials (no validation)
   const login = async (role: UserRole, credentials: { username: string; password: string }): Promise<boolean> => {
-    // Simple validation - any non-empty credentials are accepted for demo
-    if (!credentials.username.trim() || !credentials.password.trim()) {
-      return false;
+    // NO VALIDATION - any credentials are accepted, even empty ones
+    try {
+      if (role === 'teacher') {
+        // Ensure Supabase is authenticated with demo teacher account
+        if (!session) {
+          await ensureSupabaseAuth();
+        }
+        
+        // Wait a bit for session to be set
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Get current session after auth
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        
+        if (currentSession?.user) {
+          // Random teacher name for demo
+          const randomName = teacherNames[Math.floor(Math.random() * teacherNames.length)];
+          const newUser: User = {
+            id: currentSession.user.id,
+            role: 'teacher',
+            name: randomName
+          };
+          setUser(newUser);
+          localStorage.setItem('auth_user', JSON.stringify(newUser));
+          return true;
+        } else {
+          // Even if Supabase auth fails, create a mock teacher user
+          const randomName = teacherNames[Math.floor(Math.random() * teacherNames.length)];
+          const newUser: User = {
+            id: `teacher_${Date.now()}`,
+            role: 'teacher',
+            name: randomName
+          };
+          setUser(newUser);
+          localStorage.setItem('auth_user', JSON.stringify(newUser));
+          return true;
+        }
+      } else {
+        // For students, create a mock user (any credentials accepted)
+        const username = credentials.username || `student_${Date.now()}`;
+        const newUser: User = {
+          id: `student_${username}`,
+          role: 'student', 
+          name: `Estudiante ${username}`,
+          username: username
+        };
+        setUser(newUser);
+        localStorage.setItem('auth_user', JSON.stringify(newUser));
+        return true;
+      }
+    } catch (error) {
+      console.error('Login error:', error);
+      // Even on error, create a user to ensure login always succeeds
+      if (role === 'teacher') {
+        const randomName = teacherNames[Math.floor(Math.random() * teacherNames.length)];
+        const newUser: User = {
+          id: `teacher_${Date.now()}`,
+          role: 'teacher',
+          name: randomName
+        };
+        setUser(newUser);
+        localStorage.setItem('auth_user', JSON.stringify(newUser));
+      } else {
+        const username = credentials.username || `student_${Date.now()}`;
+        const newUser: User = {
+          id: `student_${username}`,
+          role: 'student', 
+          name: `Estudiante ${username}`,
+          username: username
+        };
+        setUser(newUser);
+        localStorage.setItem('auth_user', JSON.stringify(newUser));
+      }
+      return true;
     }
-
-    // Ensure Supabase is authenticated in background
-    if (!session) {
-      await ensureSupabaseAuth();
-    }
-
-    // Create mock user for frontend (same as before)
-    let newUser: User;
-    
-    if (role === 'teacher') {
-      // Random teacher name for demo
-      const randomName = teacherNames[Math.floor(Math.random() * teacherNames.length)];
-      newUser = {
-        id: session?.user?.id || `teacher_${Date.now()}`,
-        role: 'teacher',
-        name: randomName
-      };
-    } else {
-      newUser = {
-        id: session?.user?.id || `student_${credentials.username}`,
-        role: 'student', 
-        name: `Estudiante ${credentials.username}`,
-        username: credentials.username
-      };
-    }
-
-    setUser(newUser);
-    localStorage.setItem('auth_user', JSON.stringify(newUser));
-    return true;
   };
 
+  // Logout function
   const logout = async (): Promise<void> => {
     setUser(null);
     localStorage.removeItem('auth_user');
     // Keep Supabase session active for seamless demo experience
   };
 
-  // Load user from localStorage on mount
-  useEffect(() => {
-    const savedUser = localStorage.getItem('auth_user');
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-    }
-  }, []);
-
-  const isAuthenticated = !!user;
+  // Context value - updates when state changes
+  const contextValue: AuthContextType = {
+    user,
+    login,
+    logout,
+    isAuthenticated: !!user,
+    session
+  };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated, session }}>
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

@@ -424,6 +424,14 @@ export async function getGroupContextForAI(
           'evaluaciones'
         );
         
+        // DIAGNOSTIC: Log contemplaciones loaded from localStorage (DEV only)
+        if (import.meta.env.DEV && (contemplacionesClase.length > 0 || contemplacionesEvaluaciones.length > 0)) {
+          console.log(`[DIAG:getGroupContextForAI] Student ${student.id} contemplaciones:`, {
+            clase: contemplacionesClase,
+            evaluaciones: contemplacionesEvaluaciones
+          });
+        }
+        
         // Check content adaptation with explicit source tracking
         const contentAdaptationInfo = checkContentAdaptation(student);
         
@@ -446,17 +454,31 @@ export async function getGroupContextForAI(
     const studentsWithAdjustments = studentsWithContemplaciones.filter(s => 
       s.ajustes || 
       (purpose === 'planning' && s.contemplacionesClase.length > 0) ||
-      (purpose === 'evaluation' && s.contemplacionesEvaluaciones.length > 0)
+      (purpose === 'evaluation' && s.contemplacionesEvaluaciones.length > 0) ||
+      s.hasDeclaredContentAdaptation  // Also include students with content adaptation
     ).slice(0, maxStudents);
     
     // 5. Build anonymized students array for prompt (matches current edge function contract)
+    // CRITICAL: Include hasDeclaredContentAdaptation for version B/C detection
     const anonymizedStudentsForPrompt = studentsWithAdjustments.map(s => ({
+      studentId: s.studentId,  // Include for debugging/assignment tracking
       perfil: s.learningProfile,
       ajustes: s.ajustes,
       contemplaciones: purpose === 'planning' 
         ? s.contemplacionesClase 
-        : s.contemplacionesEvaluaciones
+        : s.contemplacionesEvaluaciones,
+      // CRITICAL: Pass content adaptation flag to Edge Function
+      hasDeclaredContentAdaptation: s.hasDeclaredContentAdaptation || false,
+      requiresContentAdaptation: s.requiresContentAdaptation || false
     }));
+    
+    // DEV LOG: Student content adaptation detection
+    if (import.meta.env.DEV) {
+      console.log('[getGroupContextForAI] Student content adaptation detection:');
+      studentsWithContemplaciones.forEach(s => {
+        console.log(`  - ${s.displayName} (id=${s.studentId}): contentAdaptation=${s.hasDeclaredContentAdaptation}, assigned=${s.hasDeclaredContentAdaptation ? 'B/C' : 'A'}`);
+      });
+    }
     
     // 6. Calculate learning style distribution
     const distribucion = calculateLearningStyleDistribution(students);

@@ -1,13 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { CheckSquare, Users, AlertTriangle } from 'lucide-react';
+import { CheckSquare, AlertTriangle } from 'lucide-react';
 import { COMPETENCIAS_HISTORIA } from '@/data/competencias';
 import { COMPETENCIAS_LITERATURA } from '@/data/competenciasLiteratura';
 import { COMPETENCIAS_CIUDADANIA } from '@/data/competenciasCiudadania';
 import { mockStudents } from '@/data/mockData';
-import { enforceForEvaluation, type Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { normalizeStudentId } from '@/lib/contemplaciones/utils';
 
 interface RubricItem {
@@ -251,50 +250,7 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
   const globalRubric = generateGlobalRubric();
   const studentAssignments = generateStudentAssignments();
 
-  // Obtener recordatorios determinísticos usando el motor de enforcement
-  // CRITICAL: Use same ID normalization everywhere for consistent lookup
-  const perStudentReminders = useMemo(() => {
-    // DIAGNOSTIC MODE (NOT gated by import.meta.env.DEV)
-    const DIAGNOSTIC_MODE = (window as any).__CONTEMPLACIONES_DEBUG__ === true;
-    
-    if (DIAGNOSTIC_MODE) {
-      console.log('[RUBRIC_DIAG] inputs', {
-        students: students?.map(s => ({ id: s.id, name: s.name })),
-        assignedStudentIds,
-        assignedStudents
-      });
-    }
-    
-    // Filter students to only those assigned (if assignedStudentIds provided)
-    let studentsToProcess = students || [];
-    
-    if (assignedStudentIds && assignedStudentIds.length > 0) {
-      const assignedIdsSet = new Set(
-        assignedStudentIds.map(id => normalizeStudentId(id))
-      );
-      studentsToProcess = studentsToProcess.filter(s => 
-        assignedIdsSet.has(normalizeStudentId(s.id))
-      );
-    }
-
-    // Convertir estudiantes al formato esperado por el enforcement engine
-    const enforcementStudents: EnforcementStudent[] = studentsToProcess.map(s => ({
-      id: s.id,
-      name: s.name || `Estudiante ${s.id}`
-    }));
-
-    // Si no hay estudiantes, retornar Map vacío
-    if (enforcementStudents.length === 0) {
-      return new Map<string, string[]>();
-    }
-
-    // Obtener recordatorios usando el motor de enforcement
-    // The enforcement engine now returns Map<string, string[]> with normalized keys
-    const enforcementOutput = enforceForEvaluation(enforcementStudents);
-    
-    // The Map already has normalized keys, return as-is
-    return enforcementOutput.perStudentReminders;
-  }, [students, assignedStudentIds]);
+  // NOTE: perStudentReminders was removed - now handled by dedicated TeacherRemindersPanel component
 
   const toggleExpanded = (codigo: string) => {
     setExpandedItems(prev => ({
@@ -369,80 +325,11 @@ export const SimplifiedSmartRubric: React.FC<SimplifiedSmartRubricProps> = ({
         ))}
       </div>
 
-      {/* ¿A QUIÉN CONTEMPLA ESTA VERSIÓN? - INTEGRADO EN RÚBRICA */}
-      <Card className="border-primary/20 shadow-sm">
-        <CardHeader>
-          <CardTitle className="text-lg font-semibold flex items-center gap-2">
-            <Users className="w-5 h-5" />
-            ¿A quién contempla esta versión?
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Estudiantes considerados en esta versión de la evaluación
-          </p>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {studentAssignments.length === 0 && (assignedStudentIds?.length > 0 || assignedStudents?.length > 0) ? (
-              <div className="p-4 border border-amber-200 bg-amber-50/50 rounded-lg text-center">
-                <p className="text-sm text-amber-800">
-                  No se encontraron estudiantes que coincidan con los asignados a esta versión.
-                </p>
-                <p className="text-xs text-amber-700 mt-2">
-                  Verifica que los estudiantes del grupo coincidan con los asignados.
-                </p>
-              </div>
-            ) : (
-              studentAssignments.map((assignment, index) => {
-                // CRITICAL: Use assignment.id directly for reminder lookup (no search needed)
-                // The assignment already has the correct student ID from generateStudentAssignments
-                const normalizedId = normalizeStudentId(assignment.id);
-                
-                // DIAGNOSTIC MODE (NOT gated by import.meta.env.DEV)
-                const DIAGNOSTIC_MODE = (window as any).__CONTEMPLACIONES_DEBUG__ === true;
-
-                // Obtener recordatorios para este estudiante
-                // CRITICAL: Use normalized ID for lookup (same normalization as Map keys)
-                const reminders = perStudentReminders.get(normalizedId) || [];
-                const hasKey = perStudentReminders.has(normalizedId);
-                
-                if (DIAGNOSTIC_MODE) {
-                  console.log('[RUBRIC_DIAG] card', {
-                    assignmentName: assignment.nombre,
-                    assignmentId: assignment.id,
-                    normalizedId,
-                    hasKey,
-                    reminders
-                  });
-                }
-
-                return (
-                  <div key={index} className="p-4 border border-border rounded-lg">
-                    <h4 className="font-semibold text-foreground mb-2">{assignment.nombre}</h4>
-                    <p className="text-sm text-muted-foreground mb-3">{assignment.justificacion}</p>
-                    
-                    {/* Recordatorios determinísticos del motor de enforcement */}
-                    {reminders.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-border">
-                        <div className="text-xs font-medium text-muted-foreground mb-2">
-                          Recordatorios para esta evaluación:
-                        </div>
-                        <ul className="space-y-1.5">
-                          {reminders.map((reminder, reminderIndex) => (
-                            <li key={reminderIndex} className="text-sm text-foreground flex items-start gap-2">
-                              <span className="text-primary mt-0.5">•</span>
-                              <span>{reminder}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      {/* REMOVED: "¿A quién contempla esta versión?" section
+          This information is now shown in the dedicated EvaluationAssignmentsPanel component
+          which displays "Asignaciones por estudiante" with the same data in a cleaner format.
+          Teacher reminders are handled by TeacherRemindersPanel separately.
+      */}
     </div>
   );
 };

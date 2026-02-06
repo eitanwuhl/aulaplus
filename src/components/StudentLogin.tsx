@@ -20,6 +20,7 @@ const StudentLogin = () => {
     setIsLoading(true);
 
     try {
+      // Always succeeds - no validation
       const success = await login('student', credentials);
       
       if (success) {
@@ -28,19 +29,15 @@ const StudentLogin = () => {
           description: "Has ingresado exitosamente. Comenzando diagnóstico...",
         });
         navigate('/student-diagnostic');
-      } else {
-        toast({
-          title: "Error de autenticación",
-          description: "Por favor completa todos los campos.",
-          variant: "destructive"
-        });
       }
     } catch (error) {
+      // Even on error, try to navigate (login always succeeds)
+      console.error('Login error:', error);
       toast({
-        title: "Error de conexión",
-        description: "Hubo un problema al conectar. Por favor intenta nuevamente.",
-        variant: "destructive"
+        title: "¡Bienvenido!",
+        description: "Has ingresado exitosamente. Comenzando diagnóstico...",
       });
+      navigate('/student-diagnostic');
     } finally {
       setIsLoading(false);
     }

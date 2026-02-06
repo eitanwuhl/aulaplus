@@ -451,3 +451,187 @@
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   }
 }
+
+/* ============================================================================
+ * PRINT / PDF EXPORT STYLES
+ * ============================================================================
+ * These styles are applied during PDF export via html2canvas or when printing.
+ * The .pdf-export-mode class is added to the container during PDF generation.
+ * 
+ * KEY RULES:
+ * - .pdf-export-mode sets fixed A4-friendly width (190mm printable area)
+ * - .pdf-no-break prevents page breaks inside elements (cards, tables, items)
+ * - .pdf-break-before forces page break before an element
+ * - Use max-width constraints to prevent horizontal clipping
+ * ============================================================================
+ */
+
+/* PDF Export Mode Container - Applied during export */
+.pdf-export-mode {
+  /* A4 printable width = 210mm - 20mm margins = 190mm ≈ 718px at 96dpi */
+  width: 718px !important;
+  max-width: 718px !important;
+  min-width: 718px !important;
+  
+  /* Reset any flex/grid that might cause layout shifts */
+  display: block !important;
+  
+  /* Clean background */
+  background: white !important;
+  
+  /* Consistent padding */
+  padding: 16px !important;
+  
+  /* Remove shadows for cleaner PDF */
+  box-shadow: none !important;
+  
+  /* Ensure consistent font rendering */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Remove shadows and borders in PDF mode */
+.pdf-export-mode .shadow-sm,
+.pdf-export-mode .shadow,
+.pdf-export-mode .shadow-md,
+.pdf-export-mode .shadow-lg {
+  box-shadow: none !important;
+}
+
+/* Ensure cards have visible borders in PDF */
+.pdf-export-mode [class*="card"],
+.pdf-export-mode .border {
+  border: 1px solid #e5e7eb !important;
+  box-shadow: none !important;
+}
+
+/* Force white backgrounds */
+.pdf-export-mode [class*="bg-gradient"],
+.pdf-export-mode [class*="bg-muted"],
+.pdf-export-mode [class*="bg-slate"] {
+  background: #f9fafb !important;
+}
+
+.pdf-export-mode .bg-blue-50,
+.pdf-export-mode .dark\:bg-blue-950\/30 {
+  background: #eff6ff !important;
+}
+
+/* Page break control - Prevent breaking inside these elements */
+.pdf-no-break,
+.pdf-export-mode [class*="card"],
+.pdf-export-mode table,
+.pdf-export-mode .eval-item,
+.pdf-export-mode .eval-section-header {
+  break-inside: avoid !important;
+  page-break-inside: avoid !important;
+  -webkit-column-break-inside: avoid !important;
+}
+
+/* Force page break before element */
+.pdf-break-before {
+  break-before: page !important;
+  page-break-before: always !important;
+}
+
+/* Force page break after element */
+.pdf-break-after {
+  break-after: page !important;
+  page-break-after: always !important;
+}
+
+/* Table-specific: avoid breaking rows */
+.pdf-export-mode tr {
+  break-inside: avoid !important;
+  page-break-inside: avoid !important;
+}
+
+/* Ensure table doesn't overflow */
+.pdf-export-mode table {
+  width: 100% !important;
+  max-width: 100% !important;
+  table-layout: fixed !important;
+}
+
+.pdf-export-mode th,
+.pdf-export-mode td {
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+}
+
+/* Typography adjustments for PDF */
+.pdf-export-mode h1 { font-size: 20px !important; }
+.pdf-export-mode h2 { font-size: 18px !important; }
+.pdf-export-mode h3 { font-size: 16px !important; }
+.pdf-export-mode p, 
+.pdf-export-mode li,
+.pdf-export-mode span { font-size: 14px !important; }
+.pdf-export-mode .text-xs { font-size: 12px !important; }
+.pdf-export-mode .text-sm { font-size: 13px !important; }
+
+/* Badge styling for PDF */
+.pdf-export-mode [class*="badge"] {
+  border: 1px solid #d1d5db !important;
+  background: #f3f4f6 !important;
+  color: #374151 !important;
+}
+
+/* Hide elements not needed in PDF */
+.pdf-export-mode .pdf-hide,
+.pdf-export-mode button,
+.pdf-export-mode [role="button"] {
+  display: none !important;
+}
+
+/* Ensure consistent spacing */
+.pdf-export-mode .space-y-6 > * + * {
+  margin-top: 20px !important;
+}
+
+.pdf-export-mode .space-y-4 > * + * {
+  margin-top: 16px !important;
+}
+
+/* Print media query for browser print */
+@media print {
+  /* Hide navigation, headers, footers */
+  nav, header, footer, aside,
+  .no-print, .pdf-hide,
+  button, [role="button"] {
+    display: none !important;
+  }
+  
+  /* Reset page */
+  @page {
+    size: A4 portrait;
+    margin: 15mm;
+  }
+  
+  body {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  
+  /* Content container */
+  .print-content {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+  
+  /* Avoid breaks */
+  .print-no-break,
+  [class*="card"],
+  table, tr,
+  .eval-item {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+  
+  /* Remove shadows */
+  * {
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+}

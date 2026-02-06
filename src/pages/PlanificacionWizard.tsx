@@ -1288,7 +1288,7 @@ export default function PlanificacionWizard() {
               
               <div className="space-y-2">
                 <h2 className="text-2xl font-bold">
-                  {generationError ? 'Error en la generación' : 'Generando planes automáticamente. Tu clase estaraá lista pronto!'}
+                  {generationError ? 'Error en la generación' : 'Generando planes automáticamente. Tu clase estará lista pronto!'}
                 </h2>
                 <p className="text-muted-foreground">
                   {generationError 

@@ -197,6 +197,21 @@ export function AIDesignReport({ reportData, className = '' }: AIDesignReportPro
               </div>
             )}
 
+            {/* Instrument Design Allowances - these are NOT teacher reminders but affect evaluation design */}
+            {reportData.contemplaciones?.instrument_design && reportData.contemplaciones.instrument_design.length > 0 && (
+              <div className="space-y-2 border-t pt-4">
+                <h4 className="font-semibold text-sm">Adaptaciones aplicadas al instrumento</h4>
+                <p className="text-xs text-muted-foreground mb-2">
+                  Estas contemplaciones afectan el diseño del cuadernillo (no son recordatorios para el docente):
+                </p>
+                <ul className="list-disc pl-5 text-sm text-gray-700 dark:text-gray-300">
+                  {reportData.contemplaciones.instrument_design.map((item, idx) => (
+                    <li key={idx}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {reportData.warnings && reportData.warnings.length > 0 && (
               <div className="space-y-2 border-t pt-4">
                 <h4 className="font-semibold text-sm text-amber-700">Advertencias</h4>

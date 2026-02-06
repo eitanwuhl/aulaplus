@@ -147,7 +147,19 @@ const AppRoutes = () => {
 };
 
 const App = () => (
-  <BrowserRouter>
+  <BrowserRouter
+    future={{
+      // React Router v7 migration flags
+      // v7_relativeSplatPath: true - Required because we use a splat route (path="*")
+      // This flag ensures relative paths work correctly with splat routes
+      // Safe to enable: all our routes use absolute paths (start with "/")
+      v7_relativeSplatPath: true,
+      // v7_startTransition: true - Uses React.startTransition for navigation
+      // This makes navigation non-blocking and improves perceived performance
+      // Safe to enable: no known issues with current navigation patterns
+      v7_startTransition: true,
+    }}
+  >
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <TooltipProvider>
