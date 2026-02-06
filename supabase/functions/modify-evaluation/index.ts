@@ -2040,6 +2040,20 @@ serve(async (req) => {
       };
 
       console.log('[UNIVERSAL] Processing evaluation with universal path');
+      
+      // ======================= OPENAI CONTEXT LOGGING =======================
+      // Log the input context data that will be used to build the prompt
+      console.log('[OPENAI_CONTEXT] ========== INPUT DATA START ==========');
+      console.log('[OPENAI_CONTEXT] groupContext.subject:', groupContext?.subject || 'NOT PROVIDED');
+      console.log('[OPENAI_CONTEXT] groupContext.content:', JSON.stringify(groupContext?.content || []));
+      console.log('[OPENAI_CONTEXT] groupContext.competencies:', JSON.stringify(groupContext?.competencies || []));
+      console.log('[OPENAI_CONTEXT] groupContext.criteriosLogro:', JSON.stringify(groupContext?.criteriosLogro || []));
+      console.log('[OPENAI_CONTEXT] groupContext.students.count:', groupContext?.students?.length || 0);
+      console.log('[OPENAI_CONTEXT] modification:', modification || 'NONE');
+      console.log('[OPENAI_CONTEXT] evaluation_design_plan.keys:', Object.keys(evaluation_design_plan || {}));
+      console.log('[OPENAI_CONTEXT] ========== INPUT DATA END ==========');
+      // =====================================================================
+      
       const designPlan = evaluation_design_plan || {};
       const instrumentDesignRules = Array.isArray(designPlan.instrumentDesignRules)
         ? designPlan.instrumentDesignRules
@@ -2069,8 +2083,44 @@ serve(async (req) => {
             student?.informeTecnico?.requiereAdecuacionContenido === true
           )
         : false;
-      const generateVersionB = designPlan.triggers?.versionB === true || assignmentsIncludeB;
-      const generateVersionC = designPlan.triggers?.versionC === true || assignmentsIncludeC || hasContentAdaptationStudent;
+      
+      // ======================= OPENAI CONTEXT LOGGING (DESIGN PLAN) =======================
+      console.log('[OPENAI_CONTEXT] ========== DESIGN PLAN DETAILS ==========');
+      console.log('[OPENAI_CONTEXT] instrumentDesignRules:', JSON.stringify(instrumentDesignRules));
+      console.log('[OPENAI_CONTEXT] studentAssignments.count:', Object.keys(studentAssignments).length);
+      console.log('[OPENAI_CONTEXT] studentAssignments.sample:', JSON.stringify(Object.entries(studentAssignments).slice(0, 5)));
+      console.log('[OPENAI_CONTEXT] varkDistribution:', JSON.stringify(varkDistribution));
+      console.log('[OPENAI_CONTEXT] responseOptionsInclude:', responseOptionsInclude);
+      console.log('[OPENAI_CONTEXT] responseOptionCount:', responseOptionCount);
+      console.log('[OPENAI_CONTEXT] assignmentsIncludeB:', assignmentsIncludeB);
+      console.log('[OPENAI_CONTEXT] assignmentsIncludeC:', assignmentsIncludeC);
+      console.log('[OPENAI_CONTEXT] hasContentAdaptationStudent:', hasContentAdaptationStudent);
+      console.log('[OPENAI_CONTEXT] designPlan.triggers:', JSON.stringify(designPlan.triggers || {}));
+      console.log('[OPENAI_CONTEXT] ========== DESIGN PLAN END ==========');
+      // ===================================================================================
+      
+      // ======================= PHASE 2: REQUESTED VERSIONS (SINGLE SOURCE OF TRUTH) =======================
+      // Version A: Always required
+      // Version B: Only if design plan triggers it OR students are assigned to B
+      // Version C: Only if design plan triggers it OR students are assigned to C OR any student requires content adaptation
+      const requestedVersions = {
+        A: true, // Always required
+        B: designPlan.triggers?.versionB === true || assignmentsIncludeB,
+        C: designPlan.triggers?.versionC === true || assignmentsIncludeC || hasContentAdaptationStudent
+      };
+      
+      // Log the centralized decision for observability
+      console.log('[REQUESTED_VERSIONS] ========== VERSION DECISION ==========');
+      console.log('[REQUESTED_VERSIONS] A:', requestedVersions.A, '(always required)');
+      console.log('[REQUESTED_VERSIONS] B:', requestedVersions.B, '| triggers.versionB:', designPlan.triggers?.versionB, '| assignmentsIncludeB:', assignmentsIncludeB);
+      console.log('[REQUESTED_VERSIONS] C:', requestedVersions.C, '| triggers.versionC:', designPlan.triggers?.versionC, '| assignmentsIncludeC:', assignmentsIncludeC, '| hasContentAdaptation:', hasContentAdaptationStudent);
+      console.log('[REQUESTED_VERSIONS] summary:', requestedVersions.A ? 'A' : '', requestedVersions.B ? '+B' : '', requestedVersions.C ? '+C' : '');
+      console.log('[REQUESTED_VERSIONS] ==========================================');
+      // ===================================================================================================
+      
+      // Legacy variables for backward compatibility (will be removed in future phases)
+      const generateVersionB = requestedVersions.B;
+      const generateVersionC = requestedVersions.C;
       
       // STRATEGY: Unique delimiter blocks + HTML fragments only (no <html>/<head>/<body>/<style>)
       const DELIMITER_SUFFIX = '8f3a7b'; // Unique suffix to avoid accidental matches
@@ -2131,8 +2181,8 @@ REGLAS ABSOLUTAS:
 - Cada versión es INDEPENDIENTE: NO incluir contenido de otras versiones dentro de una versión
 - NO incluir notas como "Nota: Esta versión..." ni "Versión A:" dentro del contenido
 - La evaluación debe verse como un examen real de secundaria
-${generateVersionB ? '- Versión B es OBLIGATORIA y debe ser DIFERENTE de A (formato equivalente).' : ''}
-${generateVersionC ? '- Versión C es OBLIGATORIA y debe ser DIFERENTE de A y B (adecuación de contenido).' : ''}`;
+${generateVersionB ? '- Versión B: Genera esta versión con formato equivalente pero diferente de A.' : '- Versión B: NO generar (no fue solicitada para este grupo).'}
+${generateVersionC ? '- Versión C: Genera esta versión con adecuación de contenido, diferente de A y B.' : '- Versión C: NO generar (no fue solicitada para este grupo).'}`;
 
       const userPrompt = `CONTEXTO DEL GRUPO:
 Materia: ${groupContext?.subject || 'No especificada'}
@@ -2147,9 +2197,9 @@ REGLAS DE DISEÑO:
 ${instrumentDesignRules.length ? instrumentDesignRules.map((rule: string) => `- ${rule}`).join('\n') : '- (Sin reglas adicionales)'}
 
 VERSIONES REQUERIDAS:
-- Versión A: OBLIGATORIA (universal)
-${generateVersionB ? '- Versión B: OBLIGATORIA (formato equivalente, misma evidencia)' : '- Versión B: NO generar'}
-${generateVersionC ? '- Versión C: OBLIGATORIA (adecuación de contenido)' : '- Versión C: NO generar'}
+- Versión A: Requerida (evaluación universal base)
+${generateVersionB ? '- Versión B: Requerida (formato equivalente, misma evidencia)' : '- Versión B: No requerida para este grupo'}
+${generateVersionC ? '- Versión C: Requerida (adecuación de contenido para estudiantes específicos)' : '- Versión C: No requerida para este grupo'}
 
 TAREA:
 1. Genera evaluaciones usando los delimitadores <<<X_EVAL_HTML_START_${DELIMITER_SUFFIX}>>> y <<<X_EVAL_HTML_END_${DELIMITER_SUFFIX}>>>.
@@ -2218,6 +2268,26 @@ REQUERIMIENTOS ABSOLUTOS:
 CONTEXTO ORIGINAL:
 ${userPrompt}`;
           }
+
+          // ======================= OPENAI PROMPT LOGGING =======================
+          // Structured logging for prompt observability in Supabase Edge Function logs
+          console.log('[OPENAI_PROMPT] ========== REQUEST METADATA ==========');
+          console.log('[OPENAI_PROMPT] path: universal');
+          console.log('[OPENAI_PROMPT] attempt:', attempt);
+          console.log('[OPENAI_PROMPT] model: gpt-4.1-2025-04-14');
+          console.log('[OPENAI_PROMPT] max_completion_tokens: 6000');
+          console.log('[OPENAI_PROMPT] requestedVersions:', JSON.stringify({ A: true, B: generateVersionB, C: generateVersionC }));
+          console.log('[OPENAI_PROMPT] isRepairAttempt:', attempt > 1);
+          console.log('[OPENAI_PROMPT] ========== SYSTEM PROMPT START ==========');
+          console.log(currentSystemPrompt);
+          console.log('[OPENAI_PROMPT] ========== SYSTEM PROMPT END ==========');
+          console.log('[OPENAI_PROMPT] systemPromptLength:', currentSystemPrompt.length);
+          console.log('[OPENAI_PROMPT] ========== USER PROMPT START ==========');
+          console.log(currentUserPrompt);
+          console.log('[OPENAI_PROMPT] ========== USER PROMPT END ==========');
+          console.log('[OPENAI_PROMPT] userPromptLength:', currentUserPrompt.length);
+          console.log('[OPENAI_PROMPT] totalPromptLength:', currentSystemPrompt.length + currentUserPrompt.length);
+          // ======================= END OPENAI PROMPT LOGGING =======================
 
           // Call OpenAI
           const result = await retryWithBackoff(async () => {
@@ -2331,15 +2401,18 @@ ${userPrompt}`;
         };
       }
 
-      // Compute assignment counts to determine shouldHaveB/C BEFORE calling retry
+      // Compute assignment counts for final response (used later)
       const rawAssignmentsForCheck = designPlan.assignmentByStudentId || designPlan.studentAssignments || studentAssignments || {};
       const assignmentCountsForCheck = {
         A: Object.values(rawAssignmentsForCheck).filter((v: any) => v === 'A').length,
         B: Object.values(rawAssignmentsForCheck).filter((v: any) => v === 'B').length,
         C: Object.values(rawAssignmentsForCheck).filter((v: any) => v === 'C').length
       };
-      const shouldHaveB = assignmentCountsForCheck.B > 0 || designPlan.triggers?.versionB === true;
-      const shouldHaveC = assignmentCountsForCheck.C > 0 || designPlan.triggers?.versionC === true;
+      
+      // PHASE 2: Use requestedVersions as single source of truth for validation
+      // These aliases ensure backward compatibility with existing code
+      const shouldHaveB = requestedVersions.B;
+      const shouldHaveC = requestedVersions.C;
 
       // Use generateEvaluationWithRetries instead of direct OpenAI call
       const generationResult = await generateEvaluationWithRetries(
@@ -2896,11 +2969,6 @@ ${userPrompt}`;
           A: finalA?.length || 0,
           B: finalB?.length || 0,
           C: finalC?.length || 0
-        },
-        wrapperDetected: {
-          A: { before: normA.hadWrapperBefore, after: normA.hasWrapperAfter },
-          B: { before: normB.hadWrapperBefore, after: normB.hasWrapperAfter },
-          C: { before: normC.hadWrapperBefore, after: normC.hasWrapperAfter }
         }
       });
 
@@ -3292,8 +3360,25 @@ TAREA: Genera 3 versiones completas de evaluación (Versión 1, 2 y 3) siguiendo
     // Use more reliable model for evaluation modifications
     const model = type === 'chat' ? 'gpt-5-mini-2025-08-07' : 'gpt-4.1-2025-04-14';
 
-    console.log('System Prompt:', systemPrompt);
-    console.log('User Prompt:', userPrompt);
+    // ======================= OPENAI PROMPT LOGGING (LEGACY PATH) =======================
+    // Structured logging for prompt observability in Supabase Edge Function logs
+    console.log('[OPENAI_PROMPT] ========== REQUEST METADATA ==========');
+    console.log('[OPENAI_PROMPT] path: legacy');
+    console.log('[OPENAI_PROMPT] type:', type);
+    console.log('[OPENAI_PROMPT] model:', model);
+    console.log('[OPENAI_PROMPT] max_completion_tokens: 4000');
+    console.log('[OPENAI_PROMPT] hasOriginalEvaluation:', !!originalEvaluation);
+    console.log('[OPENAI_PROMPT] hasCustomPrompt:', !!customPrompt);
+    console.log('[OPENAI_PROMPT] ========== SYSTEM PROMPT START ==========');
+    console.log(systemPrompt);
+    console.log('[OPENAI_PROMPT] ========== SYSTEM PROMPT END ==========');
+    console.log('[OPENAI_PROMPT] systemPromptLength:', systemPrompt.length);
+    console.log('[OPENAI_PROMPT] ========== USER PROMPT START ==========');
+    console.log(userPrompt);
+    console.log('[OPENAI_PROMPT] ========== USER PROMPT END ==========');
+    console.log('[OPENAI_PROMPT] userPromptLength:', userPrompt.length);
+    console.log('[OPENAI_PROMPT] totalPromptLength:', systemPrompt.length + userPrompt.length);
+    // ======================= END OPENAI PROMPT LOGGING =======================
 
     const result = await retryWithBackoff(async () => {
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
