@@ -25,7 +25,7 @@ import { getCompetenciasEspecificasCiudadania, getCriteriosLogroPorCompetenciasC
 import { RubricaIntegrada } from "@/components/RubricaIntegrada";
 import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
 import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport, EvaluationAssignmentsPanel, TeacherRemindersPanel, BetaToggle } from "@/components/evaluaciones";
-import { EvaluationRendererV2, V2InfoPanels } from "@/components/evaluaciones/v2";
+import { EvaluationRendererV2, V2InfoPanels } from "@/components/evaluaciones/v2/index";
 import { EvaluationAdjustmentsPanel } from "@/components/evaluaciones/v2/EvaluationAdjustmentsPanel";
 import type { V2Response } from "@/services/evaluations/v2Types";
 import type { AIDesignReportData } from "@/components/evaluaciones";
