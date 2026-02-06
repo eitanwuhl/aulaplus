@@ -2,6 +2,13 @@ import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
+// ════════════════════════════════════════════════════════════════════════════
+// ⚠️  MODIFY-EVALUATION V1 (LEGACY) - If you see this log, V1 is being used!
+// ════════════════════════════════════════════════════════════════════════════
+console.log('═══════════════════════════════════════════════════════════════');
+console.log('⚠️  [V1_ENTRY] MODIFY-EVALUATION V1 (LEGACY) EDGE FUNCTION LOADED');
+console.log('═══════════════════════════════════════════════════════════════');
+
 const openAIApiKey = Deno.env.get('OPENAI_API_KEY');
 console.log('OpenAI API Key:', openAIApiKey);
 
@@ -964,6 +971,16 @@ async function retryWithBackoff(fn: () => Promise<any>, maxRetries = 3, baseDela
 }
 
 serve(async (req) => {
+  // ════════════════════════════════════════════════════════════════════════════
+  // ⚠️  V1 REQUEST RECEIVED - This means the frontend is NOT using V2!
+  // ════════════════════════════════════════════════════════════════════════════
+  console.log('═══════════════════════════════════════════════════════════════');
+  console.log('⚠️  [V1_REQUEST] MODIFY-EVALUATION V1 REQUEST RECEIVED');
+  console.log('═══════════════════════════════════════════════════════════════');
+  console.log(`[V1_REQUEST] Timestamp: ${new Date().toISOString()}`);
+  console.log(`[V1_REQUEST] Method: ${req.method}`);
+  console.log('[V1_REQUEST] If you expected V2, check: 1) Beta toggle enabled? 2) localStorage aulaplus:eval-beta-toggle=true?');
+  
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders });

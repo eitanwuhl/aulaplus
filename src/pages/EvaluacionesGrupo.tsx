@@ -26,6 +26,7 @@ import { RubricaIntegrada } from "@/components/RubricaIntegrada";
 import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
 import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport, EvaluationAssignmentsPanel, TeacherRemindersPanel, BetaToggle } from "@/components/evaluaciones";
 import { EvaluationRendererV2, V2InfoPanels } from "@/components/evaluaciones/v2";
+import { EvaluationAdjustmentsPanel } from "@/components/evaluaciones/v2/EvaluationAdjustmentsPanel";
 import type { V2Response } from "@/services/evaluations/v2Types";
 import type { AIDesignReportData } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -445,6 +446,8 @@ const EvaluacionesGrupo = () => {
   const [useBetaV2, setUseBetaV2] = useState<boolean>(getBetaToggleState());
   const [v2RawResponse, setV2RawResponse] = useState<V2Response | null>(null);
   const [v2SelectedVersion, setV2SelectedVersion] = useState<'A' | 'B' | 'C'>('A');
+  // V2 Adjustments - track previous response for single-step undo
+  const [previousV2Response, setPreviousV2Response] = useState<V2Response | null>(null);
   
   // Configuration panel collapse state (auto-collapse after generation)
   const [isConfigCollapsed, setIsConfigCollapsed] = useState<boolean>(false);
@@ -1138,7 +1141,14 @@ const EvaluacionesGrupo = () => {
           console.warn('[EVAL_PIPELINE] V2 returned no data, falling back to V1');
           // Fallback to V1 below
         } else if (!v2Result.data.success) {
-          console.warn('[EVAL_PIPELINE] V2 returned success=false, falling back to V1:', v2Result.data.warnings);
+          // DETAILED DEBUG: Log full failure info from V2
+          console.warn('[EVAL_PIPELINE] ══════════════════════════════════════════════════════════');
+          console.warn('[EVAL_PIPELINE] V2 returned success=false, falling back to V1');
+          console.warn('[EVAL_PIPELINE] ══════════════════════════════════════════════════════════');
+          console.warn('[EVAL_PIPELINE] warnings:', JSON.stringify(v2Result.data.warnings, null, 2));
+          console.warn('[EVAL_PIPELINE] debug:', JSON.stringify(v2Result.data.debug, null, 2));
+          console.warn('[EVAL_PIPELINE] requestedVersions:', v2Result.data.requestedVersions);
+          console.warn('[EVAL_PIPELINE] hasEvaluationSpec:', !!v2Result.data.evaluationSpec);
           // Fallback to V1 below
         } else {
           // V2 succeeded! Store raw response for V2 renderer
@@ -2764,6 +2774,32 @@ const EvaluacionesGrupo = () => {
                           duration: 3000
                         });
                       }}
+                    />
+                    
+                    {/* V2 Adjustments Panel - request refinements to generated content */}
+                    <EvaluationAdjustmentsPanel
+                      v2Response={v2RawResponse}
+                      onAdjustmentApplied={(newResponse, previousResponse) => {
+                        setPreviousV2Response(previousResponse);
+                        setV2RawResponse(newResponse);
+                      }}
+                      previousResponse={previousV2Response}
+                      onUndo={() => {
+                        if (previousV2Response) {
+                          setV2RawResponse(previousV2Response);
+                          setPreviousV2Response(null);
+                        }
+                      }}
+                      groupContext={{
+                        subject: materia || (esInterdisciplinaria ? materiasSeleccionadas.join(', ') : undefined),
+                        groupName: selectedGroup?.name,
+                        content: selectedSubtemas,
+                        competencies: selectedCompetenciasIds,
+                        criteriosLogro: selectedCriteriosLogro,
+                        students: selectedGroup?.students?.map(s => ({ studentId: s.id, displayName: s.name })),
+                      }}
+                      evaluationDesignPlan={evaluationDesignPlan as unknown as Record<string, unknown> | undefined}
+                      isLoading={isGenerating}
                     />
                   </>
                 ) : (
