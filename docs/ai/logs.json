@@ -1,0 +1,802 @@
+[
+  {
+    "event_message": "shutdown",
+    "event_type": "Shutdown",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "4b23dba2-f446-4403-93a7-1049f42cc66d",
+    "level": "log",
+    "timestamp": 1770370222201000
+  },
+  {
+    "event_message": "[UNIVERSAL] versions integrity {\n  assignmentCounts: { A: 5, B: 4, C: 1 },\n  startsWith: { A: '<div class=\"eva', B: \"null\", C: \"<div><strong>Er\" },\n  isWrapper: { A: false, B: false, C: false },\n  lengths: { A: 9941, B: 0, C: 66 }\n}\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "82fd0971-489f-478f-a776-480d1dbf8be9",
+    "level": "info",
+    "timestamp": 1770370222196000
+  },
+  {
+    "event_message": "[EXTRACT_AND_NORMALIZE] Extraction result {\n  method: \"json_wrapper\",\n  warnings: [],\n  startsWith: {\n    A: '<div class=\"evaluation\" style=\"font-family: Arial; font-size',\n    B: null,\n    C: \"<div><strong>Error:</strong> Version C required but missing.\"\n  },\n  hasHead: { A: false, B: false, C: false },\n  hasStyle: { A: false, B: false, C: false },\n  startsWithBrace: { A: false, B: false, C: false },\n  hasVersionsKey: { A: false, B: false, C: false }\n}\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "e254a140-4c31-48d1-92d1-8a267bc37d3b",
+    "level": "info",
+    "timestamp": 1770370222196000
+  },
+  {
+    "event_message": "[UNIVERSAL] R3a: Metacognition not found in Version A, injecting deterministically\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "c35a90ed-93e5-43b0-9812-b083c7d19f99",
+    "level": "info",
+    "timestamp": 1770370222195000
+  },
+  {
+    "event_message": "[UNIVERSAL] response versions startsWith { A: '<div class=\"eva', C: \"<div><strong>Er\" }\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "d8716c3b-b82a-4f99-8b4a-e15fe412bdba",
+    "level": "info",
+    "timestamp": 1770370222195000
+  },
+  {
+    "event_message": "[UNIVERSAL] Version C requerida pero no fue generada por la IA. Se usará fallback seguro en el response.\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "f3391e63-b61f-4102-a3e7-e8abd3f783a0",
+    "level": "warning",
+    "timestamp": 1770370222195000
+  },
+  {
+    "event_message": "[UNIVERSAL] R3b: Version C required but not generated, creating fallback deterministically\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "1214cdcd-8947-41a6-baf7-443283942f68",
+    "level": "info",
+    "timestamp": 1770370222195000
+  },
+  {
+    "event_message": "[VERSIONS_FINAL] CRITICAL: Version C required but missing after hard gates\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "d19498b6-ce51-46f8-a790-dfdabebd3e33",
+    "level": "error",
+    "timestamp": 1770370222195000
+  },
+  {
+    "event_message": "Content cleanup applied\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "34ec86f6-e98d-4819-9ac8-3f89147be03d",
+    "level": "info",
+    "timestamp": 1770370222195000
+  },
+  {
+    "event_message": "[EXTRACT_HTML] Extraction results {\n  A: {\n    rawType: \"string\",\n    rawStartsWith: '<div class=\"evaluation\" style=\"font-family: Arial;',\n    extractedType: \"string\",\n    extractedStartsWith: '<div class=\"evaluation\" style=\"font-family: Arial;',\n    extractedLength: 7961,\n    isWrapped: false\n  },\n  B: { rawType: \"object\", extractedStartsWith: \"null\", isWrapped: false },\n  C: { rawType: \"object\", extractedStartsWith: \"null\", isWrapped: false }\n}\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "c0c946ab-7ecb-40b1-b7ef-d82de5b621c2",
+    "level": "info",
+    "timestamp": 1770370222194000
+  },
+  {
+    "event_message": "[RETRY_SYSTEM] Attempt 1 validation: {\n  A: { ok: true, length: 7961, reasons: [ \"All validations passed\" ] },\n  B: {\n    ok: true,\n    length: 0,\n    reasons: [ \"Version is optional and not provided\" ]\n  },\n  C: {\n    ok: true,\n    length: 0,\n    reasons: [ \"Version is optional and not provided\" ]\n  }\n}\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "9c3c3e41-867d-4c2f-ac84-d9bd3d16a1d2",
+    "level": "info",
+    "timestamp": 1770370222194000
+  },
+  {
+    "event_message": "[RETRY_SYSTEM] Success on attempt 1\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "4b0e1138-2180-404e-ba29-0a70f2507a8f",
+    "level": "info",
+    "timestamp": 1770370222194000
+  },
+  {
+    "event_message": "Content cleanup applied\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "01f81293-f333-4fb4-826c-13bb46519109",
+    "level": "info",
+    "timestamp": 1770370222193000
+  },
+  {
+    "event_message": "[EXTRACT_VERSIONS] Method: delimiters\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "6b90765f-8c7f-40b5-b1a4-fbe209815345",
+    "level": "info",
+    "timestamp": 1770370222193000
+  },
+  {
+    "event_message": "[RETRY_SYSTEM] Attempt 1 extraction method: delimiters\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "3b80e435-b076-4f1f-b202-5824d88bcf63",
+    "level": "info",
+    "timestamp": 1770370222193000
+  },
+  {
+    "event_message": "Content cleanup applied\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "86844734-9848-4c6f-a820-08cadd12d615",
+    "level": "info",
+    "timestamp": 1770370222193000
+  },
+  {
+    "event_message": "shutdown",
+    "event_type": "Shutdown",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "439856e0-5e4c-410c-8cc1-a24fb808f696",
+    "level": "log",
+    "timestamp": 1770370199177000
+  },
+  {
+    "event_message": "shutdown",
+    "event_type": "Shutdown",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "bba5ce04-64bb-44bc-af45-db58776af01a",
+    "level": "log",
+    "timestamp": 1770370163178000
+  },
+  {
+    "event_message": "shutdown",
+    "event_type": "Shutdown",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "8e7200e5-9a04-45c3-b0e2-a85147ebcd49",
+    "level": "log",
+    "timestamp": 1770370162929000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== USER PROMPT START ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "f44ced08-bd34-4365-80b1-dfb9994ac572",
+    "level": "info",
+    "timestamp": 1770370124354000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] userPromptLength: 1841\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "d8ca04a4-05b8-4197-8d89-ffdef35fd2dd",
+    "level": "info",
+    "timestamp": 1770370124354000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== SYSTEM PROMPT END ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "3f5a8e9d-cc78-45fa-849d-e4c81e8d11b1",
+    "level": "info",
+    "timestamp": 1770370124354000
+  },
+  {
+    "event_message": "CONTEXTO DEL GRUPO:\nMateria: Literatura\nContenidos: lit-3-1\nCompetencias: ce3-literatura\nCriterios de logro: cl3-literatura\n\nREQUERIMIENTOS DOCENTE:\nGenera una evaluación escrita universal basada en los contenidos seleccionados.\n\nREGLAS DE DISEÑO:\n- Diagramación legible y \"no saturada\" (espaciado, márgenes, interlineado)\n- Tipografía: Arial 13–14; interlineado 1.5 o doble\n- Tipografía legible (letra ampliada y alto contraste)\n- Texto por bloques + preguntas inmediatamente después de cada fragmento\n- Enunciados simples y lenguaje concreto (sin frases encadenadas)\n- Cronograma sugerido por secciones\n- Incluir \"mapa de la prueba\" (secciones, puntaje, tiempo)\n- Consignas en 2 capas (producto + pasos numerados)\n- Plantillas/casilleros; si hay V/F exigir justificación para no bajar exigencia\n- Plantillas de respuesta (tabla/matriz/guía) sin dar respuesta\n- Checklist final del estudiante (cité evidencia, respondí todo, etc.)\n- Palabras clave en negrita e íconos de apoyo\n\nVERSIONES REQUERIDAS:\n- Versión A: OBLIGATORIA (universal)\n- Versión B: OBLIGATORIA (formato equivalente, misma evidencia)\n- Versión C: OBLIGATORIA (adecuación de contenido)\n\nTAREA:\n1. Genera evaluaciones usando los delimitadores <<<X_EVAL_HTML_START_8f3a7b>>> y <<<X_EVAL_HTML_END_8f3a7b>>>.\n2. USA SOLO fragmentos HTML (<div class=\"evaluation\">, <p>, <table>, etc). \n   PROHIBIDO usar: <html>, <head>, <body>, <style>, <script>\n3. Cada versión debe ser INDEPENDIENTE - NO incluir contenido de otras versiones.\n4. NO uses JSON. NO uses { ni }. NO incluyas \"versions\": { ni \", \"A\": ni \", \"B\": ni \", \"C\":\n5. NO incluyas notas meta como \"Nota: Esta versión...\" dentro del contenido.\n6. Las evaluaciones deben verse como exámenes reales de secundaria.\n\nCRÍTICO: Si generas JSON o incluyes fragmentos como {\"versions\": {\"A\": \" o \", \"B\":, la respuesta será rechazada.\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "2b2be263-7aee-41d6-81c1-bf6dabbadc3e",
+    "level": "info",
+    "timestamp": 1770370124354000
+  },
+  {
+    "event_message": "Eres un especialista en evaluación educativa. Tu tarea es generar una evaluación escrita universal, lista para entregar.\n\nREGLAS CRÍTICAS (NO NEGOCIABLES):\n1. Evidencia SIEMPRE escrita. Prohibido generar tareas \"solo orales\".\n2. NO inferir diagnósticos ni necesidades desde narrativas. Usa SOLO datos estructurados.\n3. CE/CL son definidos por el docente: NO inventar ni inferir nuevos criterios.\n4. No incluir explicaciones meta ni razonamientos de IA. NO incluir \"Nota:\" ni comentarios sobre adaptaciones.\n5. **CRÍTICO HTML**: Usa SOLO fragmentos HTML. PROHIBIDO usar:\n   - <html>, </html>\n   - <head>, </head>\n   - <body>, </body>\n   - <style>, </style>\n   - Cualquier CSS global\n6. **CRÍTICO JSON**: NO usar JSON. NO usar { ni }. Si generas JSON, la respuesta es INVÁLIDA.\n\nFORMATO HTML PERMITIDO:\n- Usa <div class=\"evaluation\">...</div> como contenedor principal\n- Usa <strong>, <p>, <table>, <ul>, <ol>, <li>, <h2>, <h3>\n- NO uses <html>, <head>, <body>, <style>, <script>\n- Incluye puntajes por ítem cuando aplique\n\nRESPUESTAS CON OPCIONES EQUIVALENTES:\n\n- OBLIGATORIO: Cada consigna que requiera respuesta escrita DEBE incluir EXACTAMENTE 3 opciones equivalentes de formato.\n- Formato: \"Elige UNA opción. Todas equivalentes en dificultad y evidencia, solo cambia el formato de respuesta.\"\n\n\n**FORMATO DE SALIDA OBLIGATORIO (DELIMITADORES ÚNICOS):**\n\nTu respuesta DEBE contener ÚNICAMENTE bloques delimitados así:\n\n<<<A_EVAL_HTML_START_8f3a7b>>>\n<div class=\"evaluation\">\n...contenido completo de versión A...\n</div>\n<<<A_EVAL_HTML_END_8f3a7b>>>\n\n<<<B_EVAL_HTML_START_8f3a7b>>>\n<div class=\"evaluation\">\n...contenido completo de versión B (formato equivalente, misma evidencia)...\n</div>\n<<<B_EVAL_HTML_END_8f3a7b>>>\n\n<<<C_EVAL_HTML_START_8f3a7b>>>\n<div class=\"evaluation\">\n...contenido completo de versión C (adecuación de contenido)...\n</div>\n<<<C_EVAL_HTML_END_8f3a7b>>>\n\nREGLAS ABSOLUTAS:\n- PROHIBIDO usar JSON ({ o \"versions\":)\n- PROHIBIDO usar <html>, <head>, <body>, <style>\n- Cada versión es INDEPENDIENTE: NO incluir contenido de otras versiones dentro de una versión\n- NO incluir notas como \"Nota: Esta versión...\" ni \"Versión A:\" dentro del contenido\n- La evaluación debe verse como un examen real de secundaria\n- Versión B es OBLIGATORIA y debe ser DIFERENTE de A (formato equivalente).\n- Versión C es OBLIGATORIA y debe ser DIFERENTE de A y B (adecuación de contenido).\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "75f8a0fa-3cf9-44cf-8c95-f71e17188f2a",
+    "level": "info",
+    "timestamp": 1770370124354000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] totalPromptLength: 4227\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "d52834a0-0144-435a-928b-14460bf000fd",
+    "level": "info",
+    "timestamp": 1770370124354000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] systemPromptLength: 2386\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "9b351438-8fa7-4c60-87a9-565c4dee3938",
+    "level": "info",
+    "timestamp": 1770370124354000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== USER PROMPT END ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "01d4802d-9d57-4f41-835c-b908de1866d9",
+    "level": "info",
+    "timestamp": 1770370124354000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] groupContext.competencies: [\"ce3-literatura\"]\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "20334949-23cc-43a3-81c2-6850a62013af",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[UNIVERSAL] Processing evaluation with universal path\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "03fffd04-158a-4a22-a240-ea614808b363",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] groupContext.subject: Literatura\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "0d511bc2-0d71-4dcd-a209-56fa91b106f9",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] studentAssignments.sample: [[\"1\",\"A\"],[\"2\",\"B\"],[\"3\",\"A\"],[\"4\",\"C\"],[\"5\",\"B\"]]\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "5b0f23a7-599d-438e-85bf-bbbb09bffb98",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] groupContext.content: [\"lit-3-1\"]\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "e43feecd-2c7d-4914-a62e-f2a67db9da1f",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] designPlan.triggers: {\"versionB\":true,\"versionC\":true}\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "50232ecf-05fb-4add-8e52-4eccef21f639",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] ========== DESIGN PLAN DETAILS ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "9e5cebd4-5d8d-42b7-9a3d-d8c7264a7607",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] ========== INPUT DATA END ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "5e18ad33-ec60-4e84-a020-0cb3be330b1e",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] groupContext.students.count: 10\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "4e93eff3-4edc-4ab7-a6a8-2f821143a528",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] studentAssignments.count: 10\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "c19f40b5-0e1b-4694-b37f-8d655ee3aaca",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] attempt: 1\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "3ba3cc3c-49a9-469d-8d8c-45eeeee7c3f7",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] varkDistribution: {\"visual\":6,\"auditory\":5,\"readWrite\":5,\"kinesthetic\":4,\"total\":10}\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "cb877a90-1991-4e45-979c-0b92f1260f6c",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] ========== DESIGN PLAN END ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "1c7dbdc0-328f-41ae-a42b-cc0db9642b59",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] groupContext.criteriosLogro: [\"cl3-literatura\"]\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "4c01beec-c9d5-4758-be31-d2c1d590b0cf",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] instrumentDesignRules: [\"Diagramación legible y \\\"no saturada\\\" (espaciado, márgenes, interlineado)\",\"Tipografía: Arial 13–14; interlineado 1.5 o doble\",\"Tipografía legible (letra ampliada y alto contraste)\",\"Texto por bloques + preguntas inmediatamente después de cada fragmento\",\"Enunciados simples y lenguaje concreto (sin frases encadenadas)\",\"Cronograma sugerido por secciones\",\"Incluir \\\"mapa de la prueba\\\" (secciones, puntaje, tiempo)\",\"Consignas en 2 capas (producto + pasos numerados)\",\"Plantillas/casilleros; si hay V/F exigir justificación para no bajar exigencia\",\"Plantillas de respuesta (tabla/matriz/guía) sin dar respuesta\",\"Checklist final del estudiante (cité evidencia, respondí todo, etc.)\",\"Palabras clave en negrita e íconos de apoyo\"]\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "59905a61-0144-43d2-b8ed-b64900d753de",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] assignmentsIncludeB: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "582dad41-5e45-446d-bd40-b4f9df0900fe",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] path: universal\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "6b23d105-94fc-4448-be38-c1eb7cc8cdd7",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] shouldHaveB: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "95670a26-5027-441a-a61f-0b40cd79a3cd",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] model: gpt-4.1-2025-04-14\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "b3408933-2be4-46d8-97d3-70b9899d5b7b",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "OpenAI API Key: sk-proj-51...L6UA\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "c64f391e-2bca-4350-89a0-0a01f1579c87",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] max_completion_tokens: 6000\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "66d2d796-8327-4201-9df3-cf5ba6eb5cd9",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] responseOptionsInclude: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "c8f138f3-7ce5-431b-8b18-6fa131ce77f8",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] ========== INPUT DATA START ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "199d2eb3-0e9f-4b05-8aa0-df3f3f18ad30",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] evaluation_design_plan.keys: [\n  \"instrumentDesignRules\",\n  \"responseOptions\",\n  \"triggers\",\n  \"assignmentByStudentId\",\n  \"perStudentReminders\",\n  \"varkDistribution\",\n  \"highStructureNeed\",\n  \"designComplexityCount\",\n  \"bucketedContemplacionIds\"\n]\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "c31baf57-46cd-451f-aca0-893ec4e28a5a",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] generateVersionB: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "3eb9797c-4d33-4c1f-b196-3f46202c57fd",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] hasContentAdaptationStudent: false\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "ce1c92fa-7605-49ba-be8d-ca67efe8a80b",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] generateVersionC: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "e02fe2c0-b4f3-4a6a-8f7c-094c09b8b812",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "Request received: {\n  type: \"modification\",\n  adaptationLevel: \"standard\",\n  modification: \"Genera una evaluación escrita universal basada en los contenidos seleccionados.\",\n  hasGenerationContext: false,\n  generation_mode: \"universal\"\n}\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "57fc0582-3408-46b6-9283-306c3abcc87f",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== REQUEST METADATA ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "67ae433e-d198-4eac-a191-7786065824aa",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] assignmentsIncludeC: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "80eac271-8b5f-4ee4-a1e7-2eea8e658d1d",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] modification: Genera una evaluación escrita universal basada en los contenidos seleccionados.\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "23962a32-baf7-4ba6-8db1-d28d082a324e",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== SYSTEM PROMPT START ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "abff46b4-69ee-4c60-9b25-a3007ac1ec14",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[RETRY_SYSTEM] Attempt 1/3\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "7a79ee69-3fbd-4b14-8765-dc30d9b4afdb",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] responseOptionCount: 3\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "6494a634-d2a2-47f8-930c-eb1c342e4e4a",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] shouldHaveC: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "74d76425-ba79-4469-8731-add2ce268f62",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] isRepairAttempt: false\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "a91ba6ad-3782-46c8-beb2-8cedd33e849c",
+    "level": "info",
+    "timestamp": 1770370124353000
+  },
+  {
+    "event_message": "Listening on http://localhost:9999/\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "d4f002cb-541d-4906-8716-380eb0d5f185",
+    "level": "info",
+    "timestamp": 1770370124347000
+  },
+  {
+    "event_message": "OpenAI API Key: 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\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "d8c46d12-2e45-416d-86b5-9ac009d1806b",
+    "level": "info",
+    "timestamp": 1770370124345000
+  },
+  {
+    "event_message": "booted (time: 28ms)",
+    "event_type": "Boot",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "00714cd6-4b29-444e-bd56-aa954b5a4826",
+    "level": "log",
+    "timestamp": 1770370124340000
+  },
+  {
+    "event_message": "Listening on http://localhost:9999/\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "ec3e6022-2697-4cd4-84eb-058017d26585",
+    "level": "info",
+    "timestamp": 1770370124174000
+  },
+  {
+    "event_message": "OpenAI API Key: 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\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "7b6be39b-bf47-40a9-8723-728bc1e96fd8",
+    "level": "info",
+    "timestamp": 1770370124170000
+  },
+  {
+    "event_message": "booted (time: 36ms)",
+    "event_type": "Boot",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "e410bfe1-2394-4722-b506-8a049b3be32b",
+    "level": "log",
+    "timestamp": 1770370124163000
+  },
+  {
+    "event_message": "Error in modify-evaluation function: Error: OpenAI API error: 502\n    at file:///var/tmp/sb-compile-edge-runtime/modify-evaluation/index.ts:2061:21\n    at eventLoopTick (ext:core/01_core.js:175:7)\n    at async retryWithBackoff (file:///var/tmp/sb-compile-edge-runtime/modify-evaluation/index.ts:848:14)\n    at async generateEvaluationWithRetries (file:///var/tmp/sb-compile-edge-runtime/modify-evaluation/index.ts:2035:26)\n    at async Server.<anonymous> (file:///var/tmp/sb-compile-edge-runtime/modify-evaluation/index.ts:2159:32)\n    at async Server.#respond (https://deno.land/std@0.168.0/http/server.ts:221:18)\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "27ebe626-f03f-4f53-aa78-5d9c175f25a9",
+    "level": "error",
+    "timestamp": 1770370099655000
+  },
+  {
+    "event_message": "OpenAI API error 502: <html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "29ba9abf-4d10-49b3-b4cd-36d643c458e8",
+    "level": "error",
+    "timestamp": 1770370099651000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] totalPromptLength: 4227\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "49011f27-b3dc-4d8e-980c-4eb1ae115d06",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== USER PROMPT END ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "4c23972f-0fa1-46e6-91f8-50a7c1230ecb",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] ========== DESIGN PLAN END ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "1076393b-e730-48bf-95b7-fe483ccabfe4",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== SYSTEM PROMPT END ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "8ba2fc0d-58a7-4bb4-a9e3-3a8c0a01600c",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] responseOptionCount: 3\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "dd4e9284-dbf3-44d9-a78c-d9153eef7b49",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] assignmentsIncludeB: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "a0455957-45b1-471e-86ea-d8bc484fbfd2",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] systemPromptLength: 2386\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "dd0a7fa7-6411-4804-b34a-43e8347c2abd",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== SYSTEM PROMPT START ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "a8b83477-f91c-443d-817e-2c39f1c5e15b",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[RETRY_SYSTEM] Attempt 1/3\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "3e6bfb62-86d5-41fc-a32a-18ed86ee9dda",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] responseOptionsInclude: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "9fa2d9f4-6c65-4aca-bed1-9cdf9af906aa",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] varkDistribution: {\"visual\":6,\"auditory\":5,\"readWrite\":5,\"kinesthetic\":4,\"total\":10}\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "83c3fd56-4443-4f9f-89fe-17a8602ef4e0",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] assignmentsIncludeC: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "de6ee64e-f284-406e-bda6-e6bb646289d0",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "CONTEXTO DEL GRUPO:\nMateria: Literatura\nContenidos: lit-3-1\nCompetencias: ce3-literatura\nCriterios de logro: cl3-literatura\n\nREQUERIMIENTOS DOCENTE:\nGenera una evaluación escrita universal basada en los contenidos seleccionados.\n\nREGLAS DE DISEÑO:\n- Diagramación legible y \"no saturada\" (espaciado, márgenes, interlineado)\n- Tipografía: Arial 13–14; interlineado 1.5 o doble\n- Tipografía legible (letra ampliada y alto contraste)\n- Texto por bloques + preguntas inmediatamente después de cada fragmento\n- Enunciados simples y lenguaje concreto (sin frases encadenadas)\n- Cronograma sugerido por secciones\n- Incluir \"mapa de la prueba\" (secciones, puntaje, tiempo)\n- Consignas en 2 capas (producto + pasos numerados)\n- Plantillas/casilleros; si hay V/F exigir justificación para no bajar exigencia\n- Plantillas de respuesta (tabla/matriz/guía) sin dar respuesta\n- Checklist final del estudiante (cité evidencia, respondí todo, etc.)\n- Palabras clave en negrita e íconos de apoyo\n\nVERSIONES REQUERIDAS:\n- Versión A: OBLIGATORIA (universal)\n- Versión B: OBLIGATORIA (formato equivalente, misma evidencia)\n- Versión C: OBLIGATORIA (adecuación de contenido)\n\nTAREA:\n1. Genera evaluaciones usando los delimitadores <<<X_EVAL_HTML_START_8f3a7b>>> y <<<X_EVAL_HTML_END_8f3a7b>>>.\n2. USA SOLO fragmentos HTML (<div class=\"evaluation\">, <p>, <table>, etc). \n   PROHIBIDO usar: <html>, <head>, <body>, <style>, <script>\n3. Cada versión debe ser INDEPENDIENTE - NO incluir contenido de otras versiones.\n4. NO uses JSON. NO uses { ni }. NO incluyas \"versions\": { ni \", \"A\": ni \", \"B\": ni \", \"C\":\n5. NO incluyas notas meta como \"Nota: Esta versión...\" dentro del contenido.\n6. Las evaluaciones deben verse como exámenes reales de secundaria.\n\nCRÍTICO: Si generas JSON o incluyes fragmentos como {\"versions\": {\"A\": \" o \", \"B\":, la respuesta será rechazada.\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "5efb4ab5-0669-4698-b605-508c80acb460",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] isRepairAttempt: false\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "26e84410-153c-429c-af0a-10d12a354d6d",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "Eres un especialista en evaluación educativa. Tu tarea es generar una evaluación escrita universal, lista para entregar.\n\nREGLAS CRÍTICAS (NO NEGOCIABLES):\n1. Evidencia SIEMPRE escrita. Prohibido generar tareas \"solo orales\".\n2. NO inferir diagnósticos ni necesidades desde narrativas. Usa SOLO datos estructurados.\n3. CE/CL son definidos por el docente: NO inventar ni inferir nuevos criterios.\n4. No incluir explicaciones meta ni razonamientos de IA. NO incluir \"Nota:\" ni comentarios sobre adaptaciones.\n5. **CRÍTICO HTML**: Usa SOLO fragmentos HTML. PROHIBIDO usar:\n   - <html>, </html>\n   - <head>, </head>\n   - <body>, </body>\n   - <style>, </style>\n   - Cualquier CSS global\n6. **CRÍTICO JSON**: NO usar JSON. NO usar { ni }. Si generas JSON, la respuesta es INVÁLIDA.\n\nFORMATO HTML PERMITIDO:\n- Usa <div class=\"evaluation\">...</div> como contenedor principal\n- Usa <strong>, <p>, <table>, <ul>, <ol>, <li>, <h2>, <h3>\n- NO uses <html>, <head>, <body>, <style>, <script>\n- Incluye puntajes por ítem cuando aplique\n\nRESPUESTAS CON OPCIONES EQUIVALENTES:\n\n- OBLIGATORIO: Cada consigna que requiera respuesta escrita DEBE incluir EXACTAMENTE 3 opciones equivalentes de formato.\n- Formato: \"Elige UNA opción. Todas equivalentes en dificultad y evidencia, solo cambia el formato de respuesta.\"\n\n\n**FORMATO DE SALIDA OBLIGATORIO (DELIMITADORES ÚNICOS):**\n\nTu respuesta DEBE contener ÚNICAMENTE bloques delimitados así:\n\n<<<A_EVAL_HTML_START_8f3a7b>>>\n<div class=\"evaluation\">\n...contenido completo de versión A...\n</div>\n<<<A_EVAL_HTML_END_8f3a7b>>>\n\n<<<B_EVAL_HTML_START_8f3a7b>>>\n<div class=\"evaluation\">\n...contenido completo de versión B (formato equivalente, misma evidencia)...\n</div>\n<<<B_EVAL_HTML_END_8f3a7b>>>\n\n<<<C_EVAL_HTML_START_8f3a7b>>>\n<div class=\"evaluation\">\n...contenido completo de versión C (adecuación de contenido)...\n</div>\n<<<C_EVAL_HTML_END_8f3a7b>>>\n\nREGLAS ABSOLUTAS:\n- PROHIBIDO usar JSON ({ o \"versions\":)\n- PROHIBIDO usar <html>, <head>, <body>, <style>\n- Cada versión es INDEPENDIENTE: NO incluir contenido de otras versiones dentro de una versión\n- NO incluir notas como \"Nota: Esta versión...\" ni \"Versión A:\" dentro del contenido\n- La evaluación debe verse como un examen real de secundaria\n- Versión B es OBLIGATORIA y debe ser DIFERENTE de A (formato equivalente).\n- Versión C es OBLIGATORIA y debe ser DIFERENTE de A y B (adecuación de contenido).\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "efc903bb-163a-42b2-9ff2-c5bbabb48641",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] generateVersionC: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "2600aa0c-886e-4373-8cf2-ccd377998fde",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] max_completion_tokens: 6000\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "eeb6e1e8-d788-4da5-81ee-74140b37302f",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] userPromptLength: 1841\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "e1346e7c-638f-416c-b9f1-fd8f6b352589",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== USER PROMPT START ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "fad838c8-1d9c-4e49-8deb-8957a28dcad9",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] attempt: 1\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "cab758e0-af79-456c-8e88-78b8e72cfe8d",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] ========== REQUEST METADATA ==========\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "7310b148-96da-46da-82ac-8376d212625c",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] studentAssignments.sample: [[\"1\",\"A\"],[\"2\",\"B\"],[\"3\",\"A\"],[\"4\",\"C\"],[\"5\",\"B\"]]\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "03fc2938-0dbd-474a-9250-710115568e2f",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] designPlan.triggers: {\"versionB\":true,\"versionC\":true}\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "9d5e83d6-c383-4777-a103-6be1a2bbddfa",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] path: universal\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "812e49b6-bf1b-4d03-bbb5-975a1c71ac25",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] shouldHaveC: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "8a3c34e4-49d0-4da3-9f50-6d42f3ba1048",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] shouldHaveB: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "c4aa5490-61e9-4b8e-8709-fd58eb910656",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] model: gpt-4.1-2025-04-14\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "71e83659-1992-4821-9cc3-8bfe863abca7",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_PROMPT] generateVersionB: true\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "c1c3ac44-80ed-4a56-af05-b8fb022e77be",
+    "level": "info",
+    "timestamp": 1770370088186000
+  },
+  {
+    "event_message": "[OPENAI_CONTEXT] hasContentAdaptationStudent: false\n",
+    "event_type": "Log",
+    "function_id": "bd277f31-c0cf-465c-b073-a587c535fea8",
+    "id": "defcc3e1-817b-41a1-aa0c-f45f47d7190a",
+    "level": "info",
+    "timestamp": 1770370088186000
+  }
+]
