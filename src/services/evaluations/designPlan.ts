@@ -284,9 +284,11 @@ export function buildEvaluationDesignPlan(input: EvaluationDesignPlanInput): Eva
   const versionBTriggered = highStructureTrigger && complexityTrigger;
 
   // C1: Consolidate content adaptation detection - accept multiple field names
+  // POLICY: ONLY content adaptation students → Version B
+  // Visual/format accommodations (high structure) stay in Version A
   const contentAdaptationStudentIds = students
     .filter(student => {
-      // Check multiple possible field names
+      // Check multiple possible field names for content adaptation declaration
       return (
         student.hasDeclaredContentAdaptation === true ||
         student.requiereAdecuacionContenido === true ||
@@ -295,24 +297,44 @@ export function buildEvaluationDesignPlan(input: EvaluationDesignPlanInput): Eva
       );
     })
     .map(student => String(student.studentId));
-  const versionCTriggered = contentAdaptationStudentIds.length > 0;
+  
+  // Version B triggers ONLY when there are content adaptation students
+  // High structure needs alone do NOT trigger Version B (they get format adaptations in Version A)
+  const contentAdaptationTrigger = contentAdaptationStudentIds.length > 0;
+  const versionBTriggeredFinal = contentAdaptationTrigger; // CHANGED: removed versionBTriggered (high structure) from OR
+  
+  // Version C: Only for exceptional cases (currently not auto-triggered)
+  const versionCTriggered = false;
+
+  // DEBUG: Log version assignment decisions
+  if (import.meta.env.DEV) {
+    console.log('[DIAG:designPlan] Version assignment debug:', {
+      contentAdaptationStudentIds,
+      highStructureTrigger,
+      complexityTrigger,
+      versionBTriggered_highStructure: versionBTriggered,
+      contentAdaptationTrigger,
+      versionBTriggeredFinal,
+      versionCTriggered,
+      note: 'High structure students stay in A - only content adaptation goes to B'
+    });
+  }
 
   const assignmentByStudentId: Record<string, EvaluationVersionKind> = {};
   for (const student of students) {
     assignmentByStudentId[String(student.studentId)] = 'A';
   }
 
-  if (versionBTriggered) {
-    for (const student of qualifyingStudents) {
-      assignmentByStudentId[String(student.studentId)] = 'B';
+  // POLICY: Only content adaptation students get Version B
+  // High structure qualifying students stay in A (they get format/visual adaptations, not content)
+  if (versionBTriggeredFinal) {
+    for (const studentId of contentAdaptationStudentIds) {
+      assignmentByStudentId[studentId] = 'B';
     }
   }
 
-  if (versionCTriggered) {
-    for (const studentId of contentAdaptationStudentIds) {
-      assignmentByStudentId[studentId] = 'C';
-    }
-  }
+  // Version C: Reserved for exceptional manual cases (not auto-assigned currently)
+  // Future: Add exceptional adaptation rules here if needed
 
   const versionPlans: EvaluationVersionPlan[] = [
     {
@@ -325,25 +347,25 @@ export function buildEvaluationDesignPlan(input: EvaluationDesignPlanInput): Eva
     }
   ];
 
-  if (versionBTriggered) {
+  if (versionBTriggeredFinal) {
     versionPlans.push({
       kind: 'B',
-      label: 'Versión B (Equivalente)',
+      label: 'Versión B (Adaptación de Contenido)',
       assignedStudentIds: students
         .filter(student => assignmentByStudentId[String(student.studentId)] === 'B')
         .map(student => student.studentId),
-      reason: 'Alta necesidad de estructuración + complejidad de diseño'
+      reason: 'Estudiantes con adecuación de contenido declarada formalmente'
     });
   }
 
   if (versionCTriggered) {
     versionPlans.push({
       kind: 'C',
-      label: 'Versión C (Adecuación de contenido)',
+      label: 'Versión C (Adaptación Excepcional)',
       assignedStudentIds: students
         .filter(student => assignmentByStudentId[String(student.studentId)] === 'C')
         .map(student => student.studentId),
-      reason: 'Adecuación de contenido declarada explícitamente'
+      reason: 'Adaptación excepcional (casos especiales)'
     });
   }
 
@@ -404,7 +426,7 @@ export function buildEvaluationDesignPlan(input: EvaluationDesignPlanInput): Eva
       qualifyingStudentIds
     },
     triggers: {
-      versionB: versionBTriggered,
+      versionB: versionBTriggeredFinal,
       versionC: versionCTriggered
     },
     contentAdaptationStudentIds,

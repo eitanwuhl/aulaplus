@@ -1268,16 +1268,42 @@ const EvaluacionesGrupo = () => {
       }
 
       // R0: Normalizar studentAssignments del edge response
-      const rawAssignments = (data?.studentAssignments as Record<string, 'A' | 'B' | 'C'>) || effectivePlan.assignmentByStudentId || {};
+      // FIX: In V2 mode, edge function returns empty {}, so we must check for actual keys
+      // Priority: 1) Edge response if has assignments, 2) effectivePlan.assignmentByStudentId
+      const edgeAssignments = data?.studentAssignments as Record<string, 'A' | 'B' | 'C'> | undefined;
+      const hasEdgeAssignments = edgeAssignments && Object.keys(edgeAssignments).length > 0;
+      const rawAssignments = hasEdgeAssignments 
+        ? edgeAssignments 
+        : (effectivePlan.assignmentByStudentId || {});
+      
+      // DEBUG: Log assignment source decision
+      console.info('[EVAL_PIPELINE] Assignment source:', {
+        hasEdgeAssignments,
+        edgeAssignmentsCount: Object.keys(edgeAssignments || {}).length,
+        effectivePlanAssignmentsCount: Object.keys(effectivePlan.assignmentByStudentId || {}).length,
+        usingSource: hasEdgeAssignments ? 'edge' : 'effectivePlan',
+        rawAssignmentsCount: Object.keys(rawAssignments).length,
+        rawAssignmentsSample: Object.entries(rawAssignments).slice(0, 3)
+      });
+      
       const normalizeAssignments = (
         assignments: Record<string, 'A' | 'B' | 'C'>,
-        bundle: EvaluationBundle | null
+        bundle: EvaluationBundle | null,
+        isV2: boolean
       ) => {
-        const available = {
-          A: true,
-          B: Boolean(bundle?.versionBHtml || bundle?.versions?.B),
-          C: Boolean(bundle?.versionCHtml || bundle?.versions?.C)
-        };
+        // In V2 mode, versions are determined by effectivePlan.triggers, not HTML content
+        const available = isV2 
+          ? {
+              A: true,
+              B: effectivePlan.triggers.versionB,
+              C: effectivePlan.triggers.versionC
+            }
+          : {
+              A: true,
+              B: Boolean(bundle?.versionBHtml || bundle?.versions?.B),
+              C: Boolean(bundle?.versionCHtml || bundle?.versions?.C)
+            };
+        
         // R0: Normalizar todas las keys a strings
         const normalized: Record<string, 'A' | 'B' | 'C'> = {};
         Object.entries(assignments).forEach(([key, value]) => {
@@ -1356,8 +1382,21 @@ const EvaluacionesGrupo = () => {
       setEvaluationBundle(evaluationBundleToSet);
       setGeneratedEvaluations([]); // R3: Use displayEvaluations computed from evaluationBundle
       
-      const normalizedResult = normalizeAssignments(rawAssignments, evaluationBundleToSet);
+      const normalizedResult = normalizeAssignments(rawAssignments, evaluationBundleToSet, isV2Mode);
       setStudentAssignments(normalizedResult.normalized);
+      
+      // DEBUG: Log final assignment result
+      console.info('[EVAL_PIPELINE] Final assignments:', {
+        isV2Mode,
+        assignmentsCount: Object.keys(normalizedResult.normalized).length,
+        byVersion: {
+          A: Object.values(normalizedResult.normalized).filter(v => v === 'A').length,
+          B: Object.values(normalizedResult.normalized).filter(v => v === 'B').length,
+          C: Object.values(normalizedResult.normalized).filter(v => v === 'C').length
+        },
+        warningsCount: normalizedResult.warnings.length
+      });
+      
       const edgeWarnings = Array.isArray(data?.warnings) ? data.warnings : [];
       setAssignmentWarnings([...edgeWarnings, ...normalizedResult.warnings]);
 
