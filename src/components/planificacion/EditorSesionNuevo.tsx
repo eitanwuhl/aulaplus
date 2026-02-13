@@ -17,6 +17,8 @@ import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { resolveMockGroup } from '@/utils/resolveMockGroup';
 import { SessionMaterialsPanel } from './SessionMaterialsPanel';
+import { PlanningAIDesignReport } from './PlanningAIDesignReport';
+import type { PlanningAIDesignReportData } from './PlanningAIDesignReport';
 
 interface EditorSesionNuevoProps {
   sesion: SesionClase | null;
@@ -25,6 +27,7 @@ interface EditorSesionNuevoProps {
   planificacionId?: string;
   materia?: string;
   nivel?: string;
+  showAiReportPanel?: boolean;
 }
 
 // Helper: Check if HTML has actual content
@@ -184,7 +187,8 @@ export function EditorSesionNuevo({
   competenciasDelPeriodo,
   planificacionId,
   materia,
-  nivel
+  nivel,
+  showAiReportPanel = true
 }: EditorSesionNuevoProps) {
   // PHASE 3.2.1 FIX: Defensive guard - prevent crash if sesion is missing
   if (!sesion) {
@@ -922,6 +926,13 @@ export function EditorSesionNuevo({
               </CardContent>
             </Card>
 
+            {/* PART B: Per-session AI Design Report */}
+            {showAiReportPanel && sesion?.ai_design_report && (
+              <PlanningAIDesignReport
+                reportData={sesion.ai_design_report as PlanningAIDesignReportData}
+                className="mt-4"
+              />
+            )}
 
             {/* Sección oculta para PDF */}
             <div id="sesion-pdf-content" className="hidden print:block space-y-6 p-8">

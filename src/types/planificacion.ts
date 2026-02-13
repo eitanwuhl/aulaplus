@@ -87,6 +87,8 @@ export interface SesionClase {
   evaluacion_docente?: string;
   // PHASE 3.2: Optional teacher-provided topic/focus for this session
   session_brief?: string | null;
+  // AI design report (evidence of AI generation decisions for this session)
+  ai_design_report?: any | null; // JSONB field with AI generation rationale (PlanningAIDesignReportData)
   created_at: string;
   updated_at: string;
 }

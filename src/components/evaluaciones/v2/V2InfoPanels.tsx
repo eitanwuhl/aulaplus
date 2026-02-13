@@ -335,6 +335,10 @@ export const V2AIReportPanel: React.FC<V2AIReportPanelProps> = ({
     );
   }
 
+  // Check for narrative first (narrative-first approach)
+  // Show narrative if it exists and is non-empty after trim (no minimum length requirement)
+  const hasNarrative = aiReport?.narrative && typeof aiReport.narrative === 'string' && aiReport.narrative.trim().length > 0;
+
   return (
     <CollapsiblePanel
       id="v2-ai-report"
@@ -349,15 +353,29 @@ export const V2AIReportPanel: React.FC<V2AIReportPanelProps> = ({
       defaultOpen={false}
     >
       <div className="space-y-4">
-        {/* Design Rationale */}
-        {aiReport?.designRationale && (
-          <div>
-            <h4 className="text-sm font-semibold mb-1">Justificación del diseño</h4>
-            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-              {aiReport.designRationale}
-            </p>
+        {/* FIX #1: Narrative report (new format) - render FIRST if present */}
+        {hasNarrative && (
+          <div className="space-y-2">
+            <div className="prose prose-sm max-w-none">
+              <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                {aiReport.narrative.trim()}
+              </p>
+            </div>
           </div>
         )}
+
+        {/* FIX #1: Legacy structured report (fallback) - only show if narrative is missing */}
+        {!hasNarrative && (
+          <>
+            {/* Design Rationale */}
+            {aiReport?.designRationale && (
+              <div>
+                <h4 className="text-sm font-semibold mb-1">Justificación del diseño</h4>
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                  {aiReport.designRationale}
+                </p>
+              </div>
+            )}
 
         {/* Versions Explanation */}
         {aiReport?.versionsExplanation && (
@@ -427,8 +445,10 @@ export const V2AIReportPanel: React.FC<V2AIReportPanelProps> = ({
             </p>
           </div>
         )}
+          </>
+        )}
 
-        {/* Instrument Design Rules */}
+        {/* Instrument Design Rules - show regardless of narrative (applies to both modes) */}
         {instrumentDesignRulesApplied.length > 0 && (
           <div>
             <h4 className="text-sm font-semibold mb-1">Reglas de diseño aplicadas</h4>

@@ -41,6 +41,16 @@ export interface EquivalentResponseOptions {
   metacognitionText?: string;
 }
 
+/**
+ * Alternative array format for equivalentResponseOptions (sometimes returned by backend)
+ * Array of options without the wrapper object structure
+ */
+export type EquivalentResponseOptionsArray = Array<{
+  id?: string;
+  format?: string;
+  description?: string;
+}>;
+
 export interface ItemSource {
   type: 'text' | 'image';
   content?: string;
@@ -108,7 +118,12 @@ export interface EvaluationItemV2 {
   maxLength?: number;
   minLength?: number;
   guidingQuestions?: string[];
-  equivalentResponseOptions?: EquivalentResponseOptions;
+  /**
+   * Equivalent response options can come in two shapes:
+   * 1. Object format (preferred): { enabled: boolean, options: [...], metacognitionText?: string }
+   * 2. Array format (sometimes returned by backend): [{ id, format?, description }, ...]
+   */
+  equivalentResponseOptions?: EquivalentResponseOptions | EquivalentResponseOptionsArray;
   source?: ItemSource;
   subItems?: SubItem[];
   
@@ -213,6 +228,7 @@ export interface WarningV2 {
 // ============================================================================
 
 export interface AIReportV2 {
+  narrative?: string;  // Teacher-friendly narrative report (new)
   designRationale?: string;
   versionsExplanation?: {
     generated: string[];

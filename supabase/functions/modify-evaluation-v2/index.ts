@@ -19,9 +19,12 @@ const openAIApiKey = Deno.env.get('OPENAI_API_KEY');
 // Strategy: Allow long first attempt, retry with reduced payload if timeout
 
 const OPENAI_TIMEOUT_GENERATE_MS = 55000;  // 55s for generate (first attempt)
-const OPENAI_TIMEOUT_RETRY_MS = 45000;     // 45s for retry (reduced payload)
+const OPENAI_TIMEOUT_RETRY_MS = 24000;     // 24s for fast fallback (gpt-4o-mini, reduced prompt)
 const OPENAI_TIMEOUT_ADJUST_MS = 30000;    // 30s for adjust mode (smaller changes)
 const TOTAL_TIMEOUT_MS = 120000;           // 2 minutes total budget
+
+// Debug build stamp
+const DEBUG_BUILD = 'mejorar-evaluaciones-aiReport-narrative-guaranteed-1';
 
 // Legacy constant for backward compatibility
 const OPENAI_TIMEOUT_MS = OPENAI_TIMEOUT_GENERATE_MS;
@@ -108,6 +111,9 @@ interface EvaluationSpecV2 {
     B?: { label: string; isBase: boolean; reason: string; modifications: unknown[] };
     C?: { label: string; isBase: boolean; reason: string; modifications: unknown[] };
   };
+  aiReport?: {
+    narrative?: string;  // Teacher-friendly narrative (optional, generated in same OpenAI call)
+  };
 }
 
 interface TeacherReminderV2 {
@@ -125,6 +131,7 @@ interface WarningV2 {
 }
 
 interface AIReportV2 {
+  narrative?: string;  // Teacher-friendly narrative report (best-effort)
   designRationale: string;
   versionsExplanation: {
     generated: string[];
@@ -149,9 +156,10 @@ interface V2Response {
   requestedVersions: { A: boolean; B: boolean; C: boolean };
   instrumentDesignRulesApplied: string[];
   teacherRemindersByStudent: TeacherReminderV2[];
-  aiReport: AIReportV2 | null;
+  aiReport: AIReportV2 | Record<string, unknown> | null; // Normalized to match AIDesignReportData contract
   warnings: WarningV2[];
   debug?: {
+    build?: string;
     model: string;
     promptTokensEstimate: number;
     completionTokensEstimate: number;
@@ -161,6 +169,24 @@ interface V2Response {
     timings?: Record<string, number>;
     totalDurationMs?: number;
     openaiDurationMs?: number;
+    timeoutUsedMs?: number;
+    retryReason?: string;
+    promptSizeKB?: string;
+    attempts?: Array<{
+      attempt: number;
+      mode: 'full' | 'fast_fallback' | 'emergency_template';
+      model: string;
+      timeoutMs: number;
+      maxTokens: number;
+      temperature?: number;
+      promptSizeKB: number;
+      startedAtMs: number;
+      openaiDurationMs?: number;
+      outcome: 'success' | 'timeout' | 'openai_error' | 'parse_error' | 'validation_error' | 'unknown_error';
+      errorMessage?: string;
+    }>;
+    narrativeSource?: 'openai' | 'local' | 'none';
+    narrativePresent?: boolean;
   };
 }
 
@@ -259,6 +285,656 @@ function buildSafeMinimalResponse(
       }
     ]
   };
+}
+
+/**
+ * Normalize aiReport from backend format to frontend contract (AIDesignReportData)
+ * 
+ * Maps:
+ * - designRationale -> rationale
+ * - versionsExplanation -> versions
+ * - contemplacionesApplied -> contemplaciones
+ * - responseOptions -> response_options
+ * 
+ * Preserves narrative when backend provides it as a non-empty string.
+ */
+function normalizeAiReportForFrontend(
+  backendReport: AIReportV2,
+  spec: EvaluationSpecV2,
+  requestedVersions: { A: boolean; B: boolean; C: boolean }
+): Record<string, unknown> {
+  // Build normalized report matching AIDesignReportData contract
+  const normalized: Record<string, unknown> = {};
+  
+  // CRITICAL: Preserve backend narrative exactly if present and non-empty
+  if (typeof backendReport.narrative === 'string') {
+    const trimmedNarrative = backendReport.narrative.trim();
+    if (trimmedNarrative.length > 0) {
+      normalized.narrative = trimmedNarrative;
+      console.log(`[AI_REPORT] normalizeAiReportForFrontend: ✓ Narrative included in normalized report (len=${trimmedNarrative.length})`);
+    }
+  }
+  
+  // rationale (from designRationale)
+  if (backendReport.designRationale) {
+    normalized.rationale = backendReport.designRationale;
+  }
+  
+  // versions (from versionsExplanation)
+  if (backendReport.versionsExplanation) {
+    const versions: Record<string, unknown> = {};
+    if (backendReport.versionsExplanation.generated) {
+      versions.generated = backendReport.versionsExplanation.generated;
+      versions.count = backendReport.versionsExplanation.generated.length;
+    }
+    
+    // Build reason from notGenerated or generate default
+    if (backendReport.versionsExplanation.notGenerated && Object.keys(backendReport.versionsExplanation.notGenerated).length > 0) {
+      const reasons = Object.entries(backendReport.versionsExplanation.notGenerated)
+        .map(([version, reason]) => `Versión ${version}: ${reason}`)
+        .join('; ');
+      versions.reason = reasons;
+    } else if (backendReport.versionsExplanation.generated.length > 1) {
+      // Generate default reason if multiple versions
+      const versionDescriptions: string[] = [];
+      if (backendReport.versionsExplanation.generated.includes('B')) {
+        versionDescriptions.push('Versión B adapta formato y estructura');
+      }
+      if (backendReport.versionsExplanation.generated.includes('C')) {
+        versionDescriptions.push('Versión C ofrece adecuación excepcional');
+      }
+      if (versionDescriptions.length > 0) {
+        versions.reason = `Versión A es universal; ${versionDescriptions.join('; ')}. Todas mantienen la misma demanda cognitiva.`;
+      }
+    }
+    
+    if (Object.keys(versions).length > 0) {
+      normalized.versions = versions;
+    }
+  }
+  
+  // contemplaciones (from contemplacionesApplied)
+  if (backendReport.contemplacionesApplied) {
+    const contemplaciones: Record<string, unknown> = {};
+    
+    if (backendReport.contemplacionesApplied.instrumentDesign && backendReport.contemplacionesApplied.instrumentDesign.length > 0) {
+      contemplaciones.instrument_design = backendReport.contemplacionesApplied.instrumentDesign;
+    }
+    
+    // Note: admin_reminders and correction_reminders are counts in backend, not arrays
+    // Per user request: omit if only counts exist (don't invent arrays)
+    
+    if (Object.keys(contemplaciones).length > 0) {
+      normalized.contemplaciones = contemplaciones;
+    }
+  }
+  
+  // response_options (from responseOptions)
+  if (backendReport.responseOptions) {
+    const responseOptions: Record<string, unknown> = {};
+    
+    if (backendReport.responseOptions.included !== undefined) {
+      responseOptions.included = backendReport.responseOptions.included;
+    }
+    
+    if (backendReport.responseOptions.count !== undefined) {
+      responseOptions.optionCount = backendReport.responseOptions.count;
+    }
+    
+    if (backendReport.responseOptions.reason) {
+      responseOptions.rationale = backendReport.responseOptions.reason;
+    }
+    
+    // location: where equivalent response options appear
+    if (backendReport.responseOptions.included) {
+      responseOptions.location = 'items.equivalentResponseOptions';
+    }
+    
+    if (Object.keys(responseOptions).length > 0) {
+      normalized.response_options = responseOptions;
+    }
+  }
+  
+  // varkSummary (if exists)
+  if (backendReport.varkSummary) {
+    normalized.vark = {
+      summary: backendReport.varkSummary
+    };
+  }
+  
+  return normalized;
+}
+
+/**
+ * Infer content coverage from available data sources
+ * 
+ * Extracts 3-6 content focuses and maps them to sections/items.
+ * Returns structured data for narrative generation.
+ */
+function inferContentCoverage(
+  spec: EvaluationSpecV2,
+  groupContext?: { content?: string[]; competencies?: string[]; criteriosLogro?: string[] },
+  modification?: string,
+  designPlan?: Record<string, unknown>
+): {
+  source: 'source' | 'anep' | 'requirements' | 'inferred';
+  focuses: Array<{
+    focus: string;
+    sections: string[];
+    itemTypes: string[];
+  }>;
+  hasSourceMaterial: boolean;
+  hasANEP: boolean;
+  hasRequirements: boolean;
+} {
+  const sections = Array.isArray(spec.sections) ? spec.sections : [];
+  const contents = spec.meta?.contentIds || groupContext?.content || [];
+  const competencies = spec.meta?.competencyIds || groupContext?.competencies || [];
+  const criteriosLogro = spec.meta?.criteriosLogro || groupContext?.criteriosLogro || [];
+  const hasModification = modification && modification.trim().length > 0;
+  
+  // Check for source material in design plan or items
+  let hasSourceMaterial = false;
+  sections.forEach(section => {
+    if (Array.isArray(section.items)) {
+      section.items.forEach(item => {
+        if (item.source && (item.source.content || item.source.url)) {
+          hasSourceMaterial = true;
+        }
+      });
+    }
+  });
+  
+  // Check for ANEP data
+  const hasANEP = Boolean(competencies.length > 0 || criteriosLogro.length > 0 || 
+                  (designPlan && typeof designPlan === 'object' && 
+                   (designPlan.anepContents || designPlan.curricularFocus)));
+  
+  // Check for teacher requirements
+  const hasRequirements = Boolean(hasModification || 
+                         (designPlan && typeof designPlan === 'object' && 
+                          (designPlan.teacherRequirements || designPlan.requirements)));
+  
+  // Determine source type
+  let sourceType: 'source' | 'anep' | 'requirements' | 'inferred' = 'inferred';
+  if (hasSourceMaterial) {
+    sourceType = 'source';
+  } else if (hasANEP) {
+    sourceType = 'anep';
+  } else if (hasRequirements) {
+    sourceType = 'requirements';
+  }
+  
+  // Extract content focuses
+  const focuses: Array<{ focus: string; sections: string[]; itemTypes: string[] }> = [];
+  
+  if (contents.length > 0) {
+    // Use provided contents (up to 6)
+    const selectedContents = contents.slice(0, 6);
+    selectedContents.forEach((content, idx) => {
+      // Find sections/items that might relate to this content
+      const relatedSections: string[] = [];
+      const relatedItemTypes = new Set<string>();
+      
+      sections.forEach((section, sectionIdx) => {
+        if (idx < sections.length && sectionIdx === idx) {
+          relatedSections.push(section.title || `Sección ${sectionIdx + 1}`);
+          
+          if (Array.isArray(section.items)) {
+            section.items.forEach(item => {
+              if (item.type) {
+                relatedItemTypes.add(item.type);
+              }
+            });
+          }
+        }
+      });
+      
+      // If no direct mapping, use first sections
+      if (relatedSections.length === 0 && sections.length > 0) {
+        const sectionIdx = Math.min(idx, sections.length - 1);
+        relatedSections.push(sections[sectionIdx].title || `Sección ${sectionIdx + 1}`);
+        
+        if (Array.isArray(sections[sectionIdx].items)) {
+          sections[sectionIdx].items.forEach(item => {
+            if (item.type) {
+              relatedItemTypes.add(item.type);
+            }
+          });
+        }
+      }
+      
+      focuses.push({
+        focus: content,
+        sections: relatedSections.length > 0 ? relatedSections : ['Secciones generales'],
+        itemTypes: Array.from(relatedItemTypes)
+      });
+    });
+  } else if (sections.length > 0) {
+    // Infer from section titles and prompts
+    const maxFocuses = Math.min(6, sections.length);
+    sections.slice(0, maxFocuses).forEach((section, idx) => {
+      const itemTypes = new Set<string>();
+      if (Array.isArray(section.items)) {
+        section.items.forEach(item => {
+          if (item.type) {
+            itemTypes.add(item.type);
+          }
+        });
+      }
+      
+      // Extract focus from section title or first item prompt
+      let focusText = section.title || `Contenido ${idx + 1}`;
+      if (Array.isArray(section.items) && section.items.length > 0 && section.items[0].prompt) {
+        // Use first 50 chars of first item prompt as hint
+        const promptHint = section.items[0].prompt.slice(0, 50).trim();
+        if (promptHint.length > 0) {
+          focusText = `${section.title || 'Contenido'}: ${promptHint}...`;
+        }
+      }
+      
+      focuses.push({
+        focus: focusText,
+        sections: [section.title || `Sección ${idx + 1}`],
+        itemTypes: Array.from(itemTypes)
+      });
+    });
+  }
+  
+  return {
+    source: sourceType,
+    focuses: focuses.slice(0, 6), // Limit to 6
+    hasSourceMaterial,
+    hasANEP,
+    hasRequirements
+  };
+}
+
+/**
+ * Build teacher-friendly narrative report (LOCAL ONLY, BEST-EFFORT)
+ * 
+ * Generates narrative deterministically using only global/teacher-safe data.
+ * 
+ * CRITICAL: This function MUST NOT throw or affect success:true.
+ * All errors are caught and returned as warnings.
+ */
+function buildNarrativeLocal(
+  spec: EvaluationSpecV2,
+  versionsExplanation: { generated: string[]; notGenerated?: Record<string, string> },
+  contemplacionesApplied: { instrumentDesign: string[]; adminReminders: number; correctionReminders: number },
+  responseOptions: { included: boolean; count?: number; reason?: string },
+  groupContext?: { content?: string[]; competencies?: string[]; criteriosLogro?: string[] },
+  modification?: string,
+  designPlan?: Record<string, unknown>
+): string {
+  // Extract teacher-safe global data
+  const subject = spec.meta?.subject || 'la materia';
+  const gradeLevel = spec.meta?.gradeLevel || '';
+  const totalPoints = spec.meta?.totalPoints || 0;
+  const durationMinutes = spec.meta?.duration?.minutes || 90;
+  const sections = Array.isArray(spec.sections) ? spec.sections : [];
+  const sectionCount = sections.length;
+  
+  // Extract contents to evaluate
+  const contents = spec.meta?.contentIds || groupContext?.content || [];
+  const competencies = spec.meta?.competencyIds || groupContext?.competencies || [];
+  const criteriosLogro = spec.meta?.criteriosLogro || groupContext?.criteriosLogro || [];
+  
+  // Extract item types used in the evaluation
+  const itemTypes = new Set<string>();
+  sections.forEach(section => {
+    if (Array.isArray(section.items)) {
+      section.items.forEach(item => {
+        if (item.type) {
+          itemTypes.add(item.type);
+        }
+      });
+    }
+  });
+  const itemTypesArray = Array.from(itemTypes);
+  
+  // Get section titles (high-level only)
+  const sectionTitles = sections
+    .slice(0, 5) // Limit to first 5 to keep it concise
+    .map(s => s.title || '')
+    .filter(t => t.length > 0);
+  
+  // Build narrative: 1st paragraph - WHAT CONTENTS WERE EVALUATED
+  let firstParagraph = `Esta evaluación fue diseñada para ${subject}${gradeLevel ? ` (${gradeLevel})` : ''}. `;
+  
+  if (contents.length > 0) {
+    const contentsText = contents.slice(0, 5).join(', ') + (contents.length > 5 ? ' y otros' : '');
+    firstParagraph += `Se enfoca en evaluar los siguientes contenidos: ${contentsText}. `;
+  }
+  
+  firstParagraph += `Consta de ${sectionCount} sección${sectionCount !== 1 ? 'es' : ''} con un total de ${totalPoints} puntos ` +
+    `y una duración estimada de ${durationMinutes} minutos.`;
+  
+  if (sectionTitles.length > 0) {
+    firstParagraph += ` La evaluación está organizada en: ${sectionTitles.join(', ')}${sectionTitles.length < sectionCount ? ' y otras secciones' : ''}.`;
+  }
+  
+  // Build second paragraph - WHY THOSE CONTENTS WERE SELECTED
+  const selectionReasons: string[] = [];
+  
+  if (modification && modification.trim().length > 0) {
+    selectionReasons.push('los requerimientos específicos del docente fueron considerados en la selección de contenidos');
+  }
+  
+  if (competencies.length > 0) {
+    const compsText = competencies.slice(0, 3).join(', ') + (competencies.length > 3 ? ' y otras' : '');
+    selectionReasons.push(`las competencias ${compsText} guiaron la priorización de los contenidos`);
+  }
+  
+  if (criteriosLogro.length > 0) {
+    selectionReasons.push('los criterios de logro establecidos orientaron la selección');
+  }
+  
+  let secondParagraph = '';
+  if (selectionReasons.length > 0) {
+    secondParagraph = `Estos contenidos fueron seleccionados porque ${selectionReasons.join(', ')}. `;
+  } else if (contents.length > 0) {
+    secondParagraph = `La selección de estos contenidos responde a su relevancia pedagógica y alineación con los objetivos de aprendizaje del nivel. `;
+  }
+  
+  // Build third paragraph - HOW CONTENTS WERE EVALUATED (item types / approach)
+  let thirdParagraph = '';
+  if (itemTypesArray.length > 0) {
+    const itemTypeNames: Record<string, string> = {
+      'multiple_choice': 'opción múltiple',
+      'true_false': 'verdadero/falso',
+      'true_false_justify': 'verdadero/falso con justificación',
+      'short_answer': 'respuesta corta',
+      'paragraph': 'párrafo',
+      'essay': 'ensayo',
+      'source_analysis': 'análisis de fuentes',
+      'table_completion': 'completar tabla',
+      'matching': 'relacionar',
+      'ordering': 'ordenar'
+    };
+    
+    const itemTypesSpanish = itemTypesArray
+      .map(type => itemTypeNames[type] || type)
+      .filter(Boolean);
+    
+    if (itemTypesSpanish.length > 0) {
+      thirdParagraph = `La evaluación utiliza una variedad de tipos de items: ${itemTypesSpanish.join(', ')}. `;
+      
+      if (itemTypesArray.includes('multiple_choice') || itemTypesArray.includes('true_false')) {
+        thirdParagraph += 'Los items de selección permiten verificar conocimientos factuales y comprensión básica. ';
+      }
+      
+      if (itemTypesArray.includes('essay') || itemTypesArray.includes('paragraph')) {
+        thirdParagraph += 'Los items de desarrollo evalúan la capacidad de síntesis, argumentación y expresión escrita. ';
+      }
+      
+      if (itemTypesArray.includes('source_analysis')) {
+        thirdParagraph += 'El análisis de fuentes permite evaluar pensamiento crítico y capacidad de interpretación. ';
+      }
+      
+      thirdParagraph += 'Esta diversidad de formatos permite abordar diferentes dimensiones de los contenidos, desde la memorización hasta la aplicación y el análisis.';
+    }
+  }
+  
+  // Build bullet list: "Decisiones de diseño"
+  const decisiones: string[] = [];
+  
+  // Versions
+  if (versionsExplanation.generated.length > 1) {
+    const versionDescriptions: string[] = [];
+    if (versionsExplanation.generated.includes('B')) {
+      versionDescriptions.push('Versión B adapta el formato y estructura para mayor claridad');
+    }
+    if (versionsExplanation.generated.includes('C')) {
+      versionDescriptions.push('Versión C ofrece adecuación excepcional de contenido');
+    }
+    
+    if (versionDescriptions.length > 0) {
+      decisiones.push(
+        `• Se generaron ${versionsExplanation.generated.length} versiones (${versionsExplanation.generated.join(', ')}): ` +
+        `Versión A es universal; ${versionDescriptions.join('; ')}. ` +
+        `Todas las versiones mantienen la misma demanda cognitiva y evalúan los mismos objetivos de aprendizaje.`
+      );
+    }
+  }
+  
+  // Response options
+  if (responseOptions.included && responseOptions.count) {
+    decisiones.push(
+      `• Se incluyeron opciones de respuesta equivalentes (${responseOptions.count} formatos por item elegible). ` +
+      `Los estudiantes pueden elegir el formato que mejor se adapte a su forma de expresar su comprensión, ` +
+      `sin que esto reduzca la dificultad o la evidencia requerida.`
+    );
+  }
+  
+  // Instrument design rules
+  if (contemplacionesApplied.instrumentDesign.length > 0) {
+    const rulesExamples = contemplacionesApplied.instrumentDesign.slice(0, 5).join(', ');
+    decisiones.push(
+      `• Se aplicaron adaptaciones al instrumento: ${rulesExamples}${contemplacionesApplied.instrumentDesign.length > 5 ? ' y otras' : ''}.`
+    );
+  }
+  
+  // Infer content coverage
+  let contentCoverageBlock = '';
+  try {
+    const coverage = inferContentCoverage(spec, groupContext, modification, designPlan);
+    
+    // Log coverage source (for debugging)
+    const DEBUG = false; // Set to true for debugging
+    if (DEBUG) {
+      console.log(`[CONTENT_COVERAGE] source=${coverage.source}, focuses=${coverage.focuses.length}, hasSource=${coverage.hasSourceMaterial}, hasANEP=${coverage.hasANEP}, hasRequirements=${coverage.hasRequirements}`);
+    }
+    
+    // Build Content Coverage block
+    contentCoverageBlock = '\n\nCobertura de Contenidos:\n';
+    
+    if (coverage.source === 'inferred') {
+      contentCoverageBlock += 'No se proporcionaron materiales fuente, enfoques curriculares ANEP o requerimientos específicos del docente, por lo que el foco de contenido se infirió de las secciones y prompts generados.\n\n';
+    } else if (coverage.source === 'source') {
+      contentCoverageBlock += 'Los contenidos evaluados se basan en los materiales fuente proporcionados. ';
+      if (!coverage.hasSourceMaterial) {
+        contentCoverageBlock += 'Nota: No se proporcionó texto fuente completo, por lo que se trabajó con la información disponible.\n\n';
+      } else {
+        contentCoverageBlock += '\n\n';
+      }
+    } else if (coverage.source === 'anep') {
+      contentCoverageBlock += 'Los contenidos evaluados se seleccionaron según los enfoques curriculares ANEP y competencias especificadas.\n\n';
+    } else if (coverage.source === 'requirements') {
+      contentCoverageBlock += 'Los contenidos evaluados responden a los requerimientos específicos del docente.\n\n';
+    }
+    
+    // List content focuses with mapping
+    if (coverage.focuses.length > 0) {
+      const itemTypeNames: Record<string, string> = {
+        'multiple_choice': 'opción múltiple',
+        'true_false': 'verdadero/falso',
+        'true_false_justify': 'verdadero/falso con justificación',
+        'short_answer': 'respuesta corta',
+        'paragraph': 'párrafo',
+        'essay': 'ensayo',
+        'source_analysis': 'análisis de fuentes',
+        'table_completion': 'completar tabla',
+        'matching': 'relacionar',
+        'ordering': 'ordenar'
+      };
+      
+      coverage.focuses.forEach((focusData, idx) => {
+        const itemTypesText = focusData.itemTypes
+          .map(type => itemTypeNames[type] || type)
+          .filter(Boolean)
+          .join(', ');
+        
+        contentCoverageBlock += `${idx + 1}. ${focusData.focus}: `;
+        contentCoverageBlock += `evaluado en ${focusData.sections.join(', ')} `;
+        if (itemTypesText) {
+          contentCoverageBlock += `mediante items de ${itemTypesText}`;
+        }
+        contentCoverageBlock += '.\n';
+      });
+    }
+  } catch (error) {
+    // Silent fail - don't break narrative generation
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    if (false) { // DEBUG flag
+      console.log(`[CONTENT_COVERAGE] Error generating coverage block: ${errorMsg}`);
+    }
+    // Add fallback message
+    contentCoverageBlock = '\n\nCobertura de Contenidos:\nNo se pudo generar el análisis detallado de cobertura de contenidos. Los contenidos evaluados se infirieron de las secciones y items generados.\n';
+  }
+  
+  // Combine narrative parts
+  const narrativeParts: string[] = [firstParagraph];
+  
+  if (secondParagraph) {
+    narrativeParts.push('\n\n' + secondParagraph);
+  }
+  
+  if (thirdParagraph) {
+    narrativeParts.push('\n\n' + thirdParagraph);
+  }
+  
+  if (decisiones.length > 0) {
+    narrativeParts.push('\n\nDecisiones de diseño:\n' + decisiones.join('\n'));
+  }
+  
+  // Add Content Coverage block AFTER existing content
+  if (contentCoverageBlock) {
+    narrativeParts.push(contentCoverageBlock);
+  }
+  
+  // Closing sentence: teacher-only, student-specific reminders are delivered separately
+  const totalReminders = contemplacionesApplied.adminReminders + contemplacionesApplied.correctionReminders;
+  if (totalReminders > 0) {
+    narrativeParts.push(
+      `\n\nLos recordatorios específicos por estudiante (${totalReminders} totales: ` +
+      `${contemplacionesApplied.adminReminders} administrativos, ${contemplacionesApplied.correctionReminders} de corrección) ` +
+      `se entregan aparte; este reporte es global.`
+    );
+  } else {
+    narrativeParts.push(
+      `\n\nLos recordatorios específicos por estudiante se entregan aparte; este reporte es global.`
+    );
+  }
+  
+  let narrative = narrativeParts.join('');
+  
+  // Ensure word count is reasonable (120-220 words target)
+  const wordCount = narrative.split(/\s+/).length;
+  if (wordCount < 120) {
+    // Add closing note if too short
+    narrative += ' Esta evaluación fue generada automáticamente y puede ser editada según las necesidades del grupo.';
+  } else if (wordCount > 220) {
+    // Truncate if too long (keep first ~200 words)
+    const words = narrative.split(/\s+/);
+    narrative = words.slice(0, 200).join(' ') + '...';
+  }
+  
+  return narrative;
+}
+
+/**
+ * Build emergency template spec when OpenAI fails completely (non-AI fallback)
+ * 
+ * Returns a minimal but VALID EvaluationSpecV2 that can be used when both attempts fail.
+ * This ensures V2 never falls back to V1 due to OpenAI unavailability.
+ */
+function buildEmergencyTemplateSpec(
+  groupContext: {
+    subject?: string;
+    gradeLevel?: string;
+    groupName?: string;
+    students?: Array<{ studentId: string | number; displayName?: string }>;
+    content?: string[];
+    competencies?: string[];
+    criteriosLogro?: string[];
+  },
+  requestedVersions: { A: boolean; B: boolean; C: boolean },
+  designPlan?: {
+    instrumentDesignRules?: string[];
+    responseOptions?: { include?: boolean; optionCount?: number };
+  }
+): EvaluationSpecV2 {
+  const subject = groupContext?.subject || 'Materia no especificada';
+  const gradeLevel = groupContext?.gradeLevel || '';
+  const groupName = groupContext?.groupName || 'Grupo';
+  const totalStudents = groupContext?.students?.length || 0;
+  
+  // Build minimal but valid spec
+  const spec: EvaluationSpecV2 = {
+    version: '2.0',
+    generatedAt: new Date().toISOString(),
+    meta: {
+      subject,
+      gradeLevel: gradeLevel || undefined,
+      groupName,
+      totalStudents: totalStudents > 0 ? totalStudents : undefined,
+      duration: { minutes: 90 },
+      totalPoints: 10,
+      evaluationType: 'evaluación',
+      contentIds: Array.isArray(groupContext?.content) ? groupContext.content : undefined,
+      competencyIds: Array.isArray(groupContext?.competencies) ? groupContext.competencies : undefined,
+      criteriosLogro: Array.isArray(groupContext?.criteriosLogro) ? groupContext.criteriosLogro : undefined
+    },
+    sections: [
+      {
+        id: 'section-emergency-1',
+        title: 'Evaluación - Versión de contingencia',
+        duration: 90,
+        instructions: 'Esta evaluación fue generada automáticamente debido a problemas de conectividad con el servicio de IA. Por favor, revise y ajuste según sea necesario.',
+        items: [
+          {
+            id: 'item-emergency-1',
+            type: 'multiple_choice',
+            prompt: `Seleccione la opción correcta sobre ${subject}${gradeLevel ? ` (${gradeLevel})` : ''}.`,
+            points: 5,
+            options: [
+              { id: 'a', text: 'Opción A', isCorrect: true },
+              { id: 'b', text: 'Opción B', isCorrect: false },
+              { id: 'c', text: 'Opción C', isCorrect: false }
+            ]
+          },
+          {
+            id: 'item-emergency-2',
+            type: 'essay',
+            prompt: `Desarrolle una respuesta sobre ${subject}${gradeLevel ? ` (${gradeLevel})` : ''}.`,
+            points: 5,
+            guidingQuestions: [
+              '¿Qué aspectos considera relevantes?',
+              '¿Cómo se relacionan con el tema?'
+            ]
+          }
+        ]
+      }
+    ],
+    versionVariants: {
+      A: {
+        label: 'Versión A (Universal)',
+        isBase: true
+      }
+    }
+  };
+  
+  // Add B/C variants if requested (but mark as not generated)
+  if (requestedVersions.B) {
+    spec.versionVariants.B = {
+      label: 'Versión B (No generada - servicio de IA no disponible)',
+      isBase: false,
+      reason: 'No generada debido a problemas de conectividad con el servicio de IA',
+      modifications: []
+    };
+  }
+  
+  if (requestedVersions.C) {
+    spec.versionVariants.C = {
+      label: 'Versión C (No generada - servicio de IA no disponible)',
+      isBase: false,
+      reason: 'No generada debido a problemas de conectividad con el servicio de IA',
+      modifications: []
+    };
+  }
+  
+  return spec;
 }
 
 /**
@@ -382,6 +1058,38 @@ function validateAndNormalizeSpec(
   // Set version and timestamp if missing
   if (!spec.version) spec.version = '2.0';
   if (!spec.generatedAt) spec.generatedAt = new Date().toISOString();
+  
+  // Preserve aiReport if present (optional field, do not fail if missing)
+  // Validate aiReport.narrative if present (must be string, non-empty after trim)
+  if (spec.aiReport && typeof spec.aiReport === 'object') {
+    const aiReport = spec.aiReport as Record<string, unknown>;
+    if (aiReport.narrative !== undefined) {
+      if (typeof aiReport.narrative !== 'string') {
+        // Invalid type - remove it but don't fail
+        delete aiReport.narrative;
+        warnings.push({
+          code: 'AI_REPORT_NARRATIVE_INVALID_TYPE',
+          message: 'aiReport.narrative no es un string válido, se omitió',
+          severity: 'warning'
+        });
+      } else {
+        const trimmed = aiReport.narrative.trim();
+        if (trimmed.length === 0) {
+          // Empty after trim - remove it but don't fail
+          delete aiReport.narrative;
+          warnings.push({
+            code: 'AI_REPORT_NARRATIVE_EMPTY',
+            message: 'aiReport.narrative está vacío, se omitió',
+            severity: 'warning'
+          });
+        } else {
+          // Valid narrative - keep it
+          aiReport.narrative = trimmed;
+        }
+      }
+    }
+    // If aiReport exists but has no valid narrative, keep the object (it might have other fields in future)
+  }
   
   return { spec: spec as unknown as EvaluationSpecV2, warnings };
 }
@@ -525,6 +1233,9 @@ ${responseOptionsInclude ? `
     "A": { "label": "Versión A (Universal)", "isBase": true }
     ${requestedVersions.B ? ', "B": { "label": "Versión B (Adaptación de Contenido)", "isBase": false, "reason": "Contenido adaptado pedagógicamente para estudiantes que requieren simplificación" }' : ''}
     ${requestedVersions.C ? ', "C": { "label": "Versión C (Adaptación Excepcional)", "isBase": false, "reason": "Adaptación excepcional" }' : ''}
+  },
+  "aiReport": {
+    "narrative": "<texto narrativo de 6-12 líneas explicando el diseño de la evaluación para el docente, sin mencionar estudiantes individuales, sin recomendaciones por estudiante, explicando: por qué se eligieron las secciones/items, cómo se mantiene la dificultad entre formatos de respuesta, por qué difieren las versiones A/B/C, y dónde se agregaron opciones de respuesta equivalentes>"
   }
 }
 
@@ -543,6 +1254,61 @@ ${responseOptionsInclude ? `
   - Ejemplo: tabla de 3 columnas con 2 filas, algunas celdas pre-llenadas y otras vacías
 - matching: Requiere "leftColumn": ["item1", "item2"], "rightColumn": ["matchA", "matchB"]
 - ordering: Requiere "itemsToOrder": ["paso1", "paso2", "paso3"]
+
+## REPORTE NARRATIVO PARA DOCENTE (aiReport.narrative)
+
+Incluye "aiReport.narrative" como un texto narrativo completo (8-15 líneas) amigable para el docente.
+
+REGLAS DEL NARRATIVO:
+- NO menciones estudiantes individuales, IDs de estudiantes, ni recomendaciones por estudiante
+- NO incluyas consejos de adaptación para estudiantes específicos
+- Tono pedagógico y amigable, como explicando a un colega docente
+- 8-15 líneas, párrafos claros y bien estructurados
+
+CONTENIDO REQUERIDO DEL NARRATIVO (en este orden):
+
+1. QUÉ CONTENIDOS SE EVALUARON:
+   - Si hay contenidos especificados en el contexto, menciona los conceptos/ideas clave que fueron priorizados
+   - Si hay materiales fuente, explica qué ideas principales de esos materiales se abordaron
+   - Si hay enfoques curriculares (ANEP), menciona qué focos curriculares se seleccionaron
+
+2. POR QUÉ SE SELECCIONARON ESOS CONTENIDOS:
+   - Si hay requerimientos del docente, explica explícitamente cómo se satisfacieron en el diseño
+   - Si hay competencias o criterios de logro, explica cómo guiaron la selección de contenidos
+   - Justifica la relevancia pedagógica de los contenidos elegidos
+
+3. CÓMO SE EVALUARON (ENFOQUE Y TIPOS DE ITEMS):
+   - Describe los tipos de items utilizados (multiple_choice, essay, source_analysis, etc.) y por qué fueron elegidos
+   - Explica cómo cada tipo de item aborda diferentes aspectos de los contenidos
+   - Menciona la variedad de formatos y cómo esto permite evaluar diferentes habilidades cognitivas
+
+4. DISEÑO Y ADAPTACIONES (si aplica):
+   - Por qué se eligieron las secciones y su organización
+   - Cómo se mantiene la dificultad entre diferentes formatos de respuesta equivalentes
+   - Por qué difieren las versiones A/B/C (desde perspectiva DUA/accesibilidad, sin reducir demanda cognitiva)
+   - Dónde se agregaron opciones de respuesta equivalentes y cómo funcionan
+
+5. COBERTURA DE CONTENIDOS (OBLIGATORIO - agregar después del punto 4):
+   - Título: "Cobertura de Contenidos:"
+   - Lista 3-6 focos de contenido principales que se evalúan
+   - Para cada foco, indica:
+     * Qué sección/item lo aborda
+     * Qué tipo de item se usa para evaluarlo
+   - Si hay materiales fuente proporcionados: menciona qué ideas clave de esos materiales se priorizaron
+   - Si hay enfoques curriculares ANEP: menciona qué focos curriculares se seleccionaron
+   - Si hay requerimientos del docente: explica cómo se satisfacen en la cobertura
+   - Si NO hay materiales fuente/ANEP/requerimientos explícitos: indica explícitamente "No se proporcionaron materiales fuente, enfoques curriculares ANEP o requerimientos específicos del docente, por lo que el foco de contenido se infirió de las secciones y prompts generados."
+
+REGLAS CRÍTICAS PARA COBERTURA DE CONTENIDOS:
+- NO inventes detalles de materiales fuente que no fueron proporcionados
+- Si el texto fuente no está disponible, di explícitamente "No se proporcionó texto fuente completo"
+- Usa SOLO la información disponible en el contexto del grupo y requerimientos del docente
+- Mapea cada foco de contenido a secciones/items específicos de la evaluación generada
+
+EJEMPLO DE NARRATIVO ENRIQUECIDO:
+"Esta evaluación fue diseñada para [materia] y se enfoca en evaluar [contenidos principales específicos, ej: 'los procesos de independencia en América Latina y sus consecuencias socioeconómicas']. Estos contenidos fueron seleccionados porque [justificación basada en requerimientos del docente o competencias, ej: 'permiten evaluar la comprensión de procesos históricos complejos y su impacto en la actualidad, como solicitó el docente']. La evaluación utiliza una variedad de tipos de items: preguntas de opción múltiple para verificar conocimientos factuales, análisis de fuentes para evaluar pensamiento crítico, y ensayos cortos para evaluar la capacidad de síntesis y argumentación. Esta diversidad de formatos permite abordar diferentes dimensiones de los contenidos, desde la memorización hasta la aplicación y el análisis. Se generaron [versiones] para adaptarse a diferentes necesidades del grupo, manteniendo la misma demanda cognitiva. Se incluyeron opciones de respuesta equivalentes en items de desarrollo, permitiendo que los estudiantes elijan el formato que mejor se adapte a su forma de expresar su comprensión, sin reducir la dificultad requerida."
+
+IMPORTANTE: aiReport.narrative es OPCIONAL. Si no puedes generarlo, omítelo pero NO falles la generación por esto.
 
 RESPONDE ÚNICAMENTE CON JSON VÁLIDO. SIN EXPLICACIONES.`;
 }
@@ -614,6 +1380,19 @@ async function generateEvaluationV2(
   warnings: WarningV2[];
   attempt: number;
   extractionMethod: string;
+  attempts: Array<{
+    attempt: number;
+    mode: 'full' | 'fast_fallback' | 'emergency_template';
+    model: string;
+    timeoutMs: number;
+    maxTokens: number;
+    temperature?: number;
+    promptSizeKB: number;
+    startedAtMs: number;
+    openaiDurationMs?: number;
+    outcome: 'success' | 'timeout' | 'openai_error' | 'parse_error' | 'validation_error' | 'unknown_error';
+    errorMessage?: string;
+  }>;
   debug: {
     promptLength: number;
     responseLength: number;
@@ -623,10 +1402,26 @@ async function generateEvaluationV2(
   };
 }> {
   // RETRY STRATEGY:
-  // Attempt 1: Full prompt with generous timeout (55s)
-  // Attempt 2: Reduced prompt (no Version B/C) with shorter timeout (45s)
+  // Attempt 1: Full prompt with generous timeout (55s), gpt-4.1-2025-04-14
+  // Attempt 2: Fast fallback with gpt-4o-mini, reduced prompt, 24s timeout, maxTokens <= 1800
   const MAX_ATTEMPTS = 2;
   const warnings: WarningV2[] = [];
+  type AttemptOutcome = 'success' | 'timeout' | 'openai_error' | 'parse_error' | 'validation_error' | 'unknown_error';
+  type AttemptMode = 'full' | 'fast_fallback' | 'emergency_template';
+  
+  const attempts: Array<{
+    attempt: number;
+    mode: AttemptMode;
+    model: string;
+    timeoutMs: number;
+    maxTokens: number;
+    temperature?: number;
+    promptSizeKB: number;
+    startedAtMs: number;
+    openaiDurationMs?: number;
+    outcome: AttemptOutcome;
+    errorMessage?: string;
+  }> = [];
   let attempt = 0;
   let extractionMethod = 'json_parse';
   let lastRawResponse = '';
@@ -661,64 +1456,108 @@ async function generateEvaluationV2(
     // Use actual remaining time if less than planned timeout
     const effectiveTimeout = Math.min(currentTimeout, remainingBudget - 2000);
     
-    // Build reduced prompt for retry (removes Version B/C complexity)
+    // Build reduced prompt for retry (FAST FALLBACK: gpt-4o-mini, Version A only, minimal prompt)
     let currentSystemPrompt = systemPrompt;
     let currentUserPrompt = userPrompt;
     let reducedVersions = requestedVersions;
+    let modelToUse = 'gpt-4.1-2025-04-14';
+    let maxTokensToUse = isRetryAttempt ? 6000 : 6000;
+    let temperatureToUse = 0.7;
+    const attemptStartTime = timer.elapsed();
     
     if (isRetryAttempt) {
-      timer.log(`RETRY MODE: Reducing prompt complexity for faster response`);
+      timer.log(`═══════════════════════════════════════════════════════════════`);
+      timer.log(`FAST FALLBACK MODE: Using gpt-4o-mini with aggressive optimizations`);
+      timer.log(`═══════════════════════════════════════════════════════════════`);
+      
+      // Fast fallback: use gpt-4o-mini, lower tokens, lower temperature
+      modelToUse = 'gpt-4o-mini';
+      maxTokensToUse = 1800; // Reduced for speed
+      temperatureToUse = 0.4; // More deterministic
       
       // On retry: simplify to Version A only to reduce output size
       if (requestedVersions.B || requestedVersions.C) {
         reducedVersions = { A: true, B: false, C: false };
         warnings.push({
-          code: 'RETRY_SIMPLIFIED',
-          message: 'Reintentando con versión simplificada (solo Versión A). Las versiones B/C deberán regenerarse.',
+          code: 'RETRY_FAST_FALLBACK_USED',
+          message: 'Usando fast fallback: generando solo Versión A con gpt-4o-mini. Versiones B/C diferidas.',
           severity: 'warning'
         });
         
-        // Remove Version B instructions from system prompt
+        // Aggressively reduce system prompt: remove Version B/C, narrative, extras
         currentSystemPrompt = systemPrompt
           .replace(/## VERSIÓN B[\s\S]*?(?=##|$)/g, '')
-          .replace(/OBLIGATORIO: Generar "versionedContent\.promptB"[^\n]*/g, 
-                   'NO incluir versionedContent (Version B omitida por timeout)')
-          .replace(/- Incluir versionedContent\.promptC[^\n]*/g, '');
+          .replace(/## VERSIÓN C[\s\S]*?(?=##|$)/g, '')
+          .replace(/OBLIGATORIO: Generar "versionedContent\.promptB"[^\n]*/g, 'NO incluir versionedContent')
+          .replace(/- Incluir versionedContent\.promptC[^\n]*/g, '')
+          .replace(/## REPORTE NARRATIVO[\s\S]*?(?=##|$)/g, '') // Remove narrative instructions
+          .replace(/## OPCIONES DE RESPUESTA EQUIVALENTES[\s\S]*?(?=##|$)/g, '') // Remove equivalent options for speed
+          + '\n\nIMPORTANTE: Genera SOLO Versión A. NO incluyas versionedContent, narrative, ni opciones equivalentes.';
+        
+        // Reduce user prompt: keep only essential info
+        const essentialParts = userPrompt.split('\n\n').filter(part => {
+          const lower = part.toLowerCase();
+          return lower.includes('materia') || 
+                 lower.includes('contenidos') || 
+                 lower.includes('competencia') || 
+                 lower.includes('criterio') ||
+                 lower.includes('requerimiento');
+        });
+        currentUserPrompt = essentialParts.join('\n\n') || userPrompt.slice(0, 2000); // Fallback to truncated original
         
         timer.log(`  Original systemPrompt: ${systemPrompt.length} chars`);
         timer.log(`  Reduced systemPrompt: ${currentSystemPrompt.length} chars`);
+        timer.log(`  Original userPrompt: ${userPrompt.length} chars`);
+        timer.log(`  Reduced userPrompt: ${currentUserPrompt.length} chars`);
       }
       
       // If previous attempt had a response, build repair prompt
       if (lastRawResponse && retryReason === 'parse_error') {
-        const truncated = lastRawResponse.slice(0, 500);
-        currentUserPrompt = `Tu respuesta anterior no fue JSON válido. Error de parsing detectado.
-
-Respuesta anterior (truncada):
-${truncated}
-
-REQUERIMIENTOS:
-1. Responde ÚNICAMENTE con JSON válido
-2. Sin code fences (\`\`\`)
-3. Sin comentarios
-4. Sin texto antes o después del JSON
-
-CONTEXTO ORIGINAL:
-${userPrompt}`;
+        const truncated = lastRawResponse.slice(0, 300);
+        currentUserPrompt = `JSON parse error. Previous response (truncated):\n${truncated}\n\nREQUIREMENTS: Respond ONLY with valid JSON. No code fences, no comments.\n\n${currentUserPrompt.slice(0, 1500)}`;
       }
     }
     
     // Log request metadata for debugging
-    const promptSizeKB = ((currentSystemPrompt.length + currentUserPrompt.length) / 1024).toFixed(1);
+    const promptSizeKB = parseFloat(((currentSystemPrompt.length + currentUserPrompt.length) / 1024).toFixed(1));
     timer.log(`OpenAI request details:`);
-    timer.log(`  model: gpt-4.1-2025-04-14`);
+    timer.log(`  model: ${modelToUse}`);
     timer.log(`  systemPrompt: ${currentSystemPrompt.length} chars`);
     timer.log(`  userPrompt: ${currentUserPrompt.length} chars`);
     timer.log(`  totalPromptSize: ${promptSizeKB} KB`);
     timer.log(`  effectiveTimeout: ${effectiveTimeout}ms`);
+    timer.log(`  maxTokens: ${maxTokensToUse}`);
+    timer.log(`  temperature: ${temperatureToUse}`);
     timer.log(`  requestedVersions: A=${reducedVersions.A}, B=${reducedVersions.B}, C=${reducedVersions.C}`);
     
     const openaiStartTime = Date.now();
+    
+    // Record attempt start
+    const attemptRecord: {
+      attempt: number;
+      mode: AttemptMode;
+      model: string;
+      timeoutMs: number;
+      maxTokens: number;
+      temperature?: number;
+      promptSizeKB: number;
+      startedAtMs: number;
+      outcome: AttemptOutcome;
+      errorMessage?: string;
+      openaiDurationMs?: number;
+    } = {
+      attempt,
+      mode: isRetryAttempt ? 'fast_fallback' : 'full',
+      model: modelToUse,
+      timeoutMs: effectiveTimeout,
+      maxTokens: maxTokensToUse,
+      temperature: temperatureToUse,
+      promptSizeKB,
+      startedAtMs: attemptStartTime,
+      outcome: 'unknown_error',
+      errorMessage: undefined,
+      openaiDurationMs: undefined
+    };
     
     try {
       const response = await fetchWithTimeout(
@@ -730,14 +1569,14 @@ ${userPrompt}`;
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'gpt-4.1-2025-04-14',
+            model: modelToUse,
             messages: [
               { role: 'system', content: currentSystemPrompt },
               { role: 'user', content: currentUserPrompt }
             ],
             response_format: { type: 'json_object' },
-            // Reduce tokens on retry for faster response
-            max_completion_tokens: isRetryAttempt ? 4000 : 6000
+            max_completion_tokens: maxTokensToUse,
+            temperature: temperatureToUse
           }),
         },
         effectiveTimeout,
@@ -751,6 +1590,13 @@ ${userPrompt}`;
       if (!response.ok) {
         const errorText = await response.text();
         timer.log(`✗ OpenAI API error ${response.status}: ${errorText.slice(0, 200)}`);
+        
+        // Record API error attempt
+        attemptRecord.outcome = 'openai_error';
+        attemptRecord.openaiDurationMs = openaiDurationMs;
+        attemptRecord.errorMessage = `OpenAI API error ${response.status}: ${errorText.slice(0, 200)}`;
+        attempts.push(attemptRecord);
+        
         throw new Error(`OpenAI API error: ${response.status}`);
       }
       
@@ -781,6 +1627,13 @@ ${userPrompt}`;
           context: { parseError: String(parseError) }
         });
         retryReason = 'parse_error';
+        
+        // Record parse error attempt
+        attemptRecord.outcome = 'parse_error' as AttemptOutcome;
+        attemptRecord.openaiDurationMs = openaiDurationMs;
+        attemptRecord.errorMessage = `JSON parse error: ${parseError}`;
+        attempts.push(attemptRecord);
+        
         continue; // Retry
       }
       
@@ -799,11 +1652,17 @@ ${userPrompt}`;
           });
         }
         
+        // Record successful attempt
+        attemptRecord.outcome = 'success' as AttemptOutcome;
+        attemptRecord.openaiDurationMs = openaiDurationMs;
+        attempts.push(attemptRecord);
+        
         return {
           spec,
           warnings,
           attempt,
           extractionMethod,
+          attempts,
           debug: {
             promptLength: currentSystemPrompt.length + currentUserPrompt.length,
             responseLength: rawContent.length,
@@ -818,26 +1677,40 @@ ${userPrompt}`;
       timer.log('Validation failed, will retry if attempts remain');
       retryReason = 'validation_failed';
       
+      // Record validation error attempt
+      attemptRecord.outcome = 'validation_error' as AttemptOutcome;
+      attemptRecord.openaiDurationMs = openaiDurationMs;
+      attemptRecord.errorMessage = 'Validation failed: spec is null after normalization';
+      attempts.push(attemptRecord);
+      
     } catch (apiError) {
       openaiDurationMs = Date.now() - openaiStartTime;
       const errorMsg = apiError instanceof Error ? apiError.message : String(apiError);
       timer.log(`✗ API call failed after ${openaiDurationMs}ms: ${errorMsg}`);
       
       // Check if it's a timeout error
-      const isTimeout = errorMsg.includes('TIMEOUT');
+      const isTimeout = errorMsg.includes('TIMEOUT') || errorMsg.includes('AbortError') || errorMsg.includes('aborted');
+      const outcome: AttemptOutcome = isTimeout ? 'timeout' : (errorMsg.includes('API') || errorMsg.includes('fetch') ? 'openai_error' : 'unknown_error');
+      
       warnings.push({
         code: isTimeout ? 'OPENAI_TIMEOUT' : 'API_ERROR',
         message: isTimeout 
-          ? `El servicio de IA tardó demasiado (>${effectiveTimeout}ms). ${attempt < MAX_ATTEMPTS ? 'Reintentando con prompt simplificado...' : 'Intenta de nuevo.'}`
+          ? `El servicio de IA tardó demasiado (>${effectiveTimeout}ms). ${attempt < MAX_ATTEMPTS ? 'Reintentando con fast fallback...' : 'Intenta de nuevo.'}`
           : `Intento ${attempt}: Error de API - ${errorMsg}`,
         severity: attempt >= MAX_ATTEMPTS ? 'error' : 'warning'
       });
       
       retryReason = isTimeout ? 'timeout' : 'api_error';
       
-      // On timeout, ALLOW retry with reduced prompt (unlike before)
+      // Record failed attempt
+      attemptRecord.outcome = outcome;
+      attemptRecord.openaiDurationMs = openaiDurationMs;
+      attemptRecord.errorMessage = errorMsg;
+      attempts.push(attemptRecord);
+      
+      // On timeout, ALLOW retry with fast fallback
       if (isTimeout && attempt < MAX_ATTEMPTS) {
-        timer.log(`Timeout on attempt ${attempt}, will retry with reduced prompt`);
+        timer.log(`Timeout on attempt ${attempt}, will retry with fast fallback (gpt-4o-mini)`);
         continue;
       }
     }
@@ -848,6 +1721,7 @@ ${userPrompt}`;
   timer.log(`✗ All ${MAX_ATTEMPTS} attempts failed`);
   timer.log(`  lastRetryReason: ${retryReason}`);
   timer.log(`  totalElapsed: ${timer.elapsed()}ms`);
+  timer.log(`  attempts recorded: ${attempts.length}`);
   timer.log(`═══════════════════════════════════════════════════════════════`);
   
   return {
@@ -855,6 +1729,7 @@ ${userPrompt}`;
     warnings,
     attempt,
     extractionMethod: 'failed',
+    attempts,
     debug: {
       promptLength: systemPrompt.length + userPrompt.length,
       responseLength: lastRawResponse.length,
@@ -990,6 +1865,7 @@ serve(async (req) => {
   // ════════════════════════════════════════════════════════════════════════════
   // 🚀 MODIFY-EVALUATION-V2 EXECUTED - This log confirms V2 is being called
   // ════════════════════════════════════════════════════════════════════════════
+  console.log('[DEPLOY_CHECK] build=DEPLOY_CHECK_2026_02_11 function=modify-evaluation-v2');
   console.log('═══════════════════════════════════════════════════════════════');
   console.log('🚀 [V2_ENTRY] MODIFY-EVALUATION-V2 EDGE FUNCTION EXECUTED');
   console.log('═══════════════════════════════════════════════════════════════');
@@ -1033,6 +1909,53 @@ serve(async (req) => {
   try {
     timer.log('Request received, parsing body');
     
+    const requestBody = await req.json();
+    
+    // PING MODE: Zero-cost probe to verify function is deployed and reachable
+    // If __ping is true, return immediately without any OpenAI calls or heavy processing
+    if (requestBody && typeof requestBody === 'object' && requestBody.__ping === true) {
+      const pingResponse = {
+        success: true,
+        pong: true,
+        debug: {
+          build: 'PING_NARRATIVE_DEBUG_2026_02_12',
+          now: new Date().toISOString()
+        }
+      };
+      
+      return new Response(JSON.stringify(pingResponse), {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+          'x-aulaplus-build-probe': 'PING_NARRATIVE_DEBUG_2026_02_12'
+        }
+      });
+    }
+    
+    // DEBUG NARRATIVE MODE: Zero-cost probe to verify aiReport.narrative is in response JSON
+    // If __debugNarrative is true, return immediately with narrative in aiReport
+    if (requestBody && typeof requestBody === 'object' && requestBody.__debugNarrative === true) {
+      const debugDate = '2026_02_12';
+      const debugResponse = {
+        success: true,
+        debug: {
+          build: `NARRATIVE_DEBUG_${debugDate}`,
+          now: new Date().toISOString()
+        },
+        aiReport: {
+          narrative: 'DEBUG_NARRATIVE_OK'
+        }
+      };
+      
+      return new Response(JSON.stringify(debugResponse), {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+          'x-aulaplus-build-probe': `NARRATIVE_DEBUG_${debugDate}`
+        }
+      });
+    }
+    
     const {
       mode,  // 'generate' (default) or 'adjust'
       modification,
@@ -1040,7 +1963,7 @@ serve(async (req) => {
       evaluation_design_plan,
       currentEvaluationSpec,  // For adjust mode: the current spec to refine
       adjustmentDetails       // For adjust mode: { targetVersions, scope, sectionId?, itemId? }
-    } = await req.json();
+    } = requestBody;
     
     timer.mark('body_parsed');
     
@@ -1149,35 +2072,173 @@ serve(async (req) => {
     
     // Build response
     if (result.spec) {
-      // Success
+      // Success - build base aiReport first
+      const baseAiReport: AIReportV2 = {
+        designRationale: `Evaluación generada para ${groupContext?.subject || 'materia no especificada'} con ${result.spec.sections.length} secciones.`,
+        versionsExplanation: {
+          generated: ['A', ...(requestedVersions.B ? ['B'] : []), ...(requestedVersions.C ? ['C'] : [])],
+          notGenerated: {
+            ...(requestedVersions.B ? {} : { B: 'No hay estudiantes con alta necesidad de estructuración' }),
+            ...(requestedVersions.C ? {} : { C: 'No hay estudiantes con adecuación de contenido declarada' })
+          }
+        },
+        contemplacionesApplied: {
+          instrumentDesign: instrumentDesignRules,
+          adminReminders: teacherReminders.reduce((sum, r) => sum + r.admin.length, 0),
+          correctionReminders: teacherReminders.reduce((sum, r) => sum + r.correction.length, 0)
+        },
+        responseOptions: {
+          included: responseOptionsInclude,
+          count: responseOptionsInclude ? responseOptionCount : undefined,
+          reason: responseOptionsInclude ? 'Configurado en el plan de diseño' : undefined
+        }
+      };
+      
+      // CRITICAL: Extract narrative from spec if present (generated by OpenAI in same call)
+      // If missing, fall back to local generation (best-effort)
+      let narrativeWarning: WarningV2 | null = null;
+      let narrativeSource: 'openai' | 'local' | 'none' = 'none';
+      let narrativeText: string | undefined = undefined;
+      
+      // Priority 1: Use narrative from OpenAI response (if present and valid)
+      // Check both result.spec.aiReport.narrative and result.aiReport.narrative (if exists)
+      if (result.spec.aiReport?.narrative && typeof result.spec.aiReport.narrative === 'string') {
+        const openaiNarrative = result.spec.aiReport.narrative.trim();
+        if (openaiNarrative.length > 0) {
+          narrativeText = openaiNarrative;
+          narrativeSource = 'openai';
+          const wordCount = openaiNarrative.split(/\s+/).length;
+          timer.log(`[AI_REPORT] narrative_len=${openaiNarrative.length}, narrative_source=openai`);
+          console.log(`[AI_REPORT] narrative_len=${openaiNarrative.length}, narrative_source=openai`);
+        } else {
+          // Empty after trim - fall back to local generation
+          timer.log('⚠ OpenAI returned empty narrative, falling back to local generation');
+        }
+      }
+      
+      // Priority 2: Generate narrative locally if not present from OpenAI
+      // CRITICAL: This MUST always run if OpenAI didn't provide narrative
+      if (!narrativeText) {
+        try {
+          timer.log('[AI_REPORT] Building narrative locally (deterministic fallback)...');
+          console.log('[AI_REPORT] Building narrative locally (deterministic fallback)...');
+          
+          // Ensure we have all required data
+          if (!result.spec) {
+            throw new Error('result.spec is null');
+          }
+          
+          narrativeText = buildNarrativeLocal(
+            result.spec,
+            baseAiReport.versionsExplanation,
+            baseAiReport.contemplacionesApplied,
+            baseAiReport.responseOptions,
+            groupContext,
+            modification,
+            evaluation_design_plan
+          );
+          
+          // Validate generated narrative
+          if (narrativeText && typeof narrativeText === 'string') {
+            const trimmed = narrativeText.trim();
+            if (trimmed.length > 0) {
+              narrativeText = trimmed;
+              narrativeSource = 'local';
+              const wordCount = trimmed.split(/\s+/).length;
+              timer.log(`[AI_REPORT] narrative_len=${trimmed.length}, narrative_source=local, words=${wordCount}`);
+              console.log(`[AI_REPORT] narrative_len=${trimmed.length}, narrative_source=local, words=${wordCount}`);
+            } else {
+              timer.log('[AI_REPORT] Local narrative generated but empty after trim');
+              console.log('[AI_REPORT] Local narrative generated but empty after trim');
+              narrativeText = undefined;
+              narrativeSource = 'none';
+            }
+          } else {
+            timer.log(`[AI_REPORT] Local narrative generation returned invalid type: ${typeof narrativeText}`);
+            console.log(`[AI_REPORT] Local narrative generation returned invalid type: ${typeof narrativeText}`);
+            narrativeText = undefined;
+            narrativeSource = 'none';
+          }
+        } catch (narrativeError) {
+          // CRITICAL: Narrative failure must NOT change success:true
+          const errorMsg = narrativeError instanceof Error ? narrativeError.message : String(narrativeError);
+          const errorStack = narrativeError instanceof Error ? narrativeError.stack : '';
+          timer.log(`[AI_REPORT] ✗ Local narrative generation failed (non-blocking): ${errorMsg}`);
+          console.log(`[AI_REPORT] ✗ Local narrative generation failed (non-blocking): ${errorMsg}`);
+          console.log(`[AI_REPORT] Error stack: ${errorStack?.slice(0, 200)}`);
+          narrativeWarning = {
+            code: 'AI_REPORT_NARRATIVE_MISSING',
+            message: `No se pudo generar el reporte narrativo: ${errorMsg.slice(0, 100)}`,
+            severity: 'warning'
+          };
+          narrativeText = undefined;
+          narrativeSource = 'none';
+        }
+      }
+      
+      // CRITICAL: Set narrative on baseAiReport if we have valid text
+      // This ensures it flows through to normalization
+      if (narrativeText && typeof narrativeText === 'string' && narrativeText.trim().length > 0) {
+        baseAiReport.narrative = narrativeText.trim();
+        timer.log(`[AI_REPORT] ✓ Narrative set on baseAiReport: len=${baseAiReport.narrative.length}, source=${narrativeSource}`);
+        console.log(`[AI_REPORT] ✓ Narrative set on baseAiReport: len=${baseAiReport.narrative.length}, source=${narrativeSource}`);
+      } else {
+        timer.log(`[AI_REPORT] ⚠ Narrative NOT set on baseAiReport (text=${narrativeText ? 'present but invalid' : 'undefined'})`);
+        console.log(`[AI_REPORT] ⚠ Narrative NOT set on baseAiReport (text=${narrativeText ? 'present but invalid' : 'undefined'})`);
+      }
+      
+      // CRITICAL: Normalize aiReport to match frontend contract (AIDesignReportData)
+      // normalizeAiReportForFrontend preserves narrative from backendReport.narrative
+      const normalizedAiReport = normalizeAiReportForFrontend(
+        baseAiReport,
+        result.spec,
+        requestedVersions
+      );
+      
+      // Runtime validation: ensure narrative is valid if present
+      if (normalizedAiReport.narrative !== undefined) {
+        if (typeof normalizedAiReport.narrative !== 'string' || normalizedAiReport.narrative.trim().length === 0) {
+          // Invalid narrative - remove it
+          delete normalizedAiReport.narrative;
+          if (!narrativeWarning) {
+            narrativeWarning = {
+              code: 'AI_REPORT_NARRATIVE_INVALID',
+              message: 'El narrative generado no es válido',
+              severity: 'warning'
+            };
+          }
+        }
+      }
+      
+      // CRITICAL: Log final narrative status before returning response
+      const finalNarrative = normalizedAiReport.narrative;
+      if (finalNarrative && typeof finalNarrative === 'string' && finalNarrative.trim().length > 0) {
+        timer.log(`[AI_REPORT] ✓ Final narrative PRESENT in response: len=${finalNarrative.length}, source=${narrativeSource}`);
+        console.log(`[AI_REPORT] ✓ Final narrative PRESENT in response: len=${finalNarrative.length}, source=${narrativeSource}`);
+        console.log(`[AI_REPORT] Narrative preview: ${finalNarrative.slice(0, 100)}...`);
+      } else {
+        timer.log(`[AI_REPORT] ✗ Final narrative MISSING in response: source=${narrativeSource}, type=${typeof finalNarrative}`);
+        console.log(`[AI_REPORT] ✗ Final narrative MISSING in response: source=${narrativeSource}, type=${typeof finalNarrative}`);
+        console.log(`[AI_REPORT] normalizedAiReport keys: ${Object.keys(normalizedAiReport).join(', ')}`);
+        if (narrativeWarning) {
+          console.log(`[AI_REPORT] Warning present: ${narrativeWarning.code} - ${narrativeWarning.message}`);
+        }
+      }
+      
+      // Build final response with normalized aiReport and warnings
       const response: V2Response = {
         success: true,
         evaluationSpec: result.spec,
         requestedVersions,
         instrumentDesignRulesApplied: instrumentDesignRules,
         teacherRemindersByStudent: teacherReminders,
-        aiReport: {
-          designRationale: `Evaluación generada para ${groupContext?.subject || 'materia no especificada'} con ${result.spec.sections.length} secciones.`,
-          versionsExplanation: {
-            generated: ['A', ...(requestedVersions.B ? ['B'] : []), ...(requestedVersions.C ? ['C'] : [])],
-            notGenerated: {
-              ...(requestedVersions.B ? {} : { B: 'No hay estudiantes con alta necesidad de estructuración' }),
-              ...(requestedVersions.C ? {} : { C: 'No hay estudiantes con adecuación de contenido declarada' })
-            }
-          },
-          contemplacionesApplied: {
-            instrumentDesign: instrumentDesignRules,
-            adminReminders: teacherReminders.reduce((sum, r) => sum + r.admin.length, 0),
-            correctionReminders: teacherReminders.reduce((sum, r) => sum + r.correction.length, 0)
-          },
-          responseOptions: {
-            included: responseOptionsInclude,
-            count: responseOptionsInclude ? responseOptionCount : undefined,
-            reason: responseOptionsInclude ? 'Configurado en el plan de diseño' : undefined
-          }
-        },
-        warnings: result.warnings,
+        aiReport: normalizedAiReport, // Normalized to match AIDesignReportData contract
+        warnings: [
+          ...result.warnings,
+          ...(narrativeWarning ? [narrativeWarning] : [])
+        ],
         debug: {
+          build: DEBUG_BUILD,
           model: 'gpt-4.1-2025-04-14',
           promptTokensEstimate: Math.ceil(result.debug.promptLength / 4),
           completionTokensEstimate: Math.ceil(result.debug.responseLength / 4),
@@ -1188,50 +2249,136 @@ serve(async (req) => {
           totalDurationMs: timer.elapsed(),
           openaiDurationMs: result.debug.openaiDurationMs,
           timeoutUsedMs: result.debug.timeoutUsedMs,
-          retryReason: result.debug.retryReason
+          retryReason: result.debug.retryReason,
+          attempts: result.attempts || [],
+          // Narrative debug info
+          narrativeSource: narrativeSource,
+          narrativePresent: !!(normalizedAiReport.narrative && typeof normalizedAiReport.narrative === 'string' && normalizedAiReport.narrative.trim().length > 0)
         }
       };
       
-      timer.log(`SUCCESS: sections=${result.spec.sections.length}, totalTime=${timer.elapsed()}ms`);
+      timer.log(`[DEPLOY_CHECK] build=DEPLOY_CHECK_2026_02_11 SUCCESS: sections=${result.spec.sections.length}, totalTime=${timer.elapsed()}ms, narrative=${baseAiReport.narrative ? 'yes' : 'no'}`);
       
       return new Response(JSON.stringify(response), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        headers: { 
+          ...corsHeaders, 
+          'Content-Type': 'application/json'
+        }
       });
     } else {
-      // Generation failed - return safe minimal response with requestId
+      // CRITICAL: Both attempts failed - use EMERGENCY TEMPLATE (non-AI fallback)
+      // This ensures V2 never falls back to V1 due to OpenAI unavailability
       timer.log('══════════════════════════════════════════════════════════════════');
-      timer.log('❌ [V2_FAILURE] GENERATION FAILED - Returning success=false');
+      timer.log('⚠️ [V2_EMERGENCY] BOTH ATTEMPTS FAILED - Using emergency template');
       timer.log('══════════════════════════════════════════════════════════════════');
-      timer.log(`[V2_FAILURE] warnings: ${JSON.stringify(result.warnings.map(w => ({code: w.code, message: w.message})))}`);
-      timer.log(`[V2_FAILURE] attempt: ${result.attempt}, extractionMethod: ${result.extractionMethod}`);
-      timer.log(`[V2_FAILURE] promptLength: ${result.debug.promptLength}, responseLength: ${result.debug.responseLength}`);
-      timer.log(`[V2_FAILURE] openaiDurationMs: ${result.debug.openaiDurationMs}`);
-      timer.log(`[V2_FAILURE] timeoutUsedMs: ${result.debug.timeoutUsedMs}, retryReason: ${result.debug.retryReason}`);
+      timer.log(`[V2_EMERGENCY] warnings: ${JSON.stringify(result.warnings.map(w => ({code: w.code, message: w.message})))}`);
+      timer.log(`[V2_EMERGENCY] attempts: ${result.attempts?.length || 0}`);
       
-      const response = buildSafeMinimalResponse(
-        result.warnings,
-        requestedVersions,
-        instrumentDesignRules,
-        teacherReminders
-      );
-      
-      // Add debug info even on failure
-      (response as V2Response & { debug?: unknown }).debug = {
-        requestId,
-        timings: timer.summary(),
-        totalDurationMs: timer.elapsed(),
-        openaiDurationMs: result.debug.openaiDurationMs,
-        timeoutUsedMs: result.debug.timeoutUsedMs,
-        retryReason: result.debug.retryReason,
-        promptSizeKB: (result.debug.promptLength / 1024).toFixed(1)
-      };
-      
-      timer.log(`FAILED: warnings=${result.warnings.length}, totalTime=${timer.elapsed()}ms`);
-      
-      return new Response(JSON.stringify(response), {
-        status: 200, // Return 200 with success=false to allow frontend to handle gracefully
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
+      try {
+        // Build emergency template spec (non-AI, deterministic)
+        const emergencySpec = buildEmergencyTemplateSpec(
+          groupContext || {},
+          requestedVersions,
+          evaluation_design_plan
+        );
+        
+        // Record emergency template attempt
+        const emergencyAttempt = {
+          attempt: 3,
+          mode: 'emergency_template' as const,
+          model: 'none',
+          timeoutMs: 0,
+          maxTokens: 0,
+          promptSizeKB: 0,
+          startedAtMs: timer.elapsed(),
+          outcome: 'success' as const,
+          errorMessage: undefined as string | undefined,
+          openaiDurationMs: undefined as number | undefined
+        };
+        
+        const allAttempts = [...(result.attempts || []), emergencyAttempt];
+        
+        // Add emergency warning
+        const emergencyWarnings = [
+          ...result.warnings,
+          {
+            code: 'OPENAI_UNAVAILABLE_EMERGENCY_FALLBACK',
+            message: 'El servicio de IA no está disponible. Se generó una evaluación de contingencia mínima. Por favor, revise y ajuste según sea necesario.',
+            severity: 'error' as const
+          }
+        ];
+        
+        // Build response with emergency spec (success:true to prevent V1 fallback)
+        const response: V2Response = {
+          success: true, // CRITICAL: Must be true to prevent V1 fallback
+          evaluationSpec: emergencySpec,
+          requestedVersions,
+          instrumentDesignRulesApplied: instrumentDesignRules,
+          teacherRemindersByStudent: teacherReminders,
+          aiReport: null, // No AI report for emergency template
+          warnings: emergencyWarnings,
+          debug: {
+            build: DEBUG_BUILD,
+            model: 'emergency_template',
+            promptTokensEstimate: 0,
+            completionTokensEstimate: 0,
+            attempt: 3,
+            extractionMethod: 'emergency_template',
+            requestId,
+            timings: timer.summary(),
+            totalDurationMs: timer.elapsed(),
+            attempts: allAttempts
+          }
+        };
+        
+        timer.log(`✓ EMERGENCY TEMPLATE: Generated minimal spec with ${emergencySpec.sections.length} section(s), ${emergencySpec.sections.reduce((sum, s) => sum + s.items.length, 0)} items`);
+        
+        return new Response(JSON.stringify(response), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+        
+      } catch (emergencyError) {
+        // Even emergency template failed - this should never happen, but handle gracefully
+        const errorMsg = emergencyError instanceof Error ? emergencyError.message : String(emergencyError);
+        timer.log(`✗ EMERGENCY TEMPLATE FAILED: ${errorMsg}`);
+        
+        const response = buildSafeMinimalResponse(
+          [
+            ...result.warnings,
+            {
+              code: 'EMERGENCY_TEMPLATE_FAILED',
+              message: `Error crítico: No se pudo generar evaluación de contingencia: ${errorMsg}`,
+              severity: 'error' as const
+            }
+          ],
+          requestedVersions,
+          instrumentDesignRules,
+          teacherReminders
+        );
+        
+        // Add debug info with attempts
+        (response as V2Response & { debug?: unknown }).debug = {
+          build: DEBUG_BUILD,
+          model: 'gpt-4.1-2025-04-14',
+          promptTokensEstimate: Math.ceil(result.debug.promptLength / 4),
+          completionTokensEstimate: Math.ceil(result.debug.responseLength / 4),
+          attempt: result.attempt,
+          extractionMethod: result.extractionMethod,
+          requestId,
+          timings: timer.summary(),
+          totalDurationMs: timer.elapsed(),
+          openaiDurationMs: result.debug.openaiDurationMs,
+          timeoutUsedMs: result.debug.timeoutUsedMs,
+          retryReason: result.debug.retryReason,
+          promptSizeKB: (result.debug.promptLength / 1024).toFixed(1),
+          attempts: result.attempts || []
+        };
+        
+        return new Response(JSON.stringify(response), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
     }
     
   } catch (error) {
@@ -1258,6 +2405,7 @@ serve(async (req) => {
         severity: 'error'
       }],
       debug: {
+        build: DEBUG_BUILD,
         model: 'gpt-4.1-2025-04-14',
         promptTokensEstimate: 0,
         completionTokensEstimate: 0,

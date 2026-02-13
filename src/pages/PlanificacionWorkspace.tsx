@@ -20,22 +20,9 @@ import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/services/groupC
 import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { resolveMockGroup } from '@/utils/resolveMockGroup';
-import { AIDesignReport } from '@/components/evaluaciones/AIDesignReport';
-import type { AIDesignReportData } from '@/components/evaluaciones/AIDesignReport';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-
-// FIX: Helper to adapt planning ai_design_report format to evaluation format
-function adaptPlanningReportToEvaluationFormat(planningReport: any): AIDesignReportData | null {
-  if (!planningReport) return null;
-  
-  // Planning reports have a different structure, adapt it
-  return {
-    rationale: planningReport.decisions?.structure || planningReport.assumptions?.join('. ') || 'Reporte de diseño de la planificación',
-    coverageMapping: [], // Planning doesn't have session-to-section mapping like evaluations
-    materialsUsage: [], // Could be extracted from inputsUsed.materials if available
-    adaptationNotes: planningReport.assumptions?.join('. ') || 'Sin notas de adaptación'
-  };
-}
+import { PlanningAIDesignReport } from '@/components/planificacion/PlanningAIDesignReport';
+import type { PlanningAIDesignReportData } from '@/components/planificacion/PlanningAIDesignReport';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export default function PlanificacionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -71,6 +58,56 @@ export default function PlanificacionWorkspace() {
     marcarExcepcion,
     cambiarMes
   } = useCalendarioSesiones(id);
+
+  // Garantiza una sesión seleccionada para mostrar un único reporte de IA.
+  useEffect(() => {
+    if (sesionSeleccionada || sesiones.length === 0) return;
+    const firstSession = [...sesiones].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0))[0];
+    if (firstSession) {
+      setSesionSeleccionada(firstSession);
+    }
+  }, [sesionSeleccionada, sesiones, setSesionSeleccionada]);
+
+  const selectedSessionForReport = useMemo(() => {
+    if (sesionSeleccionada) {
+      const freshSelected = sesiones.find((s) => s.id === sesionSeleccionada.id);
+      return freshSelected || sesionSeleccionada;
+    }
+    if (sesiones.length === 0) return null;
+    return [...sesiones].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0))[0];
+  }, [sesionSeleccionada, sesiones]);
+
+  const selectedSessionReport = useMemo<PlanningAIDesignReportData | null>(() => {
+    const sessionAny = selectedSessionForReport as any;
+    if (!sessionAny) return null;
+
+    const rawReport = sessionAny.ai_report ?? sessionAny.ai_design_report ?? null;
+    if (!rawReport) return null;
+
+    if (typeof rawReport === 'string') {
+      try {
+        const parsed = JSON.parse(rawReport) as PlanningAIDesignReportData;
+        return {
+          ...parsed,
+          report_narrative: parsed.report_narrative || parsed.narrative,
+          narrative: parsed.report_narrative || parsed.narrative
+        };
+      } catch {
+        return { report_narrative: rawReport, narrative: rawReport };
+      }
+    }
+
+    if (typeof rawReport === 'object') {
+      const typed = rawReport as PlanningAIDesignReportData;
+      return {
+        ...typed,
+        report_narrative: typed.report_narrative || typed.narrative,
+        narrative: typed.report_narrative || typed.narrative
+      };
+    }
+
+    return null;
+  }, [selectedSessionForReport]);
 
   // FIX: Function to reload planificacion (including ai_design_report)
   const recargarPlanificacion = useCallback(async () => {
@@ -317,11 +354,18 @@ export default function PlanificacionWorkspace() {
       });
 
       if (error) {
+        console.error('[GEN_PLAN_FRONTEND] Function error:', error);
         throw new Error(error.message || 'Error generando plan de clase');
       }
 
+      if (!data) {
+        console.error('[GEN_PLAN_FRONTEND] No data returned from function');
+        throw new Error('La función no retornó datos');
+      }
+
       if (!data?.plan_html?.includes('<section id="plan">')) {
-        throw new Error('Respuesta de IA sin estructura v?lida');
+        console.error('[GEN_PLAN_FRONTEND] Invalid HTML structure:', data.plan_html?.substring(0, 200));
+        throw new Error('Respuesta de IA sin estructura válida');
       }
 
       // PHASE 2: Parse and sanitize AI-generated HTML before saving
@@ -949,22 +993,27 @@ export default function PlanificacionWorkspace() {
                 planificacionId={planificacion?.id}
                 materia={planificacion?.materia}
                 nivel={planificacion?.nivel}
+                showAiReportPanel={false}
               />
             </div>
 
-            {/* FIX: AI Design Report Panel (Row 3) */}
+            {/* Panel único de Reporte IA: depende de la sesión seleccionada */}
             <div className="col-span-12 order-4 mt-4">
-              {planificacion?.ai_design_report ? (
-                <AIDesignReport
-                  reportData={adaptPlanningReportToEvaluationFormat(planificacion.ai_design_report)}
-                  className="mt-6"
+              {selectedSessionReport ? (
+                <PlanningAIDesignReport
+                  reportData={selectedSessionReport}
+                  className="mt-2"
+                  sessionCompetencies={selectedSessionForReport?.competencias_anep || []}
+                  sessionTitle={selectedSessionForReport?.titulo || selectedSessionForReport?.session_brief || `Sesión ${selectedSessionForReport?.orden ?? ''}`}
                 />
               ) : (
                 <Card className="border-l-4 border-purple-500 bg-purple-50 dark:bg-purple-950/20">
                   <CardHeader>
                     <CardTitle className="text-base">Reporte de IA</CardTitle>
                     <CardDescription className="text-xs">
-                      No hay evidencia de diseño disponible para esta planificación. Se generará después de crear o modificar sesiones.
+                      {selectedSessionForReport
+                        ? 'El reporte aún se está generando para esta sesión.'
+                        : 'Selecciona una sesión del calendario para ver su reporte de IA.'}
                     </CardDescription>
                   </CardHeader>
                 </Card>

@@ -1,0 +1,105 @@
+{
+  "example": "Planning AI Report for 2-session plan with one uploaded material",
+  "sessions": [
+    {
+      "sessionOrder": 1,
+      "sessionId": "sesion-1-id",
+      "ai_design_report": {
+        "narrative": "Esta es la primera sesión de la unidad \"El Batllismo y las reformas sociales en Uruguay\", diseñada para un grupo de 25 estudiantes de 3er año de Historia. La sesión tiene una duración de 90 minutos y se enfoca en introducir los conceptos fundamentales del período batllista.\n\nEn esta clase se trabaja específicamente con la primera parte del material subido \"Historia del Uruguay Contemporáneo\", cubriendo la sección introductoria sobre el contexto histórico previo a las reformas de José Batlle y Ordóñez. Esta parte fue seleccionada para esta sesión porque es la primera clase de la unidad y requiere establecer el contexto histórico necesario para comprender las reformas posteriores. Las clases siguientes (sesión 2) profundizarán en las reformas específicas y su impacto.\n\nLas competencias de \"Pensamiento crítico\" y \"Comprensión histórica\" se desarrollan mediante actividades de análisis de fuentes primarias en el Desarrollo, donde los estudiantes examinan documentos de la época y debaten sobre las condiciones sociales previas a las reformas. La actividad de Cierre permite ejercitar la síntesis histórica mediante la construcción de una línea de tiempo colaborativa.\n\nEl requerimiento del docente de \"hacer énfasis en el contexto social\" se satisface mediante la inclusión de una actividad específica en el Desarrollo que analiza las condiciones de vida de los trabajadores urbanos y rurales en el período previo a las reformas, utilizando extractos del material subido.\n\nLa estructura del plan sigue el modelo Inicio-Desarrollo-Cierre, con 15 minutos de activación de conocimientos previos, 60 minutos de trabajo con fuentes primarias y análisis, y 15 minutos de síntesis y reflexión. Esta estructura permite una progresión lógica desde la activación hasta la construcción del conocimiento y finalmente la consolidación.\n\nSe consideraron las características del grupo (perfil de aprendizaje predominantemente visual y kinestésico) mediante la inclusión de actividades con imágenes históricas y trabajo colaborativo. Las adaptaciones incluyen apoyo visual adicional para estudiantes con dificultades de lectura y agrupamientos flexibles para facilitar la participación.",
+        "contentCoverage": [
+          {
+            "sourceType": "uploaded_material",
+            "sourceId": "material-123",
+            "coveredPart": "Sección introductoria del material 'Historia del Uruguay Contemporáneo': contexto histórico previo a las reformas batllistas (páginas 1-15 aproximadamente)",
+            "whyThisPartInThisClass": "Esta es la primera clase de la unidad \"El Batllismo y las reformas sociales en Uruguay\", por lo que se introduce este contenido como base fundamental. Las clases siguientes construirán sobre estos conceptos iniciales.",
+            "howItIsWorked": "Se trabaja mediante lectura guiada de extractos del material, análisis de imágenes históricas de la época, y discusión guiada sobre las condiciones sociales previas a las reformas. Las actividades están distribuidas en Inicio (activación), Desarrollo (análisis profundo) y Cierre (síntesis).",
+            "evidenceOrCheck": "Se evidencia mediante participación en la discusión guiada, respuestas a preguntas sobre el contexto histórico, y construcción colaborativa de una línea de tiempo que muestra los eventos previos a las reformas.",
+            "relatedCompetencies": ["Pensamiento crítico", "Comprensión histórica"]
+          }
+        ],
+        "competencyDevelopment": [
+          {
+            "competency": "Pensamiento crítico",
+            "howDevelopedInThisClass": "Se desarrolla mediante el análisis de fuentes primarias (documentos de la época) y el debate guiado sobre las condiciones sociales. Los estudiantes deben identificar causas y efectos, y evaluar la confiabilidad de las fuentes.",
+            "linkedActivities": ["Análisis de documentos históricos en Desarrollo", "Debate guiado sobre condiciones sociales", "Construcción de línea de tiempo en Cierre"]
+          },
+          {
+            "competency": "Comprensión histórica",
+            "howDevelopedInThisClass": "Se desarrolla mediante la contextualización temporal y espacial del período histórico, la identificación de continuidades y cambios, y la comprensión de la multicausalidad de los procesos históricos.",
+            "linkedActivities": ["Lectura guiada del material en Desarrollo", "Análisis de imágenes históricas", "Síntesis temporal en Cierre"]
+          }
+        ],
+        "teacherRequirementsApplied": [
+          {
+            "requirement": "Hacer énfasis en el contexto social",
+            "howItWasSatisfied": "Se incluyó una actividad específica en el Desarrollo que analiza las condiciones de vida de trabajadores urbanos y rurales en el período previo a las reformas, utilizando extractos del material subido y fuentes primarias complementarias."
+          }
+        ],
+        "inputsUsed": {
+          "anepContent": true,
+          "materials": true,
+          "sessionBrief": false,
+          "unitContext": true
+        },
+        "decisions": {
+          "structure": "Inicio-Desarrollo-Cierre con énfasis en trabajo con fuentes primarias",
+          "timeAllocation": "15 min Inicio, 60 min Desarrollo, 15 min Cierre"
+        },
+        "assumptions": [
+          "Los estudiantes tienen conocimientos básicos sobre la organización política del Uruguay del siglo XIX",
+          "El grupo puede trabajar colaborativamente en análisis de documentos"
+        ]
+      }
+    },
+    {
+      "sessionOrder": 2,
+      "sessionId": "sesion-2-id",
+      "ai_design_report": {
+        "narrative": "Esta es la segunda sesión de la unidad \"El Batllismo y las reformas sociales en Uruguay\", diseñada para continuar el trabajo iniciado en la sesión anterior. La sesión tiene una duración de 90 minutos y profundiza en las reformas específicas implementadas por José Batlle y Ordóñez.\n\nEsta clase continúa desde la sesión anterior, trabajando ahora con la segunda parte del material subido \"Historia del Uruguay Contemporáneo\", específicamente la sección sobre las reformas batllistas y la Ley de 8 horas (páginas 16-30 aproximadamente). Esta parte fue seleccionada para esta sesión porque es la continuación lógica de la clase anterior: los estudiantes ya tienen el contexto histórico necesario (trabajado en la sesión 1) y ahora pueden profundizar en las reformas específicas. Esta clase prepara para futuras sesiones que analizarán el impacto de estas reformas.\n\nLas competencias de \"Pensamiento crítico\" y \"Análisis de procesos sociales\" se desarrollan mediante actividades de análisis comparativo entre las condiciones previas (trabajadas en sesión 1) y las reformas implementadas. La actividad de Desarrollo incluye un análisis detallado de la Ley de 8 horas y su impacto, utilizando extractos del material y fuentes complementarias.\n\nEl requerimiento del docente de \"conectar las reformas con el presente\" se satisface mediante una actividad en el Cierre donde los estudiantes identifican legados de las reformas batllistas en la sociedad uruguaya actual, creando un puente entre el pasado y el presente.\n\nLa estructura mantiene el modelo Inicio-Desarrollo-Cierre, pero con un Inicio más breve (10 minutos) que recupera los conceptos de la sesión anterior mediante una actividad de activación rápida, 65 minutos de Desarrollo enfocados en el análisis profundo de las reformas, y 15 minutos de Cierre con la conexión presente-pasado.\n\nSe mantienen las consideraciones del grupo (perfil visual y kinestésico) con actividades que incluyen análisis de documentos, trabajo en grupos pequeños, y construcción de un cuadro comparativo. Las adaptaciones incluyen apoyo para estudiantes que necesitan más tiempo para procesar la información histórica.",
+        "contentCoverage": [
+          {
+            "sourceType": "uploaded_material",
+            "sourceId": "material-123",
+            "coveredPart": "Segunda parte del material 'Historia del Uruguay Contemporáneo': las reformas batllistas y la Ley de 8 horas (páginas 16-30 aproximadamente)",
+            "whyThisPartInThisClass": "Esta clase (2 de 2) profundiza en este contenido como continuación lógica de las clases anteriores. Se asume que los estudiantes ya trabajaron los contenidos introductorios en la sesión previa, permitiendo mayor profundización aquí. Hay continuidad explícita con las clases anteriores de la unidad.",
+            "howItIsWorked": "Se trabaja mediante análisis comparativo entre condiciones previas (sesión 1) y reformas implementadas, lectura guiada de extractos sobre la Ley de 8 horas, análisis de documentos legales de la época, y construcción de un cuadro comparativo. Las actividades están distribuidas en Inicio (recuperación de sesión anterior), Desarrollo (análisis profundo) y Cierre (conexión presente-pasado).",
+            "evidenceOrCheck": "Se evidencia mediante participación en el análisis comparativo, construcción del cuadro comparativo, identificación de legados en el presente, y respuestas a preguntas sobre el impacto de las reformas.",
+            "relatedCompetencies": ["Pensamiento crítico", "Análisis de procesos sociales"]
+          }
+        ],
+        "competencyDevelopment": [
+          {
+            "competency": "Pensamiento crítico",
+            "howDevelopedInThisClass": "Se desarrolla mediante el análisis comparativo entre condiciones previas y reformas, la evaluación del impacto de las reformas, y la identificación de causas y consecuencias de los cambios implementados.",
+            "linkedActivities": ["Análisis comparativo en Desarrollo", "Evaluación de impacto de reformas", "Identificación de legados en Cierre"]
+          },
+          {
+            "competency": "Análisis de procesos sociales",
+            "howDevelopedInThisClass": "Se desarrolla mediante la comprensión de cómo las reformas transformaron la sociedad uruguaya, el análisis de la interacción entre actores sociales y políticas públicas, y la identificación de continuidades y cambios.",
+            "linkedActivities": ["Lectura y análisis de la Ley de 8 horas", "Construcción de cuadro comparativo", "Análisis de documentos legales"]
+          }
+        ],
+        "teacherRequirementsApplied": [
+          {
+            "requirement": "Conectar las reformas con el presente",
+            "howItWasSatisfied": "Se incluyó una actividad específica en el Cierre donde los estudiantes identifican legados de las reformas batllistas en la sociedad uruguaya actual, creando un puente explícito entre el pasado histórico y el presente."
+          }
+        ],
+        "inputsUsed": {
+          "anepContent": true,
+          "materials": true,
+          "sessionBrief": false,
+          "unitContext": true
+        },
+        "decisions": {
+          "structure": "Inicio-Desarrollo-Cierre con análisis comparativo y conexión presente-pasado",
+          "timeAllocation": "10 min Inicio, 65 min Desarrollo, 15 min Cierre"
+        },
+        "assumptions": [
+          "Los estudiantes recordaron los conceptos trabajados en la sesión anterior",
+          "El grupo puede realizar análisis comparativos con apoyo"
+        ]
+      }
+    }
+  ]
+}

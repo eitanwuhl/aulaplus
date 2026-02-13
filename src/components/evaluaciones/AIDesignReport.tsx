@@ -16,6 +16,7 @@ import { ChevronDown, ChevronUp, FileText, Lightbulb } from 'lucide-react';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
 
 export interface AIDesignReportData {
+  narrative?: string;  // Teacher-friendly narrative report (new)
   rationale?: string;  // Global design rationale (legacy)
   coverageMapping?: {
     sessionId: string;
@@ -74,6 +75,9 @@ export function AIDesignReport({ reportData, className = '' }: AIDesignReportPro
   
   if (!reportData) return null;
   
+  // If narrative exists, show it as primary content with fallback to legacy
+  const hasNarrative = reportData.narrative && reportData.narrative.trim().length > 0;
+  
   return (
     <Card className={`border-l-4 border-blue-500 bg-blue-50 dark:bg-blue-950/20 ${className}`}>
       <CardHeader>
@@ -103,13 +107,29 @@ export function AIDesignReport({ reportData, className = '' }: AIDesignReportPro
           </Button>
         </div>
         <p className="text-sm text-muted-foreground mt-1">
-          Explicación global de por qué se generaron versiones, opciones y recordatorios
+          {hasNarrative 
+            ? 'Explicación narrativa del diseño de la evaluación'
+            : 'Explicación global de por qué se generaron versiones, opciones y recordatorios'}
         </p>
       </CardHeader>
       
       <Collapsible open={isOpen}>
         <CollapsibleContent>
           <CardContent className="space-y-6 pt-0">
+            {/* Narrative report (new format) */}
+            {hasNarrative && (
+              <div className="space-y-2">
+                <div className="prose prose-sm max-w-none">
+                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                    {reportData.narrative}
+                  </p>
+                </div>
+              </div>
+            )}
+            
+            {/* Legacy structured report (fallback) */}
+            {!hasNarrative && (
+              <>
             {(reportData.rationale || reportData.versions?.reason) && (
               <div className="space-y-2">
                 <h4 className="font-semibold text-sm flex items-center gap-2">
@@ -282,6 +302,8 @@ export function AIDesignReport({ reportData, className = '' }: AIDesignReportPro
                   Las recomendaciones específicas por estudiante están en las "casillas" de cada versión.
                 </p>
               </div>
+            )}
+            </>
             )}
           </CardContent>
         </CollapsibleContent>

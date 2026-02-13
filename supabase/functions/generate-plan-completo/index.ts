@@ -1,12 +1,516 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
-const openAIApiKey = Deno.env.get('OPENAI_API_KEY');
-
+// Safe CORS headers - defined at top level (no side effects)
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Max-Age': '86400', // 24 hours
 };
+
+// Safe env read - wrapped to prevent boot failure
+function getOpenAIApiKey(): string | undefined {
+  try {
+    return Deno.env.get('OPENAI_API_KEY') || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractMaterialSummary(materialsContext?: string): {
+  themes: string[];
+  concepts: string[];
+  vocabulary: string[];
+} {
+  if (!materialsContext || !materialsContext.trim()) {
+    return { themes: [], concepts: [], vocabulary: [] };
+  }
+
+  const cleaned = materialsContext
+    .replace(/[#*_`>]/g, " ")
+    .split("\n")
+    .map((line) => line.replace(/^[\s\-•\d\.\)\(]+/, "").trim())
+    .filter((line) => line.length >= 12);
+
+  const uniqueLines: string[] = [];
+  const seen = new Set<string>();
+  for (const line of cleaned) {
+    const key = line.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueLines.push(line);
+    }
+  }
+
+  const themes = uniqueLines.slice(0, 6);
+  const concepts = uniqueLines.slice(0, 10).map((line) => {
+    const firstChunk = line.split(/[,:;.!?]/)[0].trim();
+    return firstChunk.length > 0 ? firstChunk : line;
+  });
+  const vocabulary = concepts
+    .flatMap((item) => item.split(/\s+/))
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 5 && /^[A-Za-zÁÉÍÓÚáéíóúÑñüÜ-]+$/.test(t))
+    .slice(0, 20);
+
+  return { themes, concepts, vocabulary };
+}
+
+function partitionArray<T>(items: T[], bucketCount: number): T[][] {
+  if (bucketCount <= 1) return [items];
+  const safeCount = Math.max(1, bucketCount);
+  const output: T[][] = Array.from({ length: safeCount }, () => []);
+  items.forEach((item, idx) => {
+    output[idx % safeCount].push(item);
+  });
+  return output;
+}
+
+/**
+ * TASK C: Build coverage plan for multi-session coherence
+ * Divides materials/ANEP content across sessions with coherent progression
+ */
+function buildCoveragePlan(
+  totalSessions: number,
+  materialsContext: string | undefined,
+  contenidos: any,
+  unitContext?: any
+): Array<{
+  sessionNumber: number;
+  contentFocus: string;
+  materialSegment?: string;
+  anepItems?: string[];
+  rationale: string;
+}> {
+  const plan: Array<{
+    sessionNumber: number;
+    contentFocus: string;
+    materialSegment?: string;
+    anepItems?: string[];
+    rationale: string;
+  }> = [];
+  
+  // Extract content items
+  const anepItems = Array.isArray(contenidos) ? contenidos.filter((c: any) => c && String(c).trim()) : [];
+  const hasMaterials = materialsContext && materialsContext.trim().length > 0;
+  const materialSummary = extractMaterialSummary(materialsContext);
+  const segmentedThemes = partitionArray(materialSummary.themes, Math.max(1, totalSessions));
+  
+  for (let i = 1; i <= totalSessions; i++) {
+    const isFirst = i === 1;
+    const isLast = i === totalSessions;
+    const isMiddle = !isFirst && !isLast;
+    
+    let contentFocus = '';
+    let materialSegment: string | undefined;
+    let anepItemsForSession: string[] | undefined;
+    let rationale = '';
+    
+    if (hasMaterials) {
+      // Divide material across sessions using extracted summary (if available)
+      const sessionThemes = segmentedThemes[i - 1] || [];
+      const thematicChunk = sessionThemes.length > 0
+        ? sessionThemes.join('; ')
+        : undefined;
+
+      if (isFirst) {
+        materialSegment = thematicChunk || 'Primera parte del material (introducción y conceptos base)';
+        contentFocus = thematicChunk
+          ? `Introducción guiada de: ${thematicChunk}`
+          : 'Introducción a los conceptos fundamentales del material proporcionado';
+        rationale = 'Esta sesión introduce conceptos base del material para construir lenguaje común y contexto histórico-conceptual antes de profundizar.';
+      } else if (isMiddle) {
+        materialSegment = thematicChunk || `Parte intermedia del material (profundización, sesión ${i} de ${totalSessions})`;
+        contentFocus = thematicChunk
+          ? `Profundización y análisis de: ${thematicChunk}`
+          : `Profundización en conceptos intermedios del material, continuando desde la sesión anterior`;
+        rationale = `Esta sesión profundiza y compara ideas ya iniciadas, retomando lo trabajado y elevando la complejidad de análisis para sostener continuidad.`;
+      } else {
+        materialSegment = thematicChunk || 'Parte final del material (integración y síntesis)';
+        contentFocus = thematicChunk
+          ? `Integración, debate y transferencia sobre: ${thematicChunk}`
+          : 'Integración y síntesis de todo el material trabajado en las sesiones anteriores';
+        rationale = 'Esta sesión cierra la secuencia integrando conceptos previos para producir síntesis, argumentación y transferencia a nuevas situaciones.';
+      }
+    }
+    
+    if (anepItems.length > 0) {
+      // Distribute ANEP items across sessions
+      const itemsPerSession = Math.ceil(anepItems.length / totalSessions);
+      const startIdx = (i - 1) * itemsPerSession;
+      const endIdx = Math.min(startIdx + itemsPerSession, anepItems.length);
+      anepItemsForSession = anepItems.slice(startIdx, endIdx);
+      
+      if (!contentFocus) {
+        contentFocus = anepItemsForSession.join(', ');
+      } else {
+        contentFocus += `; ${anepItemsForSession.join(', ')}`;
+      }
+      
+      if (!rationale) {
+        rationale = `Estos contenidos ANEP fueron seleccionados para esta sesión porque ${isFirst ? 'establecen la base conceptual' : isLast ? 'permiten la integración y síntesis' : 'profundizan en conceptos ya introducidos'}.`;
+      }
+    }
+    
+    if (!contentFocus) {
+      contentFocus = `Contenido de la sesión ${i}`;
+      rationale = `Contenido inferido de la estructura del plan generado para esta sesión.`;
+    }
+    
+    plan.push({
+      sessionNumber: i,
+      contentFocus,
+      materialSegment,
+      anepItems: anepItemsForSession,
+      rationale
+    });
+  }
+  
+  return plan;
+}
+
+/**
+ * Build contentCoverage array from available data
+ */
+function buildContentCoverage(
+  contenidos: any,
+  materialsContext: string | undefined,
+  unitContext: any,
+  sessionBrief: string | undefined,
+  orden: number,
+  hasAnepContent: boolean,
+  hasMaterials: boolean
+): Array<{
+  sourceType: 'uploaded_material' | 'ANEP' | 'teacher_requirements' | 'inferred';
+  sourceId?: string;
+  coveredPart: string;
+  whyThisPartInThisClass: string;
+  howItIsWorked: string;
+  assessmentOrEvidence: string;
+  relatedCompetencies: string[];
+}> {
+  const coverage: Array<{
+    sourceType: 'uploaded_material' | 'ANEP' | 'teacher_requirements' | 'inferred';
+    sourceId?: string;
+    coveredPart: string;
+    whyThisPartInThisClass: string;
+    howItIsWorked: string;
+    assessmentOrEvidence: string;
+    relatedCompetencies: string[];
+  }> = [];
+  
+  // Determine source type
+  let sourceType: 'uploaded_material' | 'ANEP' | 'teacher_requirements' | 'inferred' = 'inferred';
+  if (hasMaterials && materialsContext) {
+    sourceType = 'uploaded_material';
+  } else if (hasAnepContent) {
+    sourceType = 'ANEP';
+  } else if (sessionBrief?.trim()) {
+    sourceType = 'teacher_requirements';
+  }
+  
+  // Extract content focuses
+  if (Array.isArray(contenidos) && contenidos.length > 0) {
+    // Use provided ANEP contents
+    contenidos.slice(0, 3).forEach((content, idx) => {
+      const isFirstClass = unitContext?.claseEnUnidad === 1;
+      const isLastClass = unitContext?.claseEnUnidad === unitContext?.totalClasesUnidad;
+      const isIntermediate = !isFirstClass && !isLastClass;
+      
+      let whyThisPart = '';
+      if (isFirstClass) {
+        whyThisPart = `Esta es la primera clase de la unidad "${unitContext?.contenido || 'la unidad'}", por lo que se introduce este contenido como base fundamental. Las clases siguientes construirán sobre estos conceptos iniciales.`;
+      } else if (isIntermediate) {
+        whyThisPart = `Esta clase (${unitContext?.claseEnUnidad} de ${unitContext?.totalClasesUnidad}) profundiza en este contenido como continuación lógica de las clases anteriores. Se asume que los estudiantes ya trabajaron los contenidos introductorios en sesiones previas, permitiendo mayor profundización aquí.`;
+      } else if (isLastClass) {
+        whyThisPart = `Esta es la última clase de la unidad, por lo que se integra y sintetiza este contenido con todos los trabajados en las ${unitContext?.totalClasesUnidad - 1} clases anteriores. Se busca consolidación y transferencia del aprendizaje.`;
+      } else {
+        whyThisPart = `Este contenido se trabaja en esta clase como parte de la secuencia didáctica de la unidad.`;
+      }
+      
+      // Add continuity mention if not first class
+      if (!isFirstClass && unitContext) {
+        whyThisPart += ` Hay continuidad explícita con las clases anteriores de la unidad.`;
+      }
+      
+      coverage.push({
+        sourceType: hasAnepContent ? 'ANEP' : sourceType,
+        coveredPart: String(content),
+        whyThisPartInThisClass: whyThisPart,
+        howItIsWorked: `Se trabaja mediante actividades de Inicio (activación de conocimientos previos), Desarrollo (exploración y construcción del conocimiento) y Cierre (síntesis y reflexión).`,
+        assessmentOrEvidence: `Se evidencia mediante participación activa, respuestas a preguntas guía, trabajo colaborativo y síntesis final.`,
+        relatedCompetencies: []
+      });
+    });
+  } else if (sessionBrief?.trim()) {
+    // Use sessionBrief as content focus
+    const isFirstClass = unitContext?.claseEnUnidad === 1;
+    const isLastClass = unitContext?.claseEnUnidad === unitContext?.totalClasesUnidad;
+    
+    let whyThisPart = `Este contenido fue especificado por el docente como enfoque específico de esta sesión.`;
+    if (unitContext) {
+      if (isFirstClass) {
+        whyThisPart += ` Como es la primera clase de la unidad, este tema se introduce como base.`;
+      } else if (isLastClass) {
+        whyThisPart += ` Como es la última clase de la unidad, este tema se integra con los trabajados anteriormente.`;
+      } else {
+        whyThisPart += ` Esta clase profundiza en este tema como parte de la secuencia de la unidad (clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}).`;
+      }
+    }
+    
+    coverage.push({
+      sourceType: 'teacher_requirements',
+      coveredPart: sessionBrief.trim(),
+      whyThisPartInThisClass: whyThisPart,
+      howItIsWorked: `Se trabaja mediante actividades específicas orientadas al tema "${sessionBrief.trim()}" en las secciones de Inicio, Desarrollo y Cierre.`,
+      assessmentOrEvidence: `Se evidencia mediante la participación y respuestas específicas relacionadas con "${sessionBrief.trim()}".`,
+      relatedCompetencies: []
+    });
+  } else {
+    // Inferred from generated plan
+    coverage.push({
+      sourceType: 'inferred',
+      coveredPart: `Contenido inferido de las secciones y actividades generadas para esta clase`,
+      whyThisPartInThisClass: `No se proporcionaron materiales fuente, contenidos ANEP o requerimientos específicos del docente, por lo que el contenido se infirió de la estructura del plan generado.`,
+      howItIsWorked: `Se trabaja mediante las actividades propuestas en las secciones de Inicio, Desarrollo y Cierre del plan.`,
+      assessmentOrEvidence: `Se evidencia mediante la participación y trabajo realizado en las actividades propuestas.`,
+      relatedCompetencies: []
+    });
+  }
+  
+  return coverage;
+}
+
+/**
+ * Build standardsCoverage array from available data (GOAL C)
+ */
+function buildStandardsCoverage(
+  contenidos: any,
+  competencias: any,
+  orden: number,
+  unitContext?: any
+): Array<{
+  standard: string;
+  whyPrioritized: string;
+  howCovered: string;
+  evidence: string;
+}> {
+  const coverage: Array<{
+    standard: string;
+    whyPrioritized: string;
+    howCovered: string;
+    evidence: string;
+  }> = [];
+  
+  if (Array.isArray(contenidos) && contenidos.length > 0) {
+    contenidos.slice(0, 3).forEach((content) => {
+      const isFirstClass = unitContext?.claseEnUnidad === 1;
+      const isLastClass = unitContext?.claseEnUnidad === unitContext?.totalClasesUnidad;
+      
+      let whyPrioritized = '';
+      if (isFirstClass) {
+        whyPrioritized = `Este contenido se priorizó porque es fundamental para establecer la base conceptual de la unidad. Las competencias seleccionadas requieren este conocimiento previo.`;
+      } else if (isLastClass) {
+        whyPrioritized = `Este contenido se priorizó para integrar y sintetizar todos los aprendizajes de la unidad, permitiendo la transferencia de competencias.`;
+      } else {
+        whyPrioritized = `Este contenido se priorizó porque profundiza en conceptos ya introducidos, permitiendo mayor complejidad en el desarrollo de competencias.`;
+      }
+      
+      coverage.push({
+        standard: String(content),
+        whyPrioritized: whyPrioritized,
+        howCovered: `Se cubre mediante actividades de Inicio (activación), Desarrollo (construcción del conocimiento) y Cierre (síntesis), integrado con las competencias seleccionadas.`,
+        evidence: `Se evidencia mediante participación activa, respuestas a preguntas guía, trabajo colaborativo y síntesis final que demuestra comprensión del contenido.`
+      });
+    });
+  }
+  
+  return coverage;
+}
+
+/**
+ * Build competenciesOperationalization array from available data (GOAL C)
+ */
+function buildCompetenciesOperationalization(
+  competencias: any,
+  planHtml: string
+): Array<{
+  competency: string;
+  concreteDevelopment: string;
+  specificActivities: string[];
+  learningEvidence: string;
+}> {
+  const operationalization: Array<{
+    competency: string;
+    concreteDevelopment: string;
+    specificActivities: string[];
+    learningEvidence: string;
+  }> = [];
+  
+  if (Array.isArray(competencias) && competencias.length > 0) {
+    competencias.slice(0, 4).forEach((competency) => {
+      // Extract activities from HTML if available
+      const activities: string[] = [];
+      if (planHtml) {
+        const inicioMatch = planHtml.match(/<h2[^>]*>.*?Inicio.*?<\/h2>/i);
+        const desarrolloMatch = planHtml.match(/<h2[^>]*>.*?Desarrollo.*?<\/h2>/i);
+        if (inicioMatch) activities.push('Actividades de Inicio');
+        if (desarrolloMatch) activities.push('Actividades de Desarrollo');
+      }
+      
+      operationalization.push({
+        competency: String(competency),
+        concreteDevelopment: `Esta competencia se desarrolla mediante actividades específicas que requieren la aplicación práctica de conocimientos, análisis crítico y construcción colaborativa. Las actividades están diseñadas para ejercitar habilidades específicas de esta competencia.`,
+        specificActivities: activities.length > 0 ? activities : ['Actividades del plan generado'],
+        learningEvidence: `Se evidencia mediante la participación activa, respuestas que demuestran comprensión, trabajo colaborativo efectivo y síntesis que muestra transferencia del aprendizaje.`
+      });
+    });
+  }
+  
+  return operationalization;
+}
+
+/**
+ * Build competencyDevelopment array from available data
+ */
+function buildCompetencyDevelopment(
+  competencias: any,
+  planHtml: string
+): Array<{
+  competency: string;
+  howDevelopedInThisClass: string;
+  linkedActivities: string[];
+}> {
+  const development: Array<{
+    competency: string;
+    howDevelopedInThisClass: string;
+    linkedActivities: string[];
+  }> = [];
+  
+  if (Array.isArray(competencias) && competencias.length > 0) {
+    competencias.forEach((comp: string) => {
+      // Extract activity hints from HTML (simplified)
+      const activities: string[] = [];
+      if (planHtml) {
+        const h3Matches = planHtml.match(/<h3[^>]*>(.*?)<\/h3>/gi);
+        if (h3Matches) {
+          activities.push(...h3Matches.slice(0, 3).map(m => m.replace(/<[^>]*>/g, '').trim()));
+        }
+      }
+      
+      // Try to extract more specific activities from HTML
+      const specificActivities: string[] = [];
+      if (planHtml) {
+        // Extract H3 headings (activity titles)
+        const h3Matches = planHtml.match(/<h3[^>]*>(.*?)<\/h3>/gi);
+        if (h3Matches) {
+          specificActivities.push(...h3Matches.slice(0, 5).map(m => m.replace(/<[^>]*>/g, '').trim()));
+        }
+        // If no H3, try to extract from list items in Development section
+        if (specificActivities.length === 0) {
+          const developmentMatch = planHtml.match(/<h2[^>]*>.*?Desarrollo.*?<\/h2>(.*?)(?=<h2|$)/is);
+          if (developmentMatch) {
+            const liMatches = developmentMatch[1].match(/<li[^>]*>(.*?)<\/li>/gi);
+            if (liMatches) {
+              specificActivities.push(...liMatches.slice(0, 3).map(m => m.replace(/<[^>]*>/g, '').trim()));
+            }
+          }
+        }
+      }
+      
+      development.push({
+        competency: String(comp),
+        howDevelopedInThisClass: `Se desarrolla mediante actividades de exploración, construcción colaborativa y aplicación práctica del conocimiento relacionado con esta competencia. Las actividades propuestas permiten que los estudiantes ejerciten habilidades específicas de esta competencia a través de la participación activa y el trabajo colaborativo.`,
+        linkedActivities: specificActivities.length > 0 ? specificActivities : (activities.length > 0 ? activities : ['Actividades de Inicio', 'Actividades de Desarrollo', 'Actividades de Cierre'])
+      });
+    });
+  }
+  
+  return development;
+}
+
+/**
+ * Build teacherRequirementsApplied array from available data
+ */
+function buildTeacherRequirementsApplied(
+  instruccionesDocente: string | undefined,
+  sessionBrief: string | undefined
+): Array<{
+  requirement: string;
+  howItWasSatisfied: string;
+}> {
+  const applied: Array<{
+    requirement: string;
+    howItWasSatisfied: string;
+  }> = [];
+  
+  if (sessionBrief?.trim()) {
+    applied.push({
+      requirement: `Enfoque específico: "${sessionBrief.trim()}"`,
+      howItWasSatisfied: `El plan está estructurado alrededor de este tema, con todas las actividades (Inicio, Desarrollo, Cierre) orientadas específicamente hacia "${sessionBrief.trim()}". El título de la clase refleja este enfoque.`
+    });
+  }
+  
+  if (instruccionesDocente?.trim()) {
+    // Extract key requirements from instructions (simplified)
+    const instructions = instruccionesDocente.trim();
+    if (instructions.length > 0) {
+      applied.push({
+        requirement: `Instrucciones del docente: ${instructions.substring(0, 100)}${instructions.length > 100 ? '...' : ''}`,
+        howItWasSatisfied: `Las instrucciones fueron consideradas en el diseño de las actividades y la estructura del plan, adaptando el contenido y metodología según las indicaciones proporcionadas.`
+      });
+    }
+  }
+  
+  return applied;
+}
+
+function buildTeacherReportNarrative(params: {
+  maybeNarrative: unknown;
+  orden: number;
+  totalSessions: number;
+  duracionMin: number;
+  materia?: string;
+  nivel?: string;
+  sessionCoverage?: { contentFocus?: string; rationale?: string; materialSegment?: string };
+  competencies: string[];
+  teacherRequirements: string[];
+  hasAnepContent: boolean;
+  hasMaterials: boolean;
+}): string {
+  if (typeof params.maybeNarrative === "string" && params.maybeNarrative.trim().length > 0) {
+    return params.maybeNarrative.trim();
+  }
+
+  const continuidad = params.totalSessions > 1
+    ? (params.orden === 1
+      ? "Esta primera sesión instala las bases para las clases siguientes."
+      : params.orden === params.totalSessions
+        ? "Esta sesión cierra la secuencia integrando lo trabajado en las clases anteriores."
+        : `Esta sesión retoma lo ya trabajado y prepara la continuidad hacia la sesión ${params.orden + 1}.`)
+    : "Esta sesión funciona como una clase completa en sí misma.";
+
+  const foco = params.sessionCoverage?.contentFocus || "el contenido previsto para la clase";
+  const justificacion = params.sessionCoverage?.rationale || "se priorizó por su relevancia para la progresión didáctica de la unidad.";
+  const segmento = params.sessionCoverage?.materialSegment ? `Se trabajó especialmente ${params.sessionCoverage.materialSegment}. ` : "";
+  const compText = params.competencies.length > 0
+    ? `Las competencias priorizadas fueron ${params.competencies.slice(0, 4).join(", ")}.`
+    : "No se informaron competencias específicas para esta sesión, por lo que se priorizó comprensión conceptual y producción guiada.";
+  const reqText = params.teacherRequirements.length > 0
+    ? `Se atendieron requerimientos docentes concretos: ${params.teacherRequirements.slice(0, 2).join(" | ")}.`
+    : "No se recibieron requerimientos docentes adicionales para esta sesión.";
+  const ageGuidance = params.nivel
+    ? `Se cuidó que la profundidad y el lenguaje sean adecuados para el nivel ${params.nivel}.`
+    : "Se cuidó una complejidad progresiva adecuada a la edad del grupo.";
+
+  return [
+    `Esta planificación corresponde a la sesión ${params.orden}${params.totalSessions > 1 ? ` de ${params.totalSessions}` : ""} (${params.duracionMin} min) de ${params.materia || "la materia seleccionada"} en nivel ${params.nivel || "no especificado"}. El objetivo de hoy es consolidar aprendizajes útiles y observables para el grupo.`,
+    `Se organiza en Inicio-Desarrollo-Cierre para sostener una progresión clara: activar saberes previos, trabajar en profundidad y cerrar con síntesis evaluable. El foco principal fue ${foco}; ${justificacion} ${segmento}${continuidad}`,
+    `${compText} ${reqText} ${ageGuidance} En términos de evidencia, se espera participación argumentada, producciones breves y una síntesis final que muestre comprensión del contenido trabajado.`,
+    `${params.hasMaterials ? "Se usó material fuente como base del diseño. " : ""}${params.hasAnepContent ? "Los contenidos ANEP orientaron la selección y priorización didáctica." : "Cuando faltó detalle curricular explícito, se priorizó consistencia pedagógica a partir del plan generado."}`
+  ].join("\n\n");
+}
 
 // Helper function for retry logic with exponential backoff
 async function retryWithBackoff(fn: () => Promise<any>, maxRetries = 3, baseDelay = 1000) {
@@ -30,11 +534,55 @@ async function retryWithBackoff(fn: () => Promise<any>, maxRetries = 3, baseDela
 }
 
 serve(async (req) => {
+  // CRITICAL: Handle OPTIONS FIRST - before ANY other code (no parsing, no logic)
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    const origin = req.headers.get('origin') || 'unknown';
+    console.log('[GEN_PLAN] OPTIONS preflight', { origin, ts: new Date().toISOString() });
+    // TASK 2: Return 200 (as requested) with proper CORS headers
+    return new Response('ok', { 
+      status: 200, // OK - as per requirements
+      headers: corsHeaders 
+    });
   }
 
+  // POST handler - log start immediately
+  console.log('[GEN_PLAN] POST start', { ts: new Date().toISOString(), method: req.method });
+
+  let requestBody: Record<string, any> = {};
   try {
+    // Get API key inside POST handler (not at top level)
+    const openAIApiKey = getOpenAIApiKey();
+    if (!openAIApiKey) {
+      console.error('[GEN_PLAN] OPENAI_API_KEY not configured');
+      return new Response(
+        JSON.stringify({ error: 'OpenAI API key not configured', error_code: 'CONFIG_ERROR' }),
+        { 
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      );
+    }
+    requestBody = await req.json();
+    
+    // TASK 2: Validate duracionMin at the very start - DO NOT throw uncaught exceptions
+    if (!requestBody.duracionMin || isNaN(Number(requestBody.duracionMin)) || Number(requestBody.duracionMin) <= 0) {
+      const errorMsg = `Missing or invalid duracionMin. Received: ${requestBody.duracionMin}`;
+      console.error('[GEN_PLAN]', errorMsg);
+      console.error('[GEN_PLAN] Request body keys:', Object.keys(requestBody || {}));
+      return new Response(
+        JSON.stringify({ 
+          error: errorMsg,
+          error_code: 'INVALID_INPUT',
+          error_field: 'duracionMin',
+          received_value: requestBody.duracionMin
+        }),
+        { 
+          status: 400, // Bad Request - clear error, not 500
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      );
+    }
+    
     const { 
       modo,
       sesionId,
@@ -54,8 +602,86 @@ serve(async (req) => {
       // PHASE 3: Optional per-session focus override
       sessionBrief,
       // FIX: Materials context (includes extracted_text for materials-only generation)
-      materialsContext
-    } = await req.json();
+      materialsContext,
+      // DRY_RUN: Zero-cost diagnostic mode
+      __dry_run
+    } = requestBody;
+
+    // DRY_RUN MODE: Return immediately with mock data, no OpenAI calls
+    if (__dry_run === true) {
+      console.log('[GEN_PLAN] DRY_RUN mode activated');
+      console.log('[GEN_PLAN] entry planificacion_id=', requestBody.planificacion_id || 'unknown');
+      console.log('[GEN_PLAN] session_id=', sesionId || 'unknown');
+      
+      // Build minimal valid response
+      const dryRunResponse = {
+        success: true,
+        plan_html: `<section id="plan">
+  <h1>Plan de Clase (DRY_RUN)</h1>
+  <h2><strong>Inicio (15 min)</strong></h2>
+  <p>Actividad de apertura</p>
+  <h2><strong>Desarrollo (${Math.max((duracionMin || 90) - 20, 30)} min)</strong></h2>
+  <p>Contenido principal</p>
+  <h2><strong>Cierre (5 min)</strong></h2>
+  <p>Síntesis y reflexión</p>
+</section>`,
+        argumento_competencias: 'DRY_RUN: Competencias trabajadas en esta sesión',
+        recursos: [],
+        ai_design_report: {
+          narrative: 'DRY_RUN_NARRATIVE_OK',
+          report_narrative: 'DRY_RUN_NARRATIVE_OK',
+          report_technical: {
+            mode: 'dry_run',
+            generatedAt: new Date().toISOString()
+          },
+          inputsUsed: {
+            anepContent: Array.isArray(contenidos) && contenidos.length > 0,
+            materials: !!materialsContext,
+            sessionBrief: !!sessionBrief?.trim(),
+            unitContext: !!unitContext
+          },
+          decisions: {
+            structure: 'DRY_RUN: Estructura estándar',
+            timeAllocation: `DRY_RUN: ${duracionMin || 90} minutos`
+          },
+          assumptions: ['DRY_RUN mode'],
+          contentCoverage: [],
+          competencyDevelopment: [],
+          teacherRequirementsApplied: []
+        },
+        debug: {
+          build: 'DRY_RUN_2026_02_12',
+          now: new Date().toISOString()
+        },
+        report_narrative: 'DRY_RUN_NARRATIVE_OK',
+        report_technical: {
+          mode: 'dry_run',
+          source: 'generate-plan-completo'
+        }
+      };
+      
+      console.log('[GEN_PLAN] DRY_RUN completed ok');
+      return new Response(JSON.stringify(dryRunResponse), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json', 'x-aulaplus-dry-run': 'true' }
+      });
+    }
+
+    // FASE 1B: Logging estructurado al inicio
+    const planificacionId = requestBody.planificacion_id || 'unknown';
+    const sessionId = sesionId || 'unknown';
+    const sessionOrder = orden || 'unknown';
+    console.log('[GEN_PLAN] entry planificacion_id=', planificacionId);
+    console.log('[GEN_PLAN] session_id=', sessionId);
+    console.log('[GEN_PLAN] orden=', sessionOrder);
+    console.log('[GEN_PLAN] modo=', modo || 'unknown');
+    console.log('[GEN_PLAN] duracionMin=', duracionMin || 'unknown');
+    console.log('[GEN_PLAN] competencias_por_sesion', {
+      planificacion_id: planificacionId,
+      session_id: sessionId,
+      count: Array.isArray(competencias) ? competencias.length : 0,
+      competencias: Array.isArray(competencias) ? competencias.slice(0, 6) : []
+    });
+    console.log('[GEN_PLAN] step=start');
 
     // PHASE 2.1: Construir sección de contexto de secuencia didáctica si unitContext está presente
     let secuenciaContext = '';
@@ -189,6 +815,47 @@ No inventes una secuencia distinta si el docente ya la definió.
 
 ` : '';
 
+    // TASK C: Build coverage plan BEFORE constructing prompt (for multi-session coherence)
+    const totalSessions = unitContext?.totalClasesUnidad || 1;
+    const coveragePlan = buildCoveragePlan(
+      totalSessions,
+      materialsContext,
+      contenidos,
+      unitContext
+    );
+    const sessionCoverage = coveragePlan.find(c => c.sessionNumber === orden) || coveragePlan[0];
+    const materialSummary = extractMaterialSummary(materialsContext);
+    console.log('[GEN_PLAN] material_summary', {
+      planificacion_id: planificacionId,
+      session_id: sessionId,
+      themes_count: materialSummary.themes.length,
+      concepts_count: materialSummary.concepts.length
+    });
+    console.log('[GEN_PLAN] segmento_asignado', {
+      planificacion_id: planificacionId,
+      session_id: sessionId,
+      orden,
+      contentFocus: sessionCoverage?.contentFocus || 'none',
+      materialSegment: sessionCoverage?.materialSegment || 'none'
+    });
+    console.log('[AI_REPORT_SESSION] session_id=', sessionId, 'coverage_plan_total=', totalSessions, 'session_coverage_focus=', sessionCoverage?.contentFocus?.substring(0, 50) || 'none');
+    
+    // TASK C: Build coverage context section for prompt
+    const coverageSection = sessionCoverage ? `
+COBERTURA DE CONTENIDO PARA ESTA SESIÓN (SESIÓN ${orden} DE ${totalSessions}):
+- Foco de contenido específico: ${sessionCoverage.contentFocus}
+${sessionCoverage.materialSegment ? `- Segmento del material a trabajar: ${sessionCoverage.materialSegment}` : ''}
+${sessionCoverage.anepItems && sessionCoverage.anepItems.length > 0 ? `- Contenidos ANEP para esta sesión: ${sessionCoverage.anepItems.join(', ')}` : ''}
+- Justificación de selección: ${sessionCoverage.rationale}
+${totalSessions > 1 ? `
+CONTINUIDAD MULTI-SESIÓN:
+${orden === 1 ? '- Esta es la PRIMERA sesión: introduce conceptos base necesarios para las siguientes.' : ''}
+${orden > 1 && orden < totalSessions ? `- Esta es una sesión INTERMEDIA (${orden} de ${totalSessions}): continúa desde la sesión anterior y prepara para las siguientes.` : ''}
+${orden === totalSessions ? `- Esta es la ÚLTIMA sesión (${orden} de ${totalSessions}): integra y sintetiza todo lo trabajado en las sesiones anteriores.` : ''}
+` : ''}
+
+` : '';
+
     // FIX: Build materials section with special instructions for materials-only generation
     const hasAnepContent = Array.isArray(contenidos) ? contenidos.length > 0 && contenidos.some((c: any) => c && c.trim()) : contenidos && String(contenidos).trim();
     const hasMaterials = materialsContext && materialsContext.trim().length > 0;
@@ -210,6 +877,32 @@ REGLAS CRÍTICAS PARA MATERIALES-ONLY:
 7. Las preguntas guía DEBEN referenciar conceptos específicos del material.
 8. El título H1 DEBE reflejar el tema específico del material, no un título genérico.
 
+${unitContext ? `
+DIVISIÓN SECUENCIAL DE MATERIALES (CRÍTICO):
+Esta es la clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad} de la unidad "${unitContext.contenido}".
+
+REGLAS PARA DIVIDIR MATERIALES ENTRE MÚLTIPLES CLASES:
+${unitContext.claseEnUnidad === 1 ? `
+- Esta es la PRIMERA clase: Trabaja con las PRIMERAS secciones/temas del material
+- Introduce conceptos fundamentales que serán base para las siguientes clases
+- NO trabajes todo el material, solo la parte inicial
+- En contentCoverage, indica explícitamente qué sección/tema del material se cubre (ej: "Primera parte del material sobre X", "Introducción a Y")
+` : unitContext.claseEnUnidad === unitContext.totalClasesUnidad ? `
+- Esta es la ÚLTIMA clase: Trabaja con las ÚLTIMAS secciones/temas del material
+- Integra y sintetiza con lo trabajado en clases anteriores
+- NO repitas contenido ya trabajado en clases previas
+- En contentCoverage, indica explícitamente qué sección/tema final del material se cubre y menciona continuidad con clases anteriores
+` : `
+- Esta es una clase INTERMEDIA (${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}): Trabaja con secciones/temas INTERMEDIOS del material
+- NO repitas contenido de clases anteriores
+- NO trabajes contenido que corresponde a clases posteriores
+- Profundiza en la parte del material que corresponde a esta posición en la secuencia
+- En contentCoverage, indica explícitamente qué sección/tema intermedio del material se cubre y menciona continuidad con clases anteriores y preparación para siguientes
+`}
+- Si el material es largo y se divide en múltiples clases, cada clase debe cubrir una parte COHERENTE y NO SOLAPADA
+- Menciona explícitamente en contentCoverage la continuidad con clases anteriores (si no es la primera) y cómo prepara para las siguientes (si no es la última)
+` : ''}
+
 EJEMPLO INCORRECTO (genérico):
 - "Análisis de un período histórico"
 - "Discusión sobre reformas"
@@ -223,6 +916,9 @@ EJEMPLO CORRECTO (específico del material):
 Si el material no tiene suficiente contenido extraído, indica esto claramente en el plan.
 ` : `
 Los materiales docentes son complementarios al contenido ANEP. Úsalos para enriquecer y contextualizar, pero el contenido ANEP sigue siendo la base principal.
+${unitContext ? `
+DIVISIÓN SECUENCIAL: Esta es la clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}. Si los materiales se dividen entre múltiples clases, trabaja solo con la parte que corresponde a esta posición en la secuencia, sin repetir contenido de clases anteriores.
+` : ''}
 `}
 ` : '';
 
@@ -236,7 +932,7 @@ CONTEXTO DE LA CLASE:
 - Contenidos ANEP (macro): ${Array.isArray(contenidos) ? contenidos.join(', ') : contenidos || 'Sin especificar'}
 - Competencias: ${Array.isArray(competencias) ? competencias.join(', ') : competencias || 'Sin especificar'}
 - Criterios de logro: ${Array.isArray(criterios) ? criterios.join(', ') : criterios || 'Sin especificar'}
-${sessionBriefSection}${secuenciaContext}${groupProfileSection}${instruccionesDocenteSection}${materialsSection}${planActual ? `\nPLAN ACTUAL A MODIFICAR:\n${planActual}` : ''}
+${sessionBriefSection}${secuenciaContext}${coverageSection}${groupProfileSection}${instruccionesDocenteSection}${materialsSection}${planActual ? `\nPLAN ACTUAL A MODIFICAR:\n${planActual}` : ''}
 
 ESTRUCTURA OBLIGATORIA - DEVOLVER SOLO HTML VÁLIDO:
 <section id="plan">
@@ -306,6 +1002,48 @@ ${sessionBrief?.trim() ? '6. OBLIGATORIO CRÍTICO: El título H1 DEBE SER EXACTA
     - <strong>Perfil/Necesidad:</strong> Para qué perfil de estudiante o necesidad está dirigida
     - <strong>Propósito:</strong> Qué mejora o facilita esta adaptación
     - <strong>Cómo aplicarla:</strong> Instrucciones concretas y prácticas, no vagas
+12. Ajustar profundidad conceptual, vocabulario y tipo de actividad al nivel/edad del grupo (por ejemplo, nivel 9 ≈ 14-15 años), evitando simplificación excesiva o tecnicismo inalcanzable.
+
+## REPORTE NARRATIVO DE DISEÑO (OBLIGATORIO)
+
+El campo "ai_design_report.narrative" DEBE ser un texto narrativo continuo (no lista de viñetas) de 400-600 palabras (2-4 párrafos largos) que explique EXPLÍCITAMENTE:
+
+1. Para qué sesión y grupo se diseñó el plan (orden de sesión: ${orden}${unitContext ? `, sesión ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}` : ''}, duración: ${duracionMin} min, contexto de unidad)
+2. CONTENIDO FOCUS PARA ESTA SESIÓN (OBLIGATORIO):
+   - Qué partes específicas del material proporcionado se enseñan/usaron en esta sesión y CÓMO (actividades concretas)
+   ${hasMaterials ? `- Si hay materiales subidos: describe QUÉ sección/tema específico del material se cubre en esta clase y CÓMO se trabaja (actividades específicas)` : ''}
+   ${hasAnepContent ? `- Si hay contenidos ANEP: qué contenidos específicos se eligieron para enseñar/evaluar en esta sesión y POR QUÉ (alineación con objetivos/competencias)` : ''}
+   ${instruccionesDocente ? `- Si hay requerimientos del docente: cómo se satisfacen en esta sesión específica` : ''}
+   ${unitContext && unitContext.totalClasesUnidad > 1 ? `- Continuidad: cómo esta sesión se conecta con las sesiones anteriores y prepara para las siguientes` : ''}
+3. QUÉ PARTES de las fuentes proporcionadas se enseñan en ESTA sesión específica:
+   - Si hay materiales subidos: qué sección/tema específico del material se cubre en esta clase
+   - Si hay contenidos ANEP: qué contenidos específicos se trabajan en esta sesión
+   - Si hay requerimientos del docente: qué parte de esos requerimientos se satisface en esta clase
+   - Si es parte de una secuencia: menciona explícitamente continuidad con clases anteriores (si no es la primera) y cómo prepara para las siguientes (si no es la última)
+3. POR QUÉ esas partes fueron seleccionadas para esta sesión:
+   - Lógica de secuencia (si es primera, intermedia o última)
+   - Cómo se relaciona con las clases anteriores/posteriores
+   - Por qué corresponde a esta posición en la secuencia didáctica
+4. CÓMO se desarrollan las competencias seleccionadas:
+   - Qué actividades específicas desarrollan cada competencia
+   - Cómo las actividades permiten ejercitar habilidades de las competencias
+5. CÓMO se satisfacen los requerimientos del docente:
+   - Si hay instrucciones del docente, explica explícitamente cómo se aplicaron
+   - Si hay sessionBrief, explica cómo el plan está estructurado alrededor de ese tema
+6. Cómo se estructuró el plan (Inicio-Desarrollo-Cierre) y por qué
+7. Cómo se consideraron las características del grupo (perfil de aprendizaje, tamaño)
+8. Qué adaptaciones se incluyeron y por qué (basadas en contemplaciones, sin mencionar diagnósticos específicos)
+
+REGLAS DEL REPORTE NARRATIVO:
+- Escribe en un tono amigable y pedagógico, como si le estuvieras explicando a un colega docente
+- NO uses lenguaje técnico innecesario
+- NO menciones diagnósticos médicos o etiquetas de estudiantes
+- NO menciones estudiantes individuales por nombre
+- NO uses formato de lista, usa párrafos continuos (2-4 párrafos largos)
+- Longitud: 400-600 palabras
+- Contexto: Uruguay/ANEP es apropiado mencionar
+- Si el material se divide en múltiples sesiones: menciona explícitamente qué parte corresponde a esta sesión y la continuidad con otras
+- Si NO hay materiales fuente/ANEP explícitos: indica que el contenido se infirió de las secciones generadas
 
 DEVOLVER JSON EXACTO:
 {
@@ -314,6 +1052,7 @@ DEVOLVER JSON EXACTO:
   "recursos": ["Proyector", "Pizarrón", "Marcadores", "Material específico"],
   "titulo": "${sessionBrief?.trim() || 'Título extraído del H1 generado'}",
   "ai_design_report": {
+    "narrative": "<texto narrativo de 200-400 palabras explicando el diseño del plan en párrafos amigables para docentes>",
     "inputsUsed": {
       "anepContent": ${hasAnepContent ? 'true' : 'false'},
       "materials": ${hasMaterials ? 'true' : 'false'},
@@ -327,10 +1066,90 @@ DEVOLVER JSON EXACTO:
     "assumptions": [
       "Estudiantes tienen conocimientos previos básicos del tema",
       "Recursos básicos disponibles (pizarra, proyector)"
+    ],
+    "contentCoverage": [
+      {
+        "sourceType": "uploaded_material" | "ANEP" | "teacher_requirements",
+        "sourceId": "<id o referencia si disponible>",
+        "coveredPart": "<descripción explícita de qué sección/tema se cubre en ESTA clase específica>",
+        "whyThisPartInThisClass": "<explicación de por qué esta parte corresponde a esta clase en la secuencia>",
+        "howItIsWorked": "<descripción de actividades y dinámicas que trabajan este contenido>",
+        "assessmentOrEvidence": "<cómo se evalúa o evidencia el aprendizaje de este contenido>",
+        "relatedCompetencies": ["<competencia 1>", "<competencia 2>"]
+      }
+    ],
+    "competencyDevelopment": [
+      {
+        "competency": "<nombre de la competencia>",
+        "howDevelopedInThisClass": "<cómo se desarrolla específicamente en esta clase>",
+        "linkedActivities": ["<actividad 1>", "<actividad 2>"]
+      }
+    ],
+    "teacherRequirementsApplied": [
+      {
+        "requirement": "<requerimiento del docente>",
+        "howItWasSatisfied": "<cómo se satisfizo en el diseño de esta clase>"
+      }
+    ],
+    "standardsCoverage": [
+      {
+        "standard": "<contenido ANEP específico>",
+        "whyPrioritized": "<por qué se priorizó este contenido (alineación con objetivos/competencias)>",
+        "howCovered": "<cómo se cubre en esta sesión específica>",
+        "evidence": "<cómo se evidencia el aprendizaje de este estándar>"
+      }
+    ],
+    "competenciesOperationalization": [
+      {
+        "competency": "<nombre de la competencia>",
+        "concreteDevelopment": "<cómo se desarrolla concretamente dentro de las actividades de ESTA sesión (no genérico)>",
+        "specificActivities": ["<actividad específica 1>", "<actividad específica 2>"],
+        "learningEvidence": "<cómo se evidencia el desarrollo de esta competencia en esta sesión>"
+      }
     ]
   }
 }
+
+REGLAS CRÍTICAS PARA contentCoverage:
+- Si hay materiales fuente: menciona qué sección/tema específico del material se cubre en ESTA clase
+- Si es parte de una secuencia (unitContext): explica por qué esta parte corresponde a esta posición en la secuencia
+  * Clase 1: contenido introductorio/base
+  * Clases intermedias: profundización, asumiendo conocimientos de clases anteriores
+  * Última clase: integración y síntesis de todo lo trabajado
+- Si NO hay materiales fuente/ANEP explícitos: marca sourceType como "inferred" y explica que se infirió de las secciones generadas
+- NO inventes detalles de materiales que no fueron proporcionados
+- Si el material se divide en múltiples clases: indica explícitamente qué parte corresponde a esta clase y menciona continuidad con clases anteriores/posteriores
+- Si hay unitContext: MENCIONA EXPLÍCITAMENTE la continuidad con clases anteriores (si no es la primera) y cómo esta clase prepara para las siguientes (si no es la última)
+
+REGLAS CRÍTICAS PARA competencyDevelopment:
+- Mapea cada competencia a actividades específicas del plan generado
+- Explica cómo cada actividad desarrolla la competencia
+- Si hay múltiples competencias, incluye todas las relevantes para esta clase
+
+REGLAS CRÍTICAS PARA teacherRequirementsApplied:
+- Solo incluye requerimientos que realmente se aplicaron en esta clase
+- Explica explícitamente cómo se satisfizo cada requerimiento
+- Si un requerimiento aplica a múltiples clases, explica cómo se satisface en esta clase específica
+
+REGLAS CRÍTICAS PARA standardsCoverage (OBLIGATORIO si hay contenidos ANEP):
+- Para cada contenido ANEP seleccionado, explica:
+  * Qué contenido específico se priorizó y por qué (alineación con objetivos/competencias)
+  * Cómo se cubre en esta sesión específica (no genérico)
+  * Cómo se evidencia el aprendizaje de este estándar
+- Si hay múltiples contenidos ANEP, explica la priorización y por qué algunos se trabajan en esta sesión y otros en otras
+
+REGLAS CRÍTICAS PARA competenciesOperationalization (OBLIGATORIO):
+- Explica cómo cada competencia seleccionada se desarrolla CONCRETAMENTE dentro de las actividades de ESTA sesión
+- NO uses descripciones genéricas como "se desarrolla mediante actividades de Inicio-Desarrollo-Cierre"
+- Menciona actividades ESPECÍFICAS del plan generado (ej: "análisis de documentos históricos en Desarrollo", "debate guiado sobre condiciones sociales")
+- Explica cómo cada actividad permite ejercitar habilidades específicas de la competencia
+- Incluye cómo se evidencia el desarrollo de la competencia en esta sesión
 `;
+
+    // FASE 1B: Logging antes de llamada a OpenAI
+    console.log('[GEN_PLAN] step=openai_call_start');
+    console.log('[GEN_PLAN] session_id=', sessionId, 'prompt_length=', prompt.length);
+    const openaiStartTime = Date.now();
 
     const response = await retryWithBackoff(async () => {
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -351,17 +1170,31 @@ DEVOLVER JSON EXACTO:
 
       if (!res.ok) {
         const errorText = await res.text();
-        console.error('OpenAI API error:', res.status, errorText);
+        console.error('[GEN_PLAN] OpenAI API error:', res.status, errorText);
         throw new Error(`OpenAI API error: ${res.status} - ${errorText}`);
       }
 
       return res;
     }, 3, 2000); // 3 intentos con delay base de 2 segundos
 
+    // FASE 1B: Logging después de llamada a OpenAI
+    const openaiElapsed = Date.now() - openaiStartTime;
+    console.log('[GEN_PLAN] step=openai_call_end');
+    console.log('[GEN_PLAN] session_id=', sessionId, 'openai_elapsed_ms=', openaiElapsed);
+
+    // FASE 1B: Logging antes de parsear respuesta
+    console.log('[GEN_PLAN] step=parse_response_start');
+    console.log('[GEN_PLAN] session_id=', sessionId);
+    
+    const parseStartTime = Date.now();
     const data = await response.json();
     let content = data.choices[0].message.content.trim();
+    const parseElapsed = Date.now() - parseStartTime;
 
-    console.log('OpenAI response content:', content.substring(0, 200));
+    console.log('[GEN_PLAN] step=parse_response_end');
+    console.log('[GEN_PLAN] session_id=', sessionId, 'parse_elapsed_ms=', parseElapsed);
+    console.log('[GEN_PLAN] OpenAI response content length:', content.length);
+    console.log('[GEN_PLAN] OpenAI response preview:', content.substring(0, 200));
 
     // Intentar parsear como JSON
     let parsed;
@@ -388,7 +1221,24 @@ DEVOLVER JSON EXACTO:
           assumptions: [
             'Estudiantes tienen conocimientos previos básicos',
             'Recursos básicos disponibles'
-          ]
+          ],
+          contentCoverage: buildContentCoverage(
+            contenidos,
+            materialsContext,
+            unitContext,
+            sessionBrief,
+            orden,
+            !!hasAnepContent,
+            hasMaterials
+          ),
+          competencyDevelopment: buildCompetencyDevelopment(
+            competencias,
+            content
+          ),
+          teacherRequirementsApplied: buildTeacherRequirementsApplied(
+            instruccionesDocente,
+            sessionBrief
+          )
         }
       };
     }
@@ -414,6 +1264,183 @@ DEVOLVER JSON EXACTO:
       console.log('[FIX] Added default ai_design_report to planning response');
     } else {
       console.log('[FIX] ai_design_report found in AI response:', Object.keys(parsed.ai_design_report || {}));
+    }
+    
+    // Ensure extended fields exist in ai_design_report
+    const aiReport: any = parsed.ai_design_report as any;
+    
+    // Build contentCoverage if missing
+    if (!aiReport.contentCoverage || !Array.isArray(aiReport.contentCoverage) || aiReport.contentCoverage.length === 0) {
+      aiReport.contentCoverage = buildContentCoverage(
+        contenidos,
+        materialsContext,
+        unitContext,
+        sessionBrief,
+        orden,
+        !!hasAnepContent,
+        hasMaterials
+      );
+      console.log('[CONTENT_COVERAGE] Built contentCoverage:', aiReport.contentCoverage.length, 'items');
+    }
+    
+    // Build competencyDevelopment if missing
+    if (!aiReport.competencyDevelopment || !Array.isArray(aiReport.competencyDevelopment) || aiReport.competencyDevelopment.length === 0) {
+      aiReport.competencyDevelopment = buildCompetencyDevelopment(
+        competencias,
+        parsed.plan_html || ''
+      );
+      console.log('[COMPETENCY_DEV] Built competencyDevelopment:', aiReport.competencyDevelopment.length, 'items');
+    }
+    
+    // Build teacherRequirementsApplied if missing
+    if (!aiReport.teacherRequirementsApplied || !Array.isArray(aiReport.teacherRequirementsApplied)) {
+      aiReport.teacherRequirementsApplied = buildTeacherRequirementsApplied(
+        instruccionesDocente,
+        sessionBrief
+      );
+      console.log('[TEACHER_REQ] Built teacherRequirementsApplied:', aiReport.teacherRequirementsApplied.length, 'items');
+    }
+    
+    // GOAL C: Build standardsCoverage if missing (for ANEP contents)
+    if (hasAnepContent && (!aiReport.standardsCoverage || !Array.isArray(aiReport.standardsCoverage) || aiReport.standardsCoverage.length === 0)) {
+      aiReport.standardsCoverage = buildStandardsCoverage(
+        contenidos,
+        competencias,
+        orden,
+        unitContext
+      );
+      console.log('[AI_REPORT_SESSION] Built standardsCoverage:', aiReport.standardsCoverage.length, 'items');
+    }
+    
+    // GOAL C: Build competenciesOperationalization if missing
+    if (!aiReport.competenciesOperationalization || !Array.isArray(aiReport.competenciesOperationalization) || aiReport.competenciesOperationalization.length === 0) {
+      aiReport.competenciesOperationalization = buildCompetenciesOperationalization(
+        competencias,
+        parsed.plan_html || ''
+      );
+      console.log('[AI_REPORT_SESSION] Built competenciesOperationalization:', aiReport.competenciesOperationalization.length, 'items');
+    }
+    
+    // GOAL C: Log narrative presence
+    const hasNarrative = aiReport.narrative && typeof aiReport.narrative === 'string' && aiReport.narrative.trim().length > 0;
+    console.log('[AI_REPORT_SESSION] session_id=', sessionId, 'hasNarrative=', hasNarrative ? 'yes' : 'no', 'narrative_length=', hasNarrative ? (aiReport.narrative as string).length : 0);
+    console.log('[AI_REPORT_SESSION] session_id=', sessionId, 'contentCoverage_count=', Array.isArray(aiReport.contentCoverage) ? aiReport.contentCoverage.length : 0);
+    
+    // TASK C: Build coverage context for narrative prompt
+    let coverageContext = '';
+    if (sessionCoverage) {
+      coverageContext = `
+CONTEXTO DE COBERTURA PARA ESTA SESIÓN (SESIÓN ${orden} DE ${totalSessions}):
+- Foco de contenido: ${sessionCoverage.contentFocus}
+${sessionCoverage.materialSegment ? `- Segmento del material: ${sessionCoverage.materialSegment}` : ''}
+${sessionCoverage.anepItems && sessionCoverage.anepItems.length > 0 ? `- Contenidos ANEP para esta sesión: ${sessionCoverage.anepItems.join(', ')}` : ''}
+- Justificación: ${sessionCoverage.rationale}
+${totalSessions > 1 ? `
+CONTINUIDAD MULTI-SESIÓN:
+${orden === 1 ? '- Esta es la PRIMERA sesión: introduce conceptos base que serán necesarios para las sesiones siguientes.' : ''}
+${orden > 1 && orden < totalSessions ? `- Esta es una sesión INTERMEDIA (${orden} de ${totalSessions}): continúa desde la sesión anterior y prepara para las siguientes.` : ''}
+${orden === totalSessions ? `- Esta es la ÚLTIMA sesión (${orden} de ${totalSessions}): integra y sintetiza todo lo trabajado en las sesiones anteriores.` : ''}
+` : ''}
+`;
+    }
+    
+    // Validate and generate narrative fallback if missing or too short
+    // Note: aiReport already declared above at line 754
+    if (!aiReport.narrative || typeof aiReport.narrative !== 'string' || aiReport.narrative.trim().length < 80) {
+      console.log('[NARRATIVE] Missing or too short, generating fallback...');
+      try {
+        const narrativePrompt = `Eres un asistente pedagógico que explica decisiones de diseño de planes de clase a docentes.
+${coverageContext}
+
+Genera un reporte narrativo amigable (400-600 palabras, 2-4 párrafos largos) que explique EXPLÍCITAMENTE:
+
+1. Para qué sesión y grupo se diseñó el plan (orden de sesión: ${orden}, duración: ${duracionMin} min${unitContext ? `, contexto de unidad: clase ${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad} de "${unitContext.contenido}"` : ''})
+2. CONTENIDO FOCUS PARA ESTA SESIÓN (OBLIGATORIO - usar el contexto de cobertura proporcionado):
+   ${sessionCoverage ? `
+   - Foco de contenido: ${sessionCoverage.contentFocus}
+   ${sessionCoverage.materialSegment ? `- Segmento del material trabajado: ${sessionCoverage.materialSegment}` : ''}
+   ${sessionCoverage.anepItems && sessionCoverage.anepItems.length > 0 ? `- Contenidos ANEP específicos: ${sessionCoverage.anepItems.join(', ')}` : ''}
+   - Por qué estos contenidos fueron seleccionados: ${sessionCoverage.rationale}
+   ` : ''}
+3. QUÉ PARTES de las fuentes proporcionadas se enseñan en ESTA sesión específica:
+   ${hasMaterials ? '- Materiales subidos: qué sección/tema específico del material se cubre en esta clase' : ''}
+   ${hasAnepContent ? '- Contenidos ANEP: qué contenidos específicos se trabajan en esta sesión' : ''}
+   ${sessionBrief?.trim() ? `- Enfoque específico: "${sessionBrief.trim()}" - cómo se estructura el plan alrededor de este tema` : ''}
+   ${instruccionesDocente ? '- Instrucciones del docente: qué parte de esas instrucciones se aplica en esta clase' : ''}
+   ${unitContext ? `- Continuidad secuencial: ${unitContext.claseEnUnidad === 1 ? 'Esta es la primera clase, introduce contenidos base' : unitContext.claseEnUnidad === unitContext.totalClasesUnidad ? 'Esta es la última clase, integra y sintetiza' : `Esta clase (${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}) profundiza como continuación de clases anteriores`}` : ''}
+   ${totalSessions > 1 ? `- Continuidad multi-sesión: ${orden === 1 ? 'Primera sesión de la secuencia' : orden === totalSessions ? `Última sesión (${orden} de ${totalSessions}) - integra todo lo trabajado` : `Sesión intermedia (${orden} de ${totalSessions}) - continúa desde la anterior`}` : ''}
+4. POR QUÉ esas partes fueron seleccionadas para esta sesión:
+   ${unitContext ? `- Lógica de secuencia: ${unitContext.claseEnUnidad === 1 ? 'Primera clase introduce conceptos fundamentales' : unitContext.claseEnUnidad === unitContext.totalClasesUnidad ? 'Última clase integra todo lo trabajado' : `Clase intermedia profundiza en contenidos ya introducidos`}` : '- Relevancia pedagógica de los contenidos elegidos'}
+4. CÓMO se desarrollan las competencias seleccionadas:
+   - Qué actividades específicas desarrollan cada competencia
+   - Cómo las actividades permiten ejercitar habilidades de las competencias
+5. CÓMO se satisfacen los requerimientos del docente:
+   ${sessionBrief?.trim() ? `- El plan está estructurado alrededor de "${sessionBrief.trim()}" con todas las actividades orientadas a este tema` : ''}
+   ${instruccionesDocente ? `- Las instrucciones del docente fueron consideradas en el diseño de las actividades` : ''}
+6. Cómo se estructuró el plan (Inicio-Desarrollo-Cierre) y por qué
+7. Cómo se consideraron las características del grupo (perfil de aprendizaje, tamaño)
+8. Qué adaptaciones se incluyeron y por qué (basadas en contemplaciones, sin mencionar diagnósticos específicos)
+
+REGLAS:
+- Tono amigable y pedagógico, como explicando a un colega docente
+- NO uses lenguaje técnico innecesario
+- NO menciones diagnósticos médicos o etiquetas de estudiantes
+- NO menciones estudiantes individuales por nombre
+- NO uses formato de lista, usa párrafos continuos (2-4 párrafos largos)
+- Longitud: 400-600 palabras
+- Contexto: Uruguay/ANEP es apropiado mencionar
+- Si el material se divide en múltiples sesiones: menciona explícitamente qué parte corresponde a esta sesión y la continuidad con otras
+- Si NO hay materiales fuente/ANEP explícitos: indica que el contenido se infirió de las secciones generadas
+
+CONTEXTO:
+- Materia: ${materia || 'No especificada'}
+- Nivel: ${nivel || 'No especificado'}
+- Contenidos: ${Array.isArray(contenidos) ? contenidos.join(', ') : contenidos || 'No especificados'}
+- Competencias: ${Array.isArray(competencias) ? competencias.join(', ') : competencias || 'No especificadas'}
+- Criterios: ${Array.isArray(criterios) ? criterios.join(', ') : criterios || 'No especificados'}
+${instruccionesDocente ? `- Instrucciones del docente: ${instruccionesDocente.substring(0, 200)}` : ''}
+${sessionBrief?.trim() ? `- Enfoque específico de sesión: "${sessionBrief.trim()}"` : ''}
+
+Responde ÚNICAMENTE con el texto narrativo, sin formato JSON, sin code fences, sin explicaciones adicionales.`;
+
+        const narrativeResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openAIApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'system', content: 'Eres un asistente pedagógico que explica decisiones de diseño de planes de clase a docentes.' },
+              { role: 'user', content: narrativePrompt }
+            ],
+            max_completion_tokens: 500,
+            temperature: 0.7
+          }),
+        });
+
+        if (narrativeResponse.ok) {
+          const narrativeData = await narrativeResponse.json();
+          const narrative = narrativeData.choices[0]?.message?.content?.trim() || '';
+          if (narrative.length >= 80) {
+            aiReport.narrative = narrative;
+            console.log('[NARRATIVE] Generated fallback narrative:', narrative.length, 'chars');
+          } else {
+            console.log('[NARRATIVE] Generated narrative too short, using minimal fallback');
+            aiReport.narrative = `Este plan de clase fue diseñado para la sesión ${orden} con duración de ${duracionMin} minutos en la materia ${materia || 'no especificada'}. El plan sigue la estructura estándar de Inicio-Desarrollo-Cierre, adaptado a las necesidades del grupo.`;
+          }
+        } else {
+          throw new Error(`OpenAI API error: ${narrativeResponse.status}`);
+        }
+      } catch (error) {
+        console.error('[NARRATIVE] Failed to generate fallback:', error);
+        // Minimal fallback
+        aiReport.narrative = `Este plan de clase fue diseñado para la sesión ${orden} con duración de ${duracionMin} minutos en la materia ${materia || 'no especificada'}. El plan sigue la estructura estándar de Inicio-Desarrollo-Cierre, adaptado a las necesidades del grupo.`;
+      }
+    } else {
+      // Trim existing narrative
+      aiReport.narrative = (aiReport.narrative as string).trim();
     }
 
     // Extract title from HTML (either from parsed JSON or from sessionBrief)
@@ -514,35 +1541,119 @@ DEVOLVER JSON EXACTO:
           assumptions: [
             'Estudiantes tienen conocimientos previos básicos',
             'Recursos básicos disponibles'
-          ]
+          ],
+          contentCoverage: buildContentCoverage(
+            contenidos,
+            materialsContext,
+            unitContext,
+            sessionBrief,
+            orden,
+            !!hasAnepContent,
+            hasMaterials
+          ),
+          competencyDevelopment: buildCompetencyDevelopment(
+            competencias,
+            ''
+          ),
+          teacherRequirementsApplied: buildTeacherRequirementsApplied(
+            instruccionesDocente,
+            sessionBrief
+          )
         }
       };
     }
+
+    // Log completion
+    // Note: hasNarrative already declared at line 1185 - reuse it instead of redeclaring
+    const finalHasNarrative = parsed.ai_design_report?.narrative && typeof parsed.ai_design_report.narrative === 'string' && parsed.ai_design_report.narrative.trim().length > 0;
+    const technicalReport = parsed.ai_design_report || {};
+    const teacherRequirements = Array.isArray(technicalReport?.teacherRequirementsApplied)
+      ? technicalReport.teacherRequirementsApplied
+          .map((item: any) => item?.requirement)
+          .filter((item: any) => typeof item === 'string' && item.trim().length > 0)
+      : [];
+    const reportNarrative = buildTeacherReportNarrative({
+      maybeNarrative: technicalReport?.report_narrative ?? technicalReport?.narrative,
+      orden: Number(orden) || 1,
+      totalSessions: Number(totalSessions) || 1,
+      duracionMin: Number(duracionMin) || 60,
+      materia,
+      nivel,
+      sessionCoverage,
+      competencies: Array.isArray(competencias) ? competencias.filter((c: any) => typeof c === 'string') : [],
+      teacherRequirements,
+      hasAnepContent: !!hasAnepContent,
+      hasMaterials: !!hasMaterials
+    });
+    parsed.ai_design_report = {
+      ...technicalReport,
+      narrative: reportNarrative,
+      report_narrative: reportNarrative,
+      report_technical: technicalReport
+    };
+    parsed.report_narrative = reportNarrative;
+    parsed.report_technical = technicalReport;
+    parsed.plan_json = {
+      titulo: parsed.titulo || null,
+      contentCoverage: parsed.ai_design_report?.contentCoverage || [],
+      competencyDevelopment: parsed.ai_design_report?.competencyDevelopment || [],
+      teacherRequirementsApplied: parsed.ai_design_report?.teacherRequirementsApplied || []
+    };
+    console.log('[GEN_PLAN] completed ok');
+    console.log('[GEN_PLAN] session_id=', sesionId || 'unknown', 'hasNarrative=', finalHasNarrative ? 'yes' : 'no');
+    console.log('[GEN_PLAN] plan_html_length=', parsed.plan_html?.length || 0);
 
     return new Response(JSON.stringify(parsed), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
 
   } catch (error: any) {
-    console.error('Error in generate-plan-completo function:', {
-      message: error.message,
-      code: error.code,
-      status: error.status,
-      stack: error.stack
+    // Safe error logging (no secrets)
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorCode = error?.code || 'FUNCTION_ERROR';
+    const errorStatus = error?.status || 500;
+    
+    console.error('[GEN_PLAN] ERROR:', {
+      message: errorMessage,
+      code: errorCode,
+      status: errorStatus,
+      // Do NOT log stack or full error object (may contain secrets)
     });
     
-    const isRateLimit = error.message?.includes('429') || error.message?.includes('Too Many Requests');
-    const errorMessage = isRateLimit 
+    // Try to get session info safely (may not be available if error occurred before parsing)
+    let sessionId = 'unknown';
+    let planificacionId = 'unknown';
+    try {
+      sessionId = requestBody?.sesionId || 'unknown';
+      planificacionId = requestBody?.planificacion_id || 'unknown';
+    } catch {
+      // Ignore - requestBody may not be available
+    }
+    console.error('[GEN_PLAN] session_id=', sessionId);
+    console.error('[GEN_PLAN] planificacion_id=', planificacionId);
+    
+    const isRateLimit = errorMessage?.includes('429') || errorMessage?.includes('Too Many Requests');
+    const finalErrorMessage = isRateLimit 
       ? 'Rate limit exceeded. Please wait a moment and try again.'
-      : error.message || 'Unknown error';
+      : errorMessage || 'Unknown error';
     
     // FIX: Always include ai_design_report even in error responses
     const errorResponse: any = {
-      error: errorMessage,
-      error_code: isRateLimit ? 'RATE_LIMIT' : (error.code || 'FUNCTION_ERROR'),
-      error_status: isRateLimit ? 429 : (error.status || 500),
+      error: finalErrorMessage,
+      error_code: isRateLimit ? 'RATE_LIMIT' : errorCode,
+      error_status: isRateLimit ? 429 : errorStatus,
       isRateLimit: isRateLimit,
+      report_narrative: '',
+      report_technical: {
+        error: finalErrorMessage,
+        code: isRateLimit ? 'RATE_LIMIT' : errorCode
+      },
       ai_design_report: {
+        report_narrative: '',
+        report_technical: {
+          error: finalErrorMessage,
+          code: isRateLimit ? 'RATE_LIMIT' : errorCode
+        },
         inputsUsed: {
           anepContent: false,
           materials: false,
@@ -554,12 +1665,16 @@ DEVOLVER JSON EXACTO:
           timeAllocation: 'N/A'
         },
         assumptions: [],
-        error: errorMessage
+        contentCoverage: [],
+        competencyDevelopment: [],
+        teacherRequirementsApplied: [],
+        error: finalErrorMessage
       }
     };
     
+    // CRITICAL: Always return CORS headers in error responses
     return new Response(JSON.stringify(errorResponse), {
-      status: isRateLimit ? 429 : (error.status || 500),
+      status: isRateLimit ? 429 : errorStatus,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }

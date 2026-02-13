@@ -303,21 +303,94 @@ function normalizeItem(
   }
 
   // Equivalent response options (can appear on essay, paragraph, etc.)
-  if (item.equivalentResponseOptions && typeof item.equivalentResponseOptions === 'object') {
-    const ero = item.equivalentResponseOptions as Record<string, unknown>;
-    if (ero.enabled === true && Array.isArray(ero.options)) {
+  // Handle BOTH shapes: object format { enabled, options, metacognitionText } OR array format [{ id, format?, description }]
+  if (item.equivalentResponseOptions) {
+    const DEBUG_V2_OPTIONS = false; // Set to true to enable debug logging
+    
+    if (DEBUG_V2_OPTIONS) {
+      console.log('[V2Normalizer] equivalentResponseOptions raw shape:', {
+        isArray: Array.isArray(item.equivalentResponseOptions),
+        type: typeof item.equivalentResponseOptions,
+        value: item.equivalentResponseOptions
+      });
+    }
+    
+    let normalizedOptions: Array<{ id: string; format: string; description: string }> = [];
+    let metacognitionText = 'Choose ONE format. All options assess the same learning goal.';
+    
+    // Case 1: Object format { enabled: boolean, options: [...], metacognitionText?: string }
+    if (!Array.isArray(item.equivalentResponseOptions) && typeof item.equivalentResponseOptions === 'object') {
+      const ero = item.equivalentResponseOptions as Record<string, unknown>;
+      if (ero.enabled === true && Array.isArray(ero.options)) {
+        // Normalize options: ensure all have id, format, description
+        normalizedOptions = ero.options.map((opt: unknown, index: number) => {
+          const o = opt as Record<string, unknown>;
+          const format = safeString(o?.format, '');
+          const description = safeString(o?.description, '');
+          
+          // Generate stable ID if missing
+          const id = safeString(o?.id, '') || `opt-${index + 1}`;
+          
+          return {
+            id,
+            format,
+            description,
+          };
+        }).filter(o => o.format || o.description); // Keep only options with at least format or description
+        
+        metacognitionText = safeString(ero.metacognitionText, metacognitionText);
+      }
+    }
+    // Case 2: Array format [{ id?, format?, description }, ...]
+    else if (Array.isArray(item.equivalentResponseOptions)) {
+      const optionsArray = item.equivalentResponseOptions;
+      
+      normalizedOptions = optionsArray
+        .map((opt: unknown, index: number) => {
+          if (!opt || typeof opt !== 'object') return null;
+          
+          const o = opt as Record<string, unknown>;
+          const description = safeString(o?.description, '');
+          
+          // Skip if description is empty
+          if (!description.trim()) return null;
+          
+          // Generate stable ID if missing
+          const id = safeString(o?.id, '') || `opt-${index + 1}`;
+          
+          // Infer format from description if missing
+          let format = safeString(o?.format, '');
+          if (!format) {
+            const descLower = description.toLowerCase();
+            if (descLower.includes('tabla') || descLower.includes('table')) {
+              format = 'analysis_table';
+            } else if (descLower.includes('preguntas orientadoras') || descLower.includes('guía') || descLower.includes('guide')) {
+              format = 'guided_questions';
+            } else {
+              format = 'brief_written';
+            }
+          }
+          
+          return {
+            id,
+            format,
+            description,
+          };
+        })
+        .filter((o): o is { id: string; format: string; description: string } => o !== null);
+    }
+    
+    // Set responseOptions if we have at least 1 valid option
+    if (normalizedOptions.length > 0) {
       normalized.responseOptions = {
         enabled: true,
-        options: ero.options.map((opt: unknown) => {
-          const o = opt as Record<string, unknown>;
-          return {
-            id: safeString(o?.id, ''),
-            format: safeString(o?.format, ''),
-            description: safeString(o?.description, ''),
-          };
-        }).filter(o => o.format || o.description),
-        metacognitionText: safeString(ero.metacognitionText),
+        options: normalizedOptions,
+        metacognitionText,
       };
+      
+      if (DEBUG_V2_OPTIONS) {
+        console.log('[V2Normalizer] normalized responseOptions:', normalized.responseOptions);
+      }
     }
   }
 

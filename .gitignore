@@ -32,3 +32,6 @@ dist-ssr
 *.zip
 
 check-apikey.js`
+# Supabase temp
+supabase/.temp/
+

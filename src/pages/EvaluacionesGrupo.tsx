@@ -765,6 +765,53 @@ const EvaluacionesGrupo = () => {
     setExpandedCapitulos([]);
   }, [materia, materiasSeleccionadas, esInterdisciplinaria]);
 
+  // FIX #2: Load aiDesignReport from DB when opening an existing evaluation
+  useEffect(() => {
+    const loadAiDesignReportFromDB = async () => {
+      // Check if there's an evaluationId in searchParams
+      const evaluationId = searchParams.get('evaluationId');
+      
+      // Only load if:
+      // 1. There's an evaluationId
+      // 2. aiDesignReport is not already set (don't overwrite in-session generation)
+      if (!evaluationId || aiDesignReport !== null) {
+        return;
+      }
+
+      try {
+        const { data: evalData, error } = await supabase
+          .from('evaluaciones')
+          .select('evaluacion_generada, ai_design_report')
+          .eq('id', evaluationId)
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        if (error) {
+          console.warn('[FIX #2] Error loading evaluation:', error);
+          return;
+        }
+
+        if (!evalData) {
+          return;
+        }
+
+        // Priority 1: evaluacion_generada.ai_report
+        // Priority 2: ai_design_report (fallback)
+        const aiReportPayload = evalData.evaluacion_generada?.ai_report || evalData.ai_design_report;
+
+        if (aiReportPayload && typeof aiReportPayload === 'object') {
+          console.info('[FIX #2] Loaded aiDesignReport from DB');
+          setAiDesignReport(JSON.stringify(aiReportPayload));
+        }
+      } catch (err) {
+        console.warn('[FIX #2] Error loading aiDesignReport:', err);
+        // Non-fatal: continue without aiDesignReport
+      }
+    };
+
+    loadAiDesignReportFromDB();
+  }, [searchParams, aiDesignReport]);
+
   // Obtener capítulos para la materia seleccionada
   const capitulosMateria = useMemo(() => {
     if (esInterdisciplinaria && materiasSeleccionadas.length > 0) {

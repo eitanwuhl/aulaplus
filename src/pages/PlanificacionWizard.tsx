@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useToast } from '@/hooks/use-toast';
 import { usePlanificacionWizard } from '@/hooks/usePlanificacionWizard';
 import { useFullSessionGeneration } from '@/hooks/useFullSessionGeneration';
-import type { UnidadDidactica, UnitAssignmentMetadata } from '@/types/planificacion';
+import type { UnidadDidactica, UnitAssignmentMetadata, WizardData } from '@/types/planificacion';
 import { WizardSteps } from '@/components/planificacion/WizardSteps';
 import { supabase } from '@/integrations/supabase/client';
 import {
@@ -257,7 +257,8 @@ const generarPlanesAutomaticamente = async (
   materia: string, 
   nivel: string,
   sessionBriefs?: (string | undefined)[],  // PHASE 3.1: Optional per-session focus overrides
-  grupoId?: string  // PHASE 3 (Profile Usage): Optional grupo_id to fetch profile
+  grupoId?: string,  // PHASE 3 (Profile Usage): Optional grupo_id to fetch profile
+  wizardData?: WizardData  // GOAL A: Pasar wizardData para obtener duracion_por_sesion
 ) => {
   try {
     console.log('Iniciando generación automática de planes...');
@@ -367,8 +368,14 @@ const generarPlanesAutomaticamente = async (
       // PHASE 1: Usar asignación determinística
       const assignment = sessionAssignments[i];
       
-      // Usar competencias de la unidad asignada, o todas si no hay específicas
-      const competenciasSesion = assignment.competencias_ids.length > 0
+      // Prioridad de competencias por sesión:
+      // 1) competencias ya guardadas en la sesión (fuente más específica)
+      // 2) competencias de la unidad asignada
+      // 3) competencias globales de la planificación
+      const competenciasSesionPersistidas = normalizeArrayField((sesion as any).competencias_anep);
+      const competenciasSesion = competenciasSesionPersistidas.length > 0
+        ? competenciasSesionPersistidas
+        : assignment.competencias_ids.length > 0
         ? assignment.competencias_ids
         : competencias;
       
@@ -391,7 +398,8 @@ const generarPlanesAutomaticamente = async (
         contenido: assignment.contenido_texto.substring(0, 40),
         claseEnUnidad: assignment.claseEnUnidad,
         totalClasesUnidad: assignment.totalClasesUnidad,
-        competencias: competenciasSesion.length
+        competencias: competenciasSesion.length,
+        competenciasFuente: competenciasSesionPersistidas.length > 0 ? 'sesion' : (assignment.competencias_ids.length > 0 ? 'unidad' : 'planificacion')
       });
       
       // Delay inicial entre sesiones para evitar rate limiting
@@ -546,11 +554,35 @@ const generarPlanesAutomaticamente = async (
             materialsContext = formatMaterialsForAI(allMaterials);
           }
           
+          // TASK 1: Validar y obtener duracionMin - MANDATORY with defensive fallback
+          // Prioridad: 1) sesion.duracion_minutos, 2) wizardData.contexto.duracion_por_sesion, 3) default 60
+          let duracionMin: number;
+          if (sesion.duracion_minutos && sesion.duracion_minutos > 0) {
+            duracionMin = Number(sesion.duracion_minutos);
+          } else {
+            // Intentar obtener del wizard state (para sesiones recién creadas)
+            const duracionFromWizard = wizardData?.contexto?.duracion_por_sesion;
+            if (duracionFromWizard && duracionFromWizard > 0) {
+              duracionMin = Number(duracionFromWizard);
+              console.warn(`[GEN_PLAN] Sesión ${sesion.orden} no tiene duracion_minutos, usando valor del wizard: ${duracionMin}`);
+            } else {
+              // TASK 1: Defensive fallback - default to 60 instead of aborting
+              duracionMin = 60;
+              console.warn(`[GEN_PLAN] Sesión ${sesion.orden} no tiene duración válida. Usando fallback: ${duracionMin} min. Sesión: ${sesion.duracion_minutos}, Wizard: ${duracionFromWizard}`);
+            }
+          }
+          
+          // TASK 1: Ensure duracionMin is always a valid number
+          if (!duracionMin || isNaN(duracionMin) || duracionMin <= 0) {
+            duracionMin = 60; // Final fallback
+            console.error(`[GEN_PLAN] duracionMin inválido, forzando fallback a 60`);
+          }
+          
           const payload = {
             modo: 'generar_plan_html',
             sesionId: sesion.id,
             orden: sesion.orden,
-            duracionMin: sesion.duracion_minutos,
+            duracionMin: duracionMin, // TASK 1: Always explicitly included
             materia: materia || 'Sin especificar',
             nivel: nivel || 'Sin especificar',
             contenidos: contenidosSesion, // PHASE 1: Usar contenido de unidad asignada (empty array if no content)
@@ -568,29 +600,52 @@ const generarPlanesAutomaticamente = async (
             ...(allMaterials.length > 0 && { materialsContext })
           };
 
-          console.log(`Generando plan para sesión ${sesion.orden} (intento ${intentos + 1}/${maxIntentos}) con payload:`, payload);
+          console.log(`[GEN_PLAN] Generando plan para sesión ${sesion.orden} (intento ${intentos + 1}/${maxIntentos})`);
+          console.log(`[GEN_PLAN] session_id=${sesion.id}, orden=${sesion.orden}, duracionMin=${duracionMin}`);
+          // TASK 1: Log full payload for verification (temporary)
+          console.log('[GEN_PLAN] Full payload:', JSON.stringify({ ...payload, materialsContext: payload.materialsContext ? '[PRESENT]' : '[MISSING]' }, null, 2));
 
-          // Agregar timeout de 30 segundos
+          // FASE 1C: Aumentar timeout a 120 segundos (2 minutos) para permitir procesamiento completo
+          // La generación puede tardar más con materiales grandes o múltiples sesiones
+          const timeoutMs = 120000; // 120 segundos
           const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout después de 30 segundos')), 30000)
+            setTimeout(() => reject(new Error(`Timeout después de ${timeoutMs/1000} segundos`)), timeoutMs)
           );
 
           const functionPromise = supabase.functions.invoke('generate-plan-completo', {
             body: payload
           });
 
+          const startTime = Date.now();
           const { data, error } = await Promise.race([functionPromise, timeoutPromise]) as any;
+          const elapsedTime = Date.now() - startTime;
+          console.log(`[GEN_PLAN] Respuesta recibida para sesión ${sesion.orden} en ${elapsedTime}ms`);
 
           console.log(`Respuesta para sesión ${sesion.orden}:`, { data, error });
 
+          // TASK 3: Handle non-200 responses - stop retries, surface clear error
           if (error) {
-            console.error(`Error generando plan para sesión ${sesion.orden}:`, error);
-            throw new Error(`Error en sesión ${sesion.orden}: ${error.message}`);
+            console.error(`[GEN_PLAN] Error generando plan para sesión ${sesion.orden}:`, error);
+            // Check if it's a 400 (invalid input) - don't retry
+            if (error.status === 400 || error.message?.includes('duracionMin') || error.message?.includes('INVALID_INPUT')) {
+              const errorMsg = error.message || `Error de validación en sesión ${sesion.orden}: ${error.status || 'unknown'}`;
+              throw new Error(`Error de validación: ${errorMsg}. No se reintentará.`);
+            }
+            throw new Error(`Error en sesión ${sesion.orden}: ${error.message || 'Error desconocido'}`);
           }
 
           if (!data) {
-            console.error(`Sin datos para sesión ${sesion.orden}`);
+            console.error(`[GEN_PLAN] Sin datos para sesión ${sesion.orden}`);
             throw new Error(`Sin datos para sesión ${sesion.orden}`);
+          }
+          
+          // TASK 3: Check for error in response data (non-200 but no exception)
+          if (data.error && data.error_code) {
+            console.error(`[GEN_PLAN] Error en respuesta para sesión ${sesion.orden}:`, data.error, data.error_code);
+            if (data.error_code === 'INVALID_INPUT' || data.error_field === 'duracionMin') {
+              throw new Error(`Error de validación: ${data.error}. No se reintentará.`);
+            }
+            throw new Error(`Error en sesión ${sesion.orden}: ${data.error}`);
           }
 
           if (!data.plan_html || !data.plan_html.includes('<section id="plan">')) {
@@ -686,21 +741,71 @@ const generarPlanesAutomaticamente = async (
 
         } catch (error) {
           intentos++;
-          console.error(`Error procesando sesión ${sesion.orden} (intento ${intentos}/${maxIntentos}):`, error);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          console.error(`[GEN_PLAN] Error procesando sesión ${sesion.orden} (intento ${intentos}/${maxIntentos}):`, errorMessage);
+          console.error(`[GEN_PLAN] session_id=${sesion.id}, error_type=${error instanceof Error ? error.constructor.name : 'unknown'}`);
+          
+          // TASK 3: Check if it's a validation error (400) - don't retry, stop immediately
+          const isValidationError = errorMessage?.includes('Error de validación') || 
+                                    errorMessage?.includes('duracionMin') || 
+                                    errorMessage?.includes('INVALID_INPUT') ||
+                                    errorMessage?.includes('No se reintentará');
+          
+          if (isValidationError) {
+            console.error(`[GEN_PLAN] Error de validación detectado - NO se reintentará. Sesión ${sesion.orden}`);
+            // Mark session as failed immediately
+            try {
+              await supabase
+                .from('sesiones_clase')
+                .update({ 
+                  observaciones: `ERROR VALIDACIÓN: ${errorMessage.substring(0, 200)}`
+                })
+                .eq('id', sesion.id);
+            } catch (updateError) {
+              console.error(`[GEN_PLAN] No se pudo actualizar observaciones:`, updateError);
+            }
+            // Break immediately - don't retry validation errors
+            break;
+          }
+          
+          // FASE 1E: Persistir error en sesión para diagnóstico
+          try {
+            await supabase
+              .from('sesiones_clase')
+              .update({ 
+                observaciones: `Error generación (intento ${intentos}/${maxIntentos}): ${errorMessage.substring(0, 200)}`
+              })
+              .eq('id', sesion.id);
+          } catch (updateError) {
+            console.error(`[GEN_PLAN] No se pudo actualizar observaciones de sesión ${sesion.orden}:`, updateError);
+          }
           
           // Manejo específico para error 429 (Too Many Requests)
-          if (error.message?.includes('429') || error.message?.includes('Too Many Requests')) {
-            console.warn(`Rate limit detectado para sesión ${sesion.orden}. Esperando más tiempo...`);
+          if (errorMessage?.includes('429') || errorMessage?.includes('Too Many Requests')) {
+            console.warn(`[GEN_PLAN] Rate limit detectado para sesión ${sesion.orden}. Esperando más tiempo...`);
           }
           
           if (intentos >= maxIntentos) {
-            console.error(`Falló definitivamente la sesión ${sesion.orden} después de ${maxIntentos} intentos`);
+            console.error(`[GEN_PLAN] Falló definitivamente la sesión ${sesion.orden} después de ${maxIntentos} intentos`);
+            // FASE 1E: Marcar sesión como fallida para que UI pueda mostrar error específico
+            try {
+              await supabase
+                .from('sesiones_clase')
+                .update({ 
+                  observaciones: `ERROR: No se pudo generar plan después de ${maxIntentos} intentos. Último error: ${errorMessage.substring(0, 200)}`
+                })
+                .eq('id', sesion.id);
+            } catch (updateError) {
+              console.error(`[GEN_PLAN] No se pudo marcar sesión ${sesion.orden} como fallida:`, updateError);
+            }
             // Continuar con la siguiente sesión en lugar de fallar todo
             break;
           } else {
-            // Esperar más tiempo antes del siguiente intento (especialmente para 429)
-            const delayTime = error.message?.includes('429') ? 5000 : 3000; // 5s para 429, 3s para otros
-            console.log(`Esperando ${delayTime/1000} segundos antes del siguiente intento...`);
+            // Esperar más tiempo antes del siguiente intento (especialmente para 429 o timeout)
+            const isTimeout = errorMessage?.includes('Timeout');
+            const isRateLimit = errorMessage?.includes('429') || errorMessage?.includes('Too Many Requests');
+            const delayTime = isRateLimit ? 10000 : (isTimeout ? 5000 : 3000); // 10s para 429, 5s para timeout, 3s para otros
+            console.log(`[GEN_PLAN] Esperando ${delayTime/1000} segundos antes del siguiente intento...`);
             await new Promise(resolve => setTimeout(resolve, delayTime));
           }
         }
@@ -766,16 +871,18 @@ const generarPlanesAutomaticamente = async (
     const sesionesSinPlan = sesionesVerificacion?.filter(s => !s.plan_desarrollo?.html_completo) || [];
     
     if (sesionesSinPlan.length > 0) {
-      console.error(`${sesionesSinPlan.length} sesiones sin plan generado:`, sesionesSinPlan);
-      return false;
+      console.error(`[GEN_PLAN] ${sesionesSinPlan.length} sesiones sin plan generado:`, sesionesSinPlan.map(s => ({ id: s.id, observaciones: s.observaciones })));
+      // FASE 1E: Retornar información detallada sobre sesiones fallidas
+      return { success: false, failedSessions: sesionesSinPlan.map(s => ({ id: s.id, observaciones: s.observaciones })) };
     }
 
-    console.log('Todas las sesiones tienen planes generados correctamente');
-    return true;
+    console.log('[GEN_PLAN] Todas las sesiones tienen planes generados correctamente');
+    return { success: true };
 
   } catch (error) {
-    console.error('Error en generación automática de planes:', error);
-    return false;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[GEN_PLAN] Error en generación automática de planes:', errorMessage);
+    return { success: false, error: errorMessage };
   }
 };
 
@@ -849,7 +956,8 @@ export default function PlanificacionWizard() {
         wizardData.materia || 'Sin especificar', 
         wizardData.nivel || 'Sin especificar',
         resolvedBriefs,  // PHASE 3.2: Use resolved briefs (wizard state or DB)
-        wizardData.contexto?.grupo_id  // PHASE 3 (Profile Usage): Pass grupo_id
+        wizardData.contexto?.grupo_id,  // PHASE 3 (Profile Usage): Pass grupo_id
+        wizardData  // GOAL A: Pass wizardData for duracion_por_sesion fallback
       );
       
       if (planesGenerados) {
@@ -1202,15 +1310,17 @@ export default function PlanificacionWizard() {
       
       // Esperar a que se complete la generación antes de navegar
       try {
-        const planesGenerados = await generarPlanesAutomaticamente(
+        const result = await generarPlanesAutomaticamente(
           planificacion.id, 
           planificacion.materia, 
           planificacion.nivel,
           wizardData.enfoque?.sessionBriefs,  // PHASE 3.1: Pass sessionBriefs from wizard state
-          wizardData.contexto?.grupo_id  // PHASE 3 (Profile Usage): Pass grupo_id
+          wizardData.contexto?.grupo_id,  // PHASE 3 (Profile Usage): Pass grupo_id
+          wizardData  // GOAL A: Pass wizardData for duracion_por_sesion fallback
         );
         
-        if (planesGenerados) {
+        // FASE 1E: Manejar resultado detallado (ahora retorna objeto con success y failedSessions)
+        if (result && typeof result === 'object' && result.success === true) {
           toast({
             title: "¡Planificación completa!",
             description: "Todos los planes de clase han sido generados y guardados.",
@@ -1222,7 +1332,16 @@ export default function PlanificacionWizard() {
           navigate(`/planificacion/${planificacionId}`);
           return; // Exit early on success
         } else {
-          throw new Error('No se pudieron generar todos los planes. Algunas sesiones pueden no tener contenido generado.');
+          // FASE 1E: Construir mensaje de error detallado con sesiones fallidas
+          const failedSessions = result && typeof result === 'object' && 'failedSessions' in result 
+            ? result.failedSessions 
+            : [];
+          const errorMessage = failedSessions.length > 0
+            ? `No se pudieron generar ${failedSessions.length} sesión(es). Revisa los detalles en el workspace.`
+            : (result && typeof result === 'object' && 'error' in result 
+                ? result.error 
+                : 'No se pudieron generar todos los planes. Algunas sesiones pueden no tener contenido generado.');
+          throw new Error(errorMessage);
         }
       } catch (generationError) {
         const errorMessage = generationError instanceof Error ? generationError.message : 'Error desconocido al generar planes';

@@ -55,8 +55,8 @@ export const EvalItem: React.FC<EvalItemProps> = ({ item, showPoints = true }) =
         {renderItemContent(item)}
       </div>
 
-      {/* Equivalent response options */}
-      {item.responseOptions?.enabled && (
+      {/* Equivalent response options - show only if enabled and has options */}
+      {item.responseOptions?.enabled && item.responseOptions.options && item.responseOptions.options.length > 0 && (
         <div className="ml-10">
           <ResponseOptions options={item.responseOptions} />
         </div>
