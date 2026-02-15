@@ -7,7 +7,7 @@
 import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Map, Clock, Hash, Award } from 'lucide-react';
+import { Map, Clock, Award } from 'lucide-react';
 import { NormalizedEvaluation, NormalizedSection } from '@/services/evaluations/v2Types';
 
 interface MapTableProps {
@@ -15,7 +15,7 @@ interface MapTableProps {
 }
 
 export const MapTable: React.FC<MapTableProps> = ({ evaluation }) => {
-  const { sections, totalPoints, totalItems, totalDuration } = evaluation;
+  const { sections, totalPoints, totalDuration } = evaluation;
 
   // Calculate percentage per section
   const getPointsPercent = (sectionPoints: number): string => {
@@ -42,13 +42,7 @@ export const MapTable: React.FC<MapTableProps> = ({ evaluation }) => {
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-[50%]">Sección</TableHead>
-              <TableHead className="text-center">
-                <div className="flex items-center justify-center gap-1">
-                  <Hash className="h-3.5 w-3.5" />
-                  <span>Ítems</span>
-                </div>
-              </TableHead>
+              <TableHead className="w-[55%]">Sección</TableHead>
               <TableHead className="text-center">
                 <div className="flex items-center justify-center gap-1">
                   <Award className="h-3.5 w-3.5" />
@@ -71,9 +65,6 @@ export const MapTable: React.FC<MapTableProps> = ({ evaluation }) => {
                   {section.title}
                 </TableCell>
                 <TableCell className="text-center">
-                  {section.items.length}
-                </TableCell>
-                <TableCell className="text-center">
                   <span className="font-medium">{section.totalPoints}</span>
                   <span className="text-muted-foreground text-xs ml-1">
                     ({getPointsPercent(section.totalPoints)})
@@ -88,7 +79,6 @@ export const MapTable: React.FC<MapTableProps> = ({ evaluation }) => {
             {/* Totals row */}
             <TableRow className="bg-muted/50 font-semibold">
               <TableCell>TOTAL</TableCell>
-              <TableCell className="text-center">{totalItems}</TableCell>
               <TableCell className="text-center">{totalPoints}</TableCell>
               <TableCell className="text-center">{totalDuration} min</TableCell>
             </TableRow>
