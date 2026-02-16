@@ -16,9 +16,11 @@ All evaluation-related development (Phase 3 and beyond) must be done on this bra
 
 | Field | Value |
 |-------|--------|
-| **Hash** | `741a66f` (full: `741a66f088d8069ba2bfd5c21bd10fa34b2979f2`) |
-| **Subject** | feat(evaluations): inline response options + remove items column from map |
-| **Body** | - Removed "Ítems" column from V2 MapTable<br>- Implemented inline variant for equivalent response options<br>- Preserved box variant for future use<br>- No backend or persistence changes |
+| **Hash** | `ee42dde` |
+| **Subject** | docs: add git status for mejorar-evaluaciones branch |
+
+**Previous commit (evaluation changes):** `741a66f` — feat(evaluations): inline response options + remove items column from map  
+(Body: Removed "Ítems" column from V2 MapTable; implemented inline variant for equivalent response options; preserved box variant; no backend or persistence changes.)
 
 ---
 

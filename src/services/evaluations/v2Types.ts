@@ -83,6 +83,18 @@ export interface TableData {
   cellType?: 'text' | 'numeric';
 }
 
+export interface RubricLevelV2 {
+  key: string;
+  label: string;
+  descriptor: string;
+  minPoints?: number;
+  maxPoints?: number;
+}
+
+export interface ItemRubricV2 {
+  levels: RubricLevelV2[];
+}
+
 /**
  * Versioned content for items that need adaptation.
  * When Version B is selected, the renderer uses promptB instead of prompt.
@@ -118,6 +130,7 @@ export interface EvaluationItemV2 {
   maxLength?: number;
   minLength?: number;
   guidingQuestions?: string[];
+  rubric?: ItemRubricV2;
   /**
    * Equivalent response options can come in two shapes:
    * 1. Object format (preferred): { enabled: boolean, options: [...], metacognitionText?: string }
@@ -227,8 +240,21 @@ export interface WarningV2 {
 // AI REPORT
 // ============================================================================
 
+/** Per-version AI report (narrative + optional decisions/warnings) */
+export interface AiReportPerVersionV2 {
+  narrative: string;
+  decisionsApplied?: string[];
+  warnings?: string[];
+}
+
 export interface AIReportV2 {
-  narrative?: string;  // Teacher-friendly narrative report (new)
+  narrative?: string;  // Global narrative (fallback when byVersion not used)
+  /** Per-version report: A always when present, B/C only when that version was generated */
+  byVersion?: {
+    A?: AiReportPerVersionV2;
+    B?: AiReportPerVersionV2;
+    C?: AiReportPerVersionV2;
+  };
   designRationale?: string;
   versionsExplanation?: {
     generated: string[];
@@ -302,6 +328,7 @@ export interface NormalizedItem {
     options: Array<{ id: string; format: string; description: string }>;
     metacognitionText?: string;
   };
+  rubric?: ItemRubricV2;
   
   // Source analysis
   source?: {

@@ -40,7 +40,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { V2Response, EvaluationSpecV2 } from '@/services/evaluations/v2Types';
-import { supabase } from '@/integrations/supabase/client';
+import { invokeEdgeFunctionAuthed } from '@/lib/edgeFunctionAuth';
 
 // ============================================================================
 // TYPES
@@ -245,7 +245,7 @@ export const EvaluationAdjustmentsPanel: React.FC<EvaluationAdjustmentsPanelProp
       
       console.log('[ADJUSTMENTS] Calling modify-evaluation-v2 with adjustment request');
       
-      const { data, error } = await supabase.functions.invoke('modify-evaluation-v2', {
+      const { data, error } = await invokeEdgeFunctionAuthed('modify-evaluation-v2', {
         body: requestBody,
       });
       

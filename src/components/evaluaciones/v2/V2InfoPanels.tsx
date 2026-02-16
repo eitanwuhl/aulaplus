@@ -29,8 +29,9 @@ import {
   FileCheck,
   UserCheck
 } from 'lucide-react';
-import type { V2Response, TeacherReminderV2, AIReportV2, WarningV2 } from '@/services/evaluations/v2Types';
+import type { V2Response, TeacherReminderV2, AIReportV2, WarningV2, RubricLevelV2 } from '@/services/evaluations/v2Types';
 import { normalizeStudentId } from '@/lib/contemplaciones/utils';
+import ItemRubricPanel from './ItemRubricPanel';
 
 // ============================================================================
 // COLLAPSIBLE PANEL WRAPPER
@@ -308,16 +309,28 @@ export const V2TeacherRemindersPanel: React.FC<V2TeacherRemindersPanelProps> = (
 
 interface V2AIReportPanelProps {
   aiReport: AIReportV2 | null;
+  selectedVersion: 'A' | 'B' | 'C';
   instrumentDesignRulesApplied: string[];
   warnings: WarningV2[];
 }
 
 export const V2AIReportPanel: React.FC<V2AIReportPanelProps> = ({
   aiReport,
+  selectedVersion,
   instrumentDesignRulesApplied,
   warnings
 }) => {
   const hasContent = aiReport || instrumentDesignRulesApplied.length > 0;
+
+  // Per-version report: 1) byVersion[selectedVersion] 2) global narrative 3) legacy saved (same object when loaded from DB)
+  const versionReport = aiReport?.byVersion?.[selectedVersion];
+  const narrativeForVersion = (versionReport && typeof versionReport.narrative === 'string' && versionReport.narrative.trim().length > 0)
+    ? versionReport.narrative.trim()
+    : (aiReport?.narrative && typeof aiReport.narrative === 'string' && aiReport.narrative.trim().length > 0)
+      ? aiReport.narrative.trim()
+      : '';
+
+  const hasNarrative = narrativeForVersion.length > 0;
 
   if (!hasContent) {
     return (
@@ -335,10 +348,6 @@ export const V2AIReportPanel: React.FC<V2AIReportPanelProps> = ({
     );
   }
 
-  // Check for narrative first (narrative-first approach)
-  // Show narrative if it exists and is non-empty after trim (no minimum length requirement)
-  const hasNarrative = aiReport?.narrative && typeof aiReport.narrative === 'string' && aiReport.narrative.trim().length > 0;
-
   return (
     <CollapsiblePanel
       id="v2-ai-report"
@@ -353,15 +362,19 @@ export const V2AIReportPanel: React.FC<V2AIReportPanelProps> = ({
       defaultOpen={false}
     >
       <div className="space-y-4">
-        {/* FIX #1: Narrative report (new format) - render FIRST if present */}
-        {hasNarrative && (
+        {/* Per-version or global narrative: single panel, content changes by selectedVersion */}
+        {hasNarrative ? (
           <div className="space-y-2">
             <div className="prose prose-sm max-w-none">
               <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
-                {aiReport.narrative.trim()}
+                {narrativeForVersion}
               </p>
             </div>
           </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No hay reporte disponible para esta versión.
+          </p>
         )}
 
         {/* FIX #1: Legacy structured report (fallback) - only show if narrative is missing */}
@@ -548,13 +561,19 @@ export const V2StudentAssignmentByVersionPanel: React.FC<V2StudentAssignmentByVe
   requestedVersions,
   versionVariants
 }) => {
-  // Build effective assignments: use provided assignments OR generate defaults for all students
+  // Build effective assignments: use provided assignments OR generate defaults for all students.
+  // Never show a student assigned to B/C when that version was not generated (requestedVersions).
   const effectiveAssignments: Record<string, 'A' | 'B' | 'C'> = {};
+  const rv = requestedVersions ?? { A: true, B: false, C: false };
+  const mapToEffectiveVersion = (v: 'A' | 'B' | 'C'): 'A' | 'B' | 'C' => {
+    if (v === 'B' && !rv.B) return 'A';
+    if (v === 'C' && !rv.C) return 'A';
+    return v;
+  };
   
-  // If we have explicit assignments, use them
   if (Object.keys(studentAssignments).length > 0) {
     Object.entries(studentAssignments).forEach(([studentId, version]) => {
-      effectiveAssignments[studentId] = version;
+      effectiveAssignments[studentId] = mapToEffectiveVersion(version);
     });
   } else if (students.length > 0) {
     // No explicit assignments - generate defaults (everyone gets A)
@@ -695,7 +714,11 @@ export const V2RubricPanel: React.FC<V2RubricPanelProps> = ({
   criteriosLogro,
   subject
 }) => {
-  if (!criteriosLogro || criteriosLogro.length === 0) {
+  const safeCriterios = (Array.isArray(criteriosLogro) ? criteriosLogro : [])
+    .map((c) => (typeof c === 'string' ? c.trim() : ''))
+    .filter((c) => c.length > 0);
+
+  if (safeCriterios.length === 0) {
     return (
       <CollapsiblePanel
         id="v2-rubric"
@@ -711,15 +734,19 @@ export const V2RubricPanel: React.FC<V2RubricPanelProps> = ({
     );
   }
 
-  // Derive rubric levels from criterio ANEP (simplified derivation for V2)
+  // Derive rubric levels from criterio ANEP (fallback-only, deterministic)
   const deriveRubricLevels = (criterio: string) => {
-    const isContraste = criterio.toLowerCase().includes('contrasta') || criterio.toLowerCase().includes('fuente');
-    const isArgumentacion = criterio.toLowerCase().includes('argumenta') || criterio.toLowerCase().includes('oralidad');
-    const isIndagacion = criterio.toLowerCase().includes('pregunta') || criterio.toLowerCase().includes('indaga');
+    const normalized = (criterio || '').trim();
+    const normalizedLower = normalized.toLowerCase();
+    const criterioSafe = normalized || 'Aplica el criterio de forma pertinente en la resolución de la consigna.';
+
+    const isContraste = normalizedLower.includes('contrasta') || normalizedLower.includes('fuente');
+    const isArgumentacion = normalizedLower.includes('argumenta') || normalizedLower.includes('oralidad');
+    const isIndagacion = normalizedLower.includes('pregunta') || normalizedLower.includes('indaga');
     
     if (isContraste) {
       return {
-        excelente: criterio,
+        excelente: criterioSafe,
         bueno: 'Contrasta dos fuentes; identifica similitudes/diferencias y algunas relaciones causales; contextualiza de forma general.',
         necesitaMejorar: 'Describe fuentes sin verdadero contraste; omite contexto o confunde temporalidades.',
         insuficiente: 'No contrasta; copia fragmentos o saca conclusiones no históricas.'
@@ -728,7 +755,7 @@ export const V2RubricPanel: React.FC<V2RubricPanelProps> = ({
     
     if (isArgumentacion) {
       return {
-        excelente: criterio,
+        excelente: criterioSafe,
         bueno: 'Tesis presente; dos argumentos con evidencias parciales; algunos conectores; terminología adecuada.',
         necesitaMejorar: 'Tesis poco definida; un argumento débil; escasos conectores; terminología pobre.',
         insuficiente: 'Sin tesis ni argumentos; incoherencias; vocabulario no específico.'
@@ -737,7 +764,7 @@ export const V2RubricPanel: React.FC<V2RubricPanelProps> = ({
     
     if (isIndagacion) {
       return {
-        excelente: criterio,
+        excelente: criterioSafe,
         bueno: 'Formula 2 preguntas pertinentes pero mayormente descriptivas.',
         necesitaMejorar: '1-2 preguntas básicas sin conexión con procesos históricos.',
         insuficiente: 'Preguntas irrelevantes o inexistentes.'
@@ -746,7 +773,7 @@ export const V2RubricPanel: React.FC<V2RubricPanelProps> = ({
     
     // Generic derivation
     return {
-      excelente: criterio,
+      excelente: criterioSafe,
       bueno: 'Logro adecuado con evidencia parcial y aplicación correcta del criterio.',
       necesitaMejorar: 'Logro fragmentario sin establecer relaciones claras; requiere apoyo docente.',
       insuficiente: 'No evidencia el logro del criterio; necesita intervención pedagógica intensiva.'
@@ -768,7 +795,7 @@ export const V2RubricPanel: React.FC<V2RubricPanelProps> = ({
       icon={<FileCheck className="h-4 w-4 text-primary" />}
       badge={
         <Badge variant="secondary" className="ml-2 text-xs bg-indigo-100 text-indigo-700">
-          {criteriosLogro.length} criterio{criteriosLogro.length !== 1 ? 's' : ''}
+          {safeCriterios.length} criterio{safeCriterios.length !== 1 ? 's' : ''}
         </Badge>
       }
       defaultOpen={false}
@@ -793,7 +820,7 @@ export const V2RubricPanel: React.FC<V2RubricPanelProps> = ({
         </div>
         
         {/* Criteria cards */}
-        {criteriosLogro.map((criterio, idx) => {
+        {safeCriterios.map((criterio, idx) => {
           const levels = deriveRubricLevels(criterio);
           return (
             <div key={idx} className="border rounded-lg overflow-hidden bg-white">
@@ -842,8 +869,10 @@ export const V2RubricPanel: React.FC<V2RubricPanelProps> = ({
 
 interface V2InfoPanelsProps {
   v2Response: V2Response;
+  selectedVersion?: 'A' | 'B' | 'C';
   students?: StudentInfo[];
   studentAssignments?: Record<string, 'A' | 'B' | 'C'>;
+  onV2ResponseChange?: (nextResponse: V2Response) => void;
 }
 
 /**
@@ -858,8 +887,10 @@ interface V2InfoPanelsProps {
  */
 export const V2InfoPanels: React.FC<V2InfoPanelsProps> = ({ 
   v2Response,
+  selectedVersion = 'A',
   students = [],
-  studentAssignments = {}
+  studentAssignments = {},
+  onV2ResponseChange
 }) => {
   // DEBUG: Log when V2InfoPanels renders
   console.log('[V2_INFO_PANELS] Rendering with response:', {
@@ -881,6 +912,37 @@ export const V2InfoPanels: React.FC<V2InfoPanelsProps> = ({
   const aiReport = v2Response?.aiReport ?? null;
   const instrumentDesignRulesApplied = v2Response?.instrumentDesignRulesApplied ?? [];
   const warnings = v2Response?.warnings ?? [];
+  const hasPerItemRubric = Boolean(
+    evaluationSpec?.sections?.some((section) =>
+      section.items?.some((item) => Array.isArray(item.rubric?.levels) && item.rubric.levels.length > 0)
+    )
+  );
+
+  const handleItemRubricChange = (sectionId: string, itemId: string, nextLevels: RubricLevelV2[]) => {
+    if (!onV2ResponseChange || !evaluationSpec) return;
+    const nextResponse: V2Response = {
+      ...v2Response,
+      evaluationSpec: {
+        ...evaluationSpec,
+        sections: evaluationSpec.sections.map((section) => {
+          if (section.id !== sectionId) return section;
+          return {
+            ...section,
+            items: section.items.map((item) => {
+              if (item.id !== itemId) return item;
+              return {
+                ...item,
+                rubric: {
+                  levels: nextLevels,
+                },
+              };
+            }),
+          };
+        }),
+      },
+    };
+    onV2ResponseChange(nextResponse);
+  };
 
   // If v2Response itself is null/undefined, show friendly message
   if (!v2Response) {
@@ -943,9 +1005,10 @@ export const V2InfoPanels: React.FC<V2InfoPanelsProps> = ({
         students={students}
       />
 
-      {/* AI Design Report Panel */}
+      {/* AI Design Report Panel (single panel; content changes by selected version) */}
       <V2AIReportPanel
         aiReport={aiReport}
+        selectedVersion={selectedVersion}
         instrumentDesignRulesApplied={instrumentDesignRulesApplied}
         warnings={warnings}
       />
@@ -958,11 +1021,31 @@ export const V2InfoPanels: React.FC<V2InfoPanelsProps> = ({
         />
       )}
 
-      {/* Rubric Panel (NEW) - derived from criterios de logro */}
-      <V2RubricPanel
-        criteriosLogro={evaluationSpec?.meta?.criteriosLogro ?? []}
-        subject={evaluationSpec?.meta?.subject}
-      />
+      {/* Rubric panels: per-item rubric is primary, CL-derived rubric is fallback */}
+      {evaluationSpec && hasPerItemRubric ? (
+        <CollapsiblePanel
+          id="v2-item-rubric"
+          title="Rúbrica por ítem"
+          icon={<FileCheck className="h-4 w-4 text-primary" />}
+          badge={
+            <Badge variant="secondary" className="ml-2 text-xs bg-indigo-100 text-indigo-700">
+              Por pregunta
+            </Badge>
+          }
+          defaultOpen={false}
+        >
+          <ItemRubricPanel
+            evaluationSpec={evaluationSpec}
+            editable={Boolean(onV2ResponseChange)}
+            onRubricChange={handleItemRubricChange}
+          />
+        </CollapsiblePanel>
+      ) : (
+        <V2RubricPanel
+          criteriosLogro={evaluationSpec?.meta?.criteriosLogro ?? []}
+          subject={evaluationSpec?.meta?.subject}
+        />
+      )}
     </div>
   );
 };

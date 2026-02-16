@@ -254,7 +254,18 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
     isLoading
   });
 
-  // Normalize the response
+  // Effective version: only use selectedVersion if it was actually generated (requestedVersions); otherwise A or first available
+  const effectiveVersion = ((): 'A' | 'B' | 'C' => {
+    const rv = v2Response?.requestedVersions;
+    if (!rv) return 'A';
+    if (rv[selectedVersion]) return selectedVersion;
+    if (rv.A) return 'A';
+    if (rv.B) return 'B';
+    if (rv.C) return 'C';
+    return 'A';
+  })();
+
+  // Normalize the response with effectiveVersion so content matches what we show (never render "B" content when only A exists)
   const normalization = useMemo<NormalizationResult>(() => {
     if (!v2Response) {
       console.warn('[V2_RENDERER] No v2Response provided');
@@ -284,16 +295,17 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
       };
     }
 
-    const result = normalizeV2Response(v2Response, selectedVersion);
+    const result = normalizeV2Response(v2Response, effectiveVersion);
     console.log('[V2_RENDERER] normalization result:', {
       success: result.success,
       hasEvaluation: !!result.evaluation,
       sectionsCount: result.evaluation?.sections?.length,
+      effectiveVersion,
       warnings: result.warnings,
       errors: result.errors
     });
     return result;
-  }, [v2Response, selectedVersion]);
+  }, [v2Response, effectiveVersion]);
 
   // Trigger fallback callback if normalization failed
   // BUT do NOT trigger immediately - give UI a chance to show error state
@@ -308,6 +320,16 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
       return () => clearTimeout(timer);
     }
   }, [normalization.success, normalization.errors, onRenderError, v2Response]);
+
+  // Sync parent selectedVersion when current selection is not in available versions (e.g. only A generated but state was B)
+  React.useEffect(() => {
+    if (!normalization.success || !normalization.evaluation?.availableVersions?.length || !onVersionChange) return;
+    const available = normalization.evaluation.availableVersions.map((v) => v.key);
+    if (!available.includes(selectedVersion)) {
+      const first = normalization.evaluation.availableVersions[0]?.key ?? 'A';
+      onVersionChange(first);
+    }
+  }, [normalization.success, normalization.evaluation?.availableVersions, selectedVersion, onVersionChange]);
 
   // Handle version change
   const handleVersionChange = (version: 'A' | 'B' | 'C') => {
@@ -501,8 +523,9 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
     totalItems: evaluation.totalItems
   });
 
-  // Get available versions from the response
+  // Get available versions from the response (only versions that were actually generated)
   const availableVersions = evaluation.availableVersions || [{ key: 'A', label: 'Versión A' }];
+  const displayVersion = availableVersions.some((v) => v.key === selectedVersion) ? selectedVersion : (availableVersions[0]?.key ?? 'A');
 
   // Success - render the evaluation
   return (
@@ -519,11 +542,11 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
       <Card className="border-0 shadow-sm bg-white dark:bg-slate-900">
         <CardContent className="p-4">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            {/* Version Selector */}
+            {/* Version Selector: only show versions that were generated; value is displayVersion so we never show invalid selection */}
             <div className="flex items-center gap-3">
               <span className="text-sm font-medium text-muted-foreground">Ver versión:</span>
               <Select 
-                value={selectedVersion} 
+                value={displayVersion} 
                 onValueChange={(v) => handleVersionChange(v as 'A' | 'B' | 'C')}
               >
                 <SelectTrigger className="w-[200px]">
@@ -546,7 +569,7 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
                 {availableVersions.map((v) => (
                   <Badge
                     key={v.key}
-                    variant={v.key === selectedVersion ? 'default' : 'outline'}
+                    variant={v.key === displayVersion ? 'default' : 'outline'}
                     className={`cursor-pointer transition-colors ${
                       v.key === selectedVersion ? '' : 'hover:bg-muted'
                     }`}

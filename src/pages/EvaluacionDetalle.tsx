@@ -8,6 +8,10 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { AIDesignReport, EvaluacionVisualRenderer, EvaluationAssignmentsPanel, TeacherRemindersPanel } from '@/components/evaluaciones';
 import type { AIDesignReportData } from '@/components/evaluaciones';
+import { EvaluationRendererV2 } from '@/components/evaluaciones/v2';
+import ItemRubricPanel from '@/components/evaluaciones/v2/ItemRubricPanel';
+import { canRenderV2 } from '@/services/evaluations/v2Normalizer';
+import type { V2Response } from '@/services/evaluations/v2Types';
 import { getSubtemaPorId } from '@/data/catalogo';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { mockGroups } from '@/data/mockData';
@@ -62,6 +66,8 @@ interface Evaluacion {
       allowances: string[];
     }>;
     ai_report?: unknown;
+    /** Persisted V2 spec (Block 3); when present and valid, detail page uses EvaluationRendererV2 */
+    evaluation_spec?: unknown;
   };
   is_saved: boolean;
   saved_at: string;
@@ -227,6 +233,42 @@ const EvaluacionDetalle: React.FC = () => {
     return { normalizedAssignments: normalized, assignmentWarnings: warnings };
   }, [evaluationBundle, rawAssignments]);
 
+  // Build synthetic V2 response when evaluation_spec is persisted (Block 3)
+  const v2ResponseForDetail = useMemo((): V2Response | null => {
+    const spec = evaluacion.evaluacion_generada?.evaluation_spec;
+    if (!spec || typeof spec !== 'object') return null;
+    const response: V2Response = {
+      success: true,
+      evaluationSpec: spec as V2Response['evaluationSpec'],
+      aiReport: aiReportPayload as V2Response['aiReport'] ?? null,
+      requestedVersions: { A: true, B: false, C: false },
+      instrumentDesignRulesApplied: [],
+      teacherRemindersByStudent: (teacherReminders || []).map((r) => ({
+        studentId: String(r.studentId),
+        studentName: students.find((s) => String(s.id) === String(r.studentId))?.name ?? 'Estudiante',
+        admin: r.admin ?? [],
+        correction: r.correction ?? []
+      })),
+      warnings: []
+    };
+    return response;
+  }, [evaluacion.evaluacion_generada?.evaluation_spec, aiReportPayload, teacherReminders, students]);
+
+  const useV2Renderer = useMemo(
+    () => (v2ResponseForDetail ? canRenderV2(v2ResponseForDetail) : false),
+    [v2ResponseForDetail]
+  );
+
+  const hasPerItemRubricInDetail = useMemo(
+    () =>
+      Boolean(
+        v2ResponseForDetail?.evaluationSpec?.sections?.some((section) =>
+          section.items?.some((item) => Array.isArray(item.rubric?.levels) && item.rubric.levels.length > 0)
+        )
+      ),
+    [v2ResponseForDetail]
+  );
+
   const displayEvaluations = useMemo(() => {
     if (!evaluationBundle?.baseHtml && !evaluationBundle?.versions?.A) {
       return evaluacion.evaluacion_generada?.evaluaciones || [];
@@ -317,8 +359,74 @@ const EvaluacionDetalle: React.FC = () => {
           </div>
         </div>
 
-        {/* Evaluaciones Generadas */}
-        {displayEvaluations.length > 0 ? (
+        {/* Evaluaciones Generadas: V2 from spec (Block 3) or V1 HTML */}
+        {useV2Renderer && v2ResponseForDetail ? (
+          <div className="space-y-8">
+            {assignmentWarnings.length > 0 && (
+              <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+                <CardHeader>
+                  <CardTitle className="text-sm text-amber-800 dark:text-amber-200 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4" />
+                    Ajustes automáticos de versiones
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <ul className="list-disc pl-5 text-sm text-amber-700 dark:text-amber-300">
+                    {assignmentWarnings.map((warning, idx) => (
+                      <li key={idx}>{warning}</li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            )}
+            {Object.keys(normalizedAssignments).length > 0 && (
+              <EvaluationAssignmentsPanel
+                assignments={normalizedAssignments}
+                students={students}
+              />
+            )}
+            {teacherReminders.length > 0 && (
+              <TeacherRemindersPanel reminders={teacherReminders} students={students} />
+            )}
+            <EvaluationRendererV2
+              v2Response={v2ResponseForDetail}
+              selectedVersion="A"
+              showDebug={false}
+            />
+            {hasPerItemRubricInDetail && v2ResponseForDetail?.evaluationSpec && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Rúbrica por ítem</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <ItemRubricPanel
+                    evaluationSpec={v2ResponseForDetail.evaluationSpec}
+                    editable={false}
+                  />
+                </CardContent>
+              </Card>
+            )}
+            {aiReportPayload ? (
+              <AIDesignReport
+                reportData={aiReportPayload as AIDesignReportData}
+                className="mt-4"
+              />
+            ) : (
+              <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+                <CardHeader>
+                  <CardTitle className="text-sm text-amber-800 dark:text-amber-200">
+                    Reporte de IA
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-amber-700 dark:text-amber-300">
+                    El reporte de IA no está disponible para esta evaluación (legacy o generación previa).
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        ) : displayEvaluations.length > 0 ? (
           <div className="space-y-8">
             {assignmentWarnings.length > 0 && (
               <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">

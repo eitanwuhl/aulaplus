@@ -11,6 +11,7 @@ import {
   EvaluationSpecV2,
   EvaluationSectionV2,
   EvaluationItemV2,
+  ItemRubricV2,
   ItemType,
   NormalizedEvaluation,
   NormalizedSection,
@@ -72,6 +73,37 @@ function safeNumber(value: unknown, fallback: number = 0): number {
 
 function safeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function normalizeRubric(raw: unknown): ItemRubricV2 | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const rubric = raw as Record<string, unknown>;
+  if (!Array.isArray(rubric.levels)) return undefined;
+
+  const levels = rubric.levels
+    .map((level) => {
+      if (!level || typeof level !== 'object') return null;
+      const l = level as Record<string, unknown>;
+      const key = safeString(l.key).trim();
+      const label = safeString(l.label, key).trim();
+      const descriptor = safeString(l.descriptor).trim();
+      if (!key || !label || !descriptor) return null;
+
+      const minPoints = l.minPoints !== undefined ? safeNumber(l.minPoints, 0) : undefined;
+      const maxPoints = l.maxPoints !== undefined ? safeNumber(l.maxPoints, 0) : undefined;
+
+      return {
+        key,
+        label,
+        descriptor,
+        minPoints,
+        maxPoints,
+      };
+    })
+    .filter((level): level is NonNullable<typeof level> => level !== null);
+
+  if (levels.length === 0) return undefined;
+  return { levels };
 }
 
 // ============================================================================
@@ -163,20 +195,23 @@ function normalizeItem(
     isAdapted, // Track if using adapted content
   };
 
-  // Type-specific fields
+  // Type-specific fields (use versionedContent.optionsB when B selected for multiple_choice)
   switch (type) {
-    case 'multiple_choice':
-      if (Array.isArray(item.options)) {
-        normalized.options = item.options.map((opt: unknown, i: number) => {
-          const o = opt as Record<string, unknown>;
-          return {
-            id: safeString(o?.id, `opt-${i}`),
-            text: safeString(o?.text, ''),
-            letter: LETTERS[i] || `${i + 1}`,
-          };
-        }).filter(o => o.text);
+    case 'multiple_choice': {
+      const optionsSource = (selectedVersion === 'B' && versionedContent?.optionsB && Array.isArray(versionedContent.optionsB))
+        ? (versionedContent.optionsB as Array<Record<string, unknown>>)
+        : Array.isArray(item.options)
+          ? (item.options as Array<Record<string, unknown>>)
+          : [];
+      if (optionsSource.length > 0) {
+        normalized.options = optionsSource.map((opt: Record<string, unknown>, i: number) => ({
+          id: safeString(opt?.id, `opt-${i}`),
+          text: safeString(opt?.text, ''),
+          letter: LETTERS[i] || `${i + 1}`,
+        })).filter(o => o.text);
       }
       break;
+    }
 
     case 'true_false':
     case 'true_false_justify':
@@ -394,6 +429,12 @@ function normalizeItem(
     }
   }
 
+  // Rubric per item (pass through normalized, optional)
+  const rubric = normalizeRubric(item.rubric);
+  if (rubric) {
+    normalized.rubric = rubric;
+  }
+
   return normalized;
 }
 
@@ -518,33 +559,41 @@ export function normalizeV2Response(
   const totalPoints = sections.reduce((sum, s) => sum + s.totalPoints, 0);
   const totalItems = sections.reduce((sum, s) => sum + s.items.length, 0);
 
-  // Extract version info
+  // Extract version info: use response.requestedVersions (effective) so we only offer versions that were actually generated
+  const requestedVersions = response.requestedVersions ?? { A: true, B: false, C: false };
   const variants = spec.versionVariants || { A: { label: 'Versión A', isBase: true } };
   const currentVariant = variants[selectedVersion] || variants.A;
   
   const availableVersions: NormalizedEvaluation['availableVersions'] = [];
-  if (variants.A) {
+  if (requestedVersions.A) {
+    const vA = variants.A as { label?: string; isBase?: boolean } | undefined;
     availableVersions.push({
       key: 'A',
-      label: variants.A.label || 'Versión A (Universal)',
-      isBase: variants.A.isBase ?? true,
+      label: vA?.label || 'Versión A (Universal)',
+      isBase: vA?.isBase ?? true,
     });
   }
-  if (variants.B) {
+  if (requestedVersions.B) {
+    const vB = variants.B as { label?: string; isBase?: boolean; reason?: string } | undefined;
     availableVersions.push({
       key: 'B',
-      label: variants.B.label || 'Versión B (Formato Equivalente)',
-      isBase: variants.B.isBase ?? false,
-      reason: 'reason' in variants.B ? variants.B.reason : undefined,
+      label: vB?.label || 'Versión B (Formato Equivalente)',
+      isBase: vB?.isBase ?? false,
+      reason: vB?.reason,
     });
   }
-  if (variants.C) {
+  if (requestedVersions.C) {
+    const vC = variants.C as { label?: string; isBase?: boolean; reason?: string } | undefined;
     availableVersions.push({
       key: 'C',
-      label: variants.C.label || 'Versión C (Adecuación)',
-      isBase: variants.C.isBase ?? false,
-      reason: 'reason' in variants.C ? variants.C.reason : undefined,
+      label: vC?.label || 'Versión C (Adecuación)',
+      isBase: vC?.isBase ?? false,
+      reason: vC?.reason,
     });
+  }
+  // If none pushed (shouldn't happen), at least A
+  if (availableVersions.length === 0) {
+    availableVersions.push({ key: 'A', label: 'Versión A (Universal)', isBase: true });
   }
 
   // Build normalized evaluation

@@ -10,6 +10,7 @@ export { MapTable } from './MapTable';
 export { EvalSection } from './EvalSection';
 export { EvalItem } from './EvalItem';
 export { ResponseOptions } from './ResponseOptions';
+export { ItemRubricPanel } from './ItemRubricPanel';
 export { 
   V2InfoPanels, 
   V2StudentAssignmentsPanel,

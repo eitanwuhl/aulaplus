@@ -16,6 +16,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { invokeEdgeFunctionAuthed } from "@/lib/edgeFunctionAuth";
 import { normalizeArrayField } from "@/lib/normalizeSupabaseArrays";
 import { Group, mockGroups } from "@/data/mockData";
 import { CATALOGO_JERARQUICO, criteriosParaContenidos, contenidosPorMateria, getSubtemaPorId, getCapituloPorSubtema, type Materia, type CapituloMacro, type SubtemaItem } from "@/data/catalogo";
@@ -615,7 +616,11 @@ const EvaluacionesGrupo = () => {
           evaluation_bundle: evaluationBundle,
           evaluation_design_plan: evaluationDesignPlan,
           student_assignments: studentAssignments,
-          teacher_reminders_by_student: teacherReminders
+          teacher_reminders_by_student: teacherReminders,
+          // Persist V2 spec when saving after V2 generation (Block 3)
+          ...(useBetaV2 && v2RawResponse?.evaluationSpec
+            ? { evaluation_spec: v2RawResponse.evaluationSpec }
+            : {})
         },
         // PHASE C: Persist AI design report in DB column
         ai_design_report: aiDesignReport ? JSON.parse(aiDesignReport) : null,
@@ -832,13 +837,11 @@ const EvaluacionesGrupo = () => {
         
         // Use AI to analyze and enhance the prototype
         try {
-          const { supabase } = await import('@/integrations/supabase/client');
-          
           // Load unified group context for AI generation
           const { getGroupContextForAI } = await import('@/services/groupContext/provider');
           const groupContextData = await getGroupContextForAI(selectedGroup?.id || '', { purpose: 'evaluation' });
           
-          const { data, error } = await supabase.functions.invoke('modify-evaluation', {
+          const { data, error } = await invokeEdgeFunctionAuthed('modify-evaluation', {
             body: {
               originalEvaluation: text,
               modification: "Analiza este prototipo de evaluación y adáptalo para diferentes niveles de adaptación curricular manteniendo su estructura original.",
@@ -1177,7 +1180,7 @@ const EvaluacionesGrupo = () => {
           }
         };
         
-        const v2Result = await supabase.functions.invoke('modify-evaluation-v2', {
+        const v2Result = await invokeEdgeFunctionAuthed('modify-evaluation-v2', {
           body: v2RequestBody
         });
         
@@ -1247,7 +1250,7 @@ const EvaluacionesGrupo = () => {
       // =======================================================================
       if (!usedV2Endpoint) {
         console.info('[EVAL_PIPELINE] Invoking modify-evaluation edge function (V1)');
-        const v1Result = await supabase.functions.invoke('modify-evaluation', {
+        const v1Result = await invokeEdgeFunctionAuthed('modify-evaluation', {
           body: requestBody
         });
         data = v1Result.data;
@@ -1636,13 +1639,12 @@ const EvaluacionesGrupo = () => {
     if (!evaluation) return;
 
     await makeAPICall(async () => {
-      const { supabase } = await import('@/integrations/supabase/client');
       const { getGroupContextForAI } = await import('@/services/groupContext/provider');
       
       // Load unified group context for AI generation
       const groupContextData = await getGroupContextForAI(selectedGroup?.id || '', { purpose: 'evaluation' });
       
-      const { data, error } = await supabase.functions.invoke('modify-evaluation', {
+      const { data, error } = await invokeEdgeFunctionAuthed('modify-evaluation', {
         body: {
           originalEvaluation: evaluation.content,
           modification: feedback.suggestions,
@@ -1710,8 +1712,6 @@ const EvaluacionesGrupo = () => {
     }
 
     await makeAPICall(async () => {
-      const { supabase } = await import('@/integrations/supabase/client');
-      
       const feedbackText = [
         ...evaluation.feedback.liked.map(item => `Me gusta: ${item}`),
         ...evaluation.feedback.disliked.map(item => `No me gusta: ${item}`),
@@ -1722,7 +1722,7 @@ const EvaluacionesGrupo = () => {
       const { getGroupContextForAI } = await import('@/services/groupContext/provider');
       const groupContextData = await getGroupContextForAI(selectedGroup?.id || '', { purpose: 'evaluation' });
       
-      const { data, error } = await supabase.functions.invoke('modify-evaluation', {
+      const { data, error } = await invokeEdgeFunctionAuthed('modify-evaluation', {
         body: {
           originalEvaluation: evaluation.content,
           modification: `Aplica estos cambios: ${feedbackText}`,
@@ -1812,13 +1812,12 @@ const EvaluacionesGrupo = () => {
 
   const generateAIResponse = async (userMessage: string, subject: string) => {
     try {
-      const { supabase } = await import('@/integrations/supabase/client');
       const { getGroupContextForAI } = await import('@/services/groupContext/provider');
       
       // Load unified group context for AI generation
       const groupContextData = await getGroupContextForAI(selectedGroup?.id || '', { purpose: 'evaluation' });
       
-      const { data, error } = await supabase.functions.invoke('modify-evaluation', {
+      const { data, error } = await invokeEdgeFunctionAuthed('modify-evaluation', {
         body: {
           type: 'chat',
           modification: userMessage,
@@ -2801,8 +2800,10 @@ const EvaluacionesGrupo = () => {
                     {/* V2 Info Panels - consumes V2Response data directly */}
                     <V2InfoPanels 
                       v2Response={v2RawResponse}
+                      selectedVersion={v2SelectedVersion}
                       students={selectedGroup?.students || []}
                       studentAssignments={studentAssignments}
+                      onV2ResponseChange={setV2RawResponse}
                     />
                     
                     {/* V2 Evaluation Content Renderer */}

@@ -18,13 +18,13 @@ const openAIApiKey = Deno.env.get('OPENAI_API_KEY');
 // OpenAI gpt-4.1 typically takes 20-50s for complex evaluation generation
 // Strategy: Allow long first attempt, retry with reduced payload if timeout
 
-const OPENAI_TIMEOUT_GENERATE_MS = 55000;  // 55s for generate (first attempt)
-const OPENAI_TIMEOUT_RETRY_MS = 24000;     // 24s for fast fallback (gpt-4o-mini, reduced prompt)
+const OPENAI_TIMEOUT_GENERATE_MS = 90000;  // 90s for generate (first attempt) — reduced timeouts causing fallback
+const OPENAI_TIMEOUT_RETRY_MS = 24000;     // 24s for fast fallback (gpt-4o-mini, reduced tokens only)
 const OPENAI_TIMEOUT_ADJUST_MS = 30000;    // 30s for adjust mode (smaller changes)
 const TOTAL_TIMEOUT_MS = 120000;           // 2 minutes total budget
 
-// Debug build stamp
-const DEBUG_BUILD = 'mejorar-evaluaciones-aiReport-narrative-guaranteed-1';
+// Debug build stamp — change this when deploying to prove which code is running
+const DEBUG_BUILD = 'v2-byVersion-DEPLOY-FINGERPRINT-2026-02-16-01';
 
 // Legacy constant for backward compatibility
 const OPENAI_TIMEOUT_MS = OPENAI_TIMEOUT_GENERATE_MS;
@@ -46,6 +46,18 @@ interface VersionedContent {
   optionsB?: Array<{ id: string; text: string; isCorrect?: boolean }>;  // Simplified options
 }
 
+interface RubricLevelV2 {
+  key: string;
+  label: string;
+  descriptor: string;
+  minPoints?: number;
+  maxPoints?: number;
+}
+
+interface ItemRubricV2 {
+  levels: RubricLevelV2[];
+}
+
 interface EvaluationItemV2 {
   id: string;
   type: 'multiple_choice' | 'true_false' | 'true_false_justify' | 'short_answer' | 'paragraph' | 'essay' | 'source_analysis' | 'table_completion' | 'matching' | 'ordering';
@@ -62,6 +74,7 @@ interface EvaluationItemV2 {
   maxLength?: number;
   minLength?: number;
   guidingQuestions?: string[];
+  rubric?: ItemRubricV2;
   equivalentResponseOptions?: {
     enabled: boolean;
     options: Array<{ id: string; format: string; description: string }>;
@@ -112,7 +125,12 @@ interface EvaluationSpecV2 {
     C?: { label: string; isBase: boolean; reason: string; modifications: unknown[] };
   };
   aiReport?: {
-    narrative?: string;  // Teacher-friendly narrative (optional, generated in same OpenAI call)
+    narrative?: string;  // Global/legacy narrative
+    byVersion?: {
+      A?: { narrative: string; decisionsApplied?: string[]; warnings?: string[] };
+      B?: { narrative: string; decisionsApplied?: string[]; warnings?: string[] };
+      C?: { narrative: string; decisionsApplied?: string[]; warnings?: string[] };
+    };
   };
 }
 
@@ -130,8 +148,19 @@ interface WarningV2 {
   context?: Record<string, unknown>;
 }
 
+interface AiReportPerVersion {
+  narrative: string;
+  decisionsApplied?: string[];
+  warnings?: string[];
+}
+
 interface AIReportV2 {
-  narrative?: string;  // Teacher-friendly narrative report (best-effort)
+  narrative?: string;  // Global narrative (fallback when byVersion not used)
+  byVersion?: {
+    A?: AiReportPerVersion;
+    B?: AiReportPerVersion;
+    C?: AiReportPerVersion;
+  };
   designRationale: string;
   versionsExplanation: {
     generated: string[];
@@ -187,6 +216,9 @@ interface V2Response {
     }>;
     narrativeSource?: 'openai' | 'local' | 'none';
     narrativePresent?: boolean;
+    specHasAiReportAfterStrip?: boolean;
+    aiReportByVersionKeys?: string[];
+    aiReportByVersionLens?: { A: number; B: number; C: number };
   };
 }
 
@@ -287,6 +319,47 @@ function buildSafeMinimalResponse(
   };
 }
 
+// Deterministic fallback narratives when model or secondary call omit byVersion.B/C
+const FALLBACK_A_NARRATIVE = 'Reporte de diseño. Contenidos y competencias alineados con la evaluación.';
+const FALLBACK_B_NARRATIVE = 'Versión B (adaptación de contenido): esta versión presenta las mismas consignas con vocabulario más accesible, oraciones más cortas y mayor andamiaje (instrucciones paso a paso, ejemplos). Se preserva la misma demanda cognitiva y los objetivos de evaluación que en la Versión A.';
+const FALLBACK_C_NARRATIVE = 'Versión C (adaptación excepcional): esta versión ofrece adecuaciones adicionales respecto a A y B (estructura más guiada, plantillas, mayor apoyo visual o textual). Mantiene los mismos objetivos de aprendizaje y criterios de evaluación.';
+
+/**
+ * Guarantees byVersion.A always exists and is non-empty; byVersion.B/C when effectiveRequestedVersions.B/C.
+ * Uses existing narratives when non-empty, else deterministic fallbacks. Removes B/C when not effective.
+ * Sets aiReport.narrative to byVersion.A.narrative when missing/empty.
+ * Works on both AIReportV2 and normalized Record (for safety pass before return).
+ */
+function ensureByVersionNarratives<T extends { byVersion?: Record<string, { narrative?: string }>; narrative?: string }>(
+  aiReport: T,
+  effectiveRequestedVersions: { A: boolean; B: boolean; C: boolean },
+  _meta: { subject?: string; grade?: string; groupName?: string }
+): T {
+  const bv: Record<string, { narrative: string }> = aiReport.byVersion && typeof aiReport.byVersion === 'object' ? { ...aiReport.byVersion } : {};
+  const narrativeA = (bv.A?.narrative && bv.A.narrative.trim().length > 0)
+    ? bv.A.narrative.trim()
+    : (aiReport.narrative && typeof aiReport.narrative === 'string' && aiReport.narrative.trim().length > 0)
+      ? aiReport.narrative.trim()
+      : FALLBACK_A_NARRATIVE;
+  bv.A = { narrative: narrativeA };
+  if (effectiveRequestedVersions.B) {
+    const existingB = bv.B?.narrative?.trim();
+    bv.B = { narrative: existingB && existingB.length > 0 ? existingB : FALLBACK_B_NARRATIVE };
+  } else {
+    delete bv.B;
+  }
+  if (effectiveRequestedVersions.C) {
+    const existingC = bv.C?.narrative?.trim();
+    bv.C = { narrative: existingC && existingC.length > 0 ? existingC : FALLBACK_C_NARRATIVE };
+  } else {
+    delete bv.C;
+  }
+  const outNarrative = (aiReport.narrative && typeof aiReport.narrative === 'string' && aiReport.narrative.trim().length > 0)
+    ? aiReport.narrative.trim()
+    : narrativeA;
+  return { ...aiReport, byVersion: bv, narrative: outNarrative } as T;
+}
+
 /**
  * Normalize aiReport from backend format to frontend contract (AIDesignReportData)
  * 
@@ -297,6 +370,7 @@ function buildSafeMinimalResponse(
  * - responseOptions -> response_options
  * 
  * Preserves narrative when backend provides it as a non-empty string.
+ * Robust: when requestedVersions.B/C is true but bv.B/bv.C missing/empty, uses FALLBACK_B/C_NARRATIVE.
  */
 function normalizeAiReportForFrontend(
   backendReport: AIReportV2,
@@ -314,7 +388,28 @@ function normalizeAiReportForFrontend(
       console.log(`[AI_REPORT] normalizeAiReportForFrontend: ✓ Narrative included in normalized report (len=${trimmedNarrative.length})`);
     }
   }
-  
+
+  // Per-version report (byVersion) - MUST always be present; ensure A exists; B/C when requested (use fallback if missing/empty)
+  const globalFallback = typeof backendReport.narrative === 'string' && backendReport.narrative.trim().length > 0
+    ? backendReport.narrative.trim()
+    : FALLBACK_A_NARRATIVE;
+  const bv = backendReport.byVersion && typeof backendReport.byVersion === 'object' ? (backendReport.byVersion as Record<string, { narrative?: string }>) : {} as Record<string, { narrative?: string }>;
+  const out: Record<string, { narrative: string }> = {};
+  out.A = (bv.A && typeof bv.A.narrative === 'string' && bv.A.narrative.trim().length > 0)
+    ? { narrative: bv.A.narrative.trim() }
+    : { narrative: globalFallback };
+  if (requestedVersions.B) {
+    out.B = (bv.B && typeof bv.B.narrative === 'string' && bv.B.narrative.trim().length > 0)
+      ? { narrative: bv.B.narrative.trim() }
+      : { narrative: FALLBACK_B_NARRATIVE };
+  }
+  if (requestedVersions.C) {
+    out.C = (bv.C && typeof bv.C.narrative === 'string' && bv.C.narrative.trim().length > 0)
+      ? { narrative: bv.C.narrative.trim() }
+      : { narrative: FALLBACK_C_NARRATIVE };
+  }
+  normalized.byVersion = out;
+
   // rationale (from designRationale)
   if (backendReport.designRationale) {
     normalized.rationale = backendReport.designRationale;
@@ -833,6 +928,306 @@ function buildNarrativeLocal(
   return narrative;
 }
 
+const NARRATIVE_ONLY_TIMEOUT_MS = 15000;
+const MIN_NARRATIVE_LENGTH = 200;
+
+/**
+ * When local/fallback narrative is too short (<200 chars), call OpenAI once to generate narrative only.
+ * Ensures narrative explicitly includes: content evaluated, competencies, teacher requirements, materials/session.
+ */
+async function generateNarrativeOnlyCall(
+  spec: EvaluationSpecV2,
+  groupContext: Record<string, unknown>,
+  modification: string,
+  designPlan: Record<string, unknown> | undefined,
+  requestId: string,
+  timer: Timer
+): Promise<string | null> {
+  const subject = spec.meta?.subject || groupContext?.subject || 'la materia';
+  const contents = (spec.meta?.contentIds || groupContext?.content || []) as string[];
+  const competencies = (spec.meta?.competencyIds || groupContext?.competencies || []) as string[];
+  const sectionCount = spec.sections?.length ?? 0;
+  const durationMinutes = spec.meta?.duration?.minutes ?? 90;
+  const rules = (designPlan?.instrumentDesignRules as string[] | undefined) || [];
+  const userPrompt = `Genera un único párrafo narrativo (8-15 líneas) para el docente sobre esta evaluación.
+
+REQUISITOS OBLIGATORIOS (incluir explícitamente):
+1. Qué contenidos se evaluaron: ${contents.slice(0, 5).join(', ') || 'contenidos del programa'}
+2. Cómo se alinean con las competencias seleccionadas: ${competencies.slice(0, 3).join(', ') || 'competencias del nivel'}
+3. Cómo se aplicaron los requerimientos del docente: ${(modification || '').trim().slice(0, 200) || 'sin requerimientos adicionales'}
+4. Si hay reglas de diseño del instrumento: ${rules.slice(0, 3).join('; ') || 'ninguna específica'}
+
+Contexto: Materia ${subject}, ${sectionCount} sección(es), duración estimada ${durationMinutes} min.
+Responde ÚNICAMENTE con el texto del párrafo narrativo, sin encabezados ni JSON.`;
+
+  try {
+    const response = await fetchWithTimeout(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openAIApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: 'Eres un asistente que escribe reportes narrativos pedagógicos para docentes. Responde solo con el texto solicitado, en español.' },
+            { role: 'user', content: userPrompt }
+          ],
+          max_completion_tokens: 800,
+          temperature: 0.5
+        }),
+      },
+      NARRATIVE_ONLY_TIMEOUT_MS,
+      requestId
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    const text = data?.choices?.[0]?.message?.content?.trim?.();
+    if (typeof text === 'string' && text.length >= MIN_NARRATIVE_LENGTH) {
+      timer.log(`[AI_REPORT] Narrative-only call returned ${text.length} chars`);
+      return text;
+    }
+  } catch (e) {
+    timer.log(`[AI_REPORT] Narrative-only call failed: ${e}`);
+  }
+  return null;
+}
+
+const BYVERSION_ONLY_TIMEOUT_MS = 15000;
+
+/**
+ * When multiple versions (B/C) exist but parsed output lacks byVersion or has empty B/C narratives,
+ * one fast OpenAI call to generate missing byVersion narratives (single JSON response).
+ */
+async function generateMissingByVersionNarrativesCall(
+  spec: EvaluationSpecV2,
+  effectiveRequestedVersions: { A: boolean; B: boolean; C: boolean },
+  existingNarrativeA: string,
+  requestId: string,
+  timer: Timer
+): Promise<Record<string, { narrative: string }> | null> {
+  const needed = ['A' as const, ...(effectiveRequestedVersions.B ? ['B' as const] : []), ...(effectiveRequestedVersions.C ? ['C' as const] : [])];
+  if (needed.length <= 1) return null;
+  const subject = spec.meta?.subject || 'la materia';
+  const sectionCount = spec.sections?.length ?? 0;
+  const userPrompt = `Genera un objeto JSON con reportes narrativos por versión para una evaluación de ${subject} (${sectionCount} secciones).
+
+Contexto del reporte global / Versión A (resumen): ${existingNarrativeA.slice(0, 500)}
+
+Requisitos por versión:
+- A: Contenidos evaluados, alineación con competencias/criterios, requerimientos del docente, materiales/sesión si hay. Misma demanda cognitiva.
+- B: Describir explícitamente cómo los prompts de B difieren de A (simplificación: vocabulario, estructura, andamiaje). Estrategia de simplificación pedagógica. Confirmar misma demanda cognitiva y competencias.
+- C: Diferencias con A y B. Estrategia de adaptación excepcional (andamiaje más fuerte, plantillas). Confirmar mismos objetivos de aprendizaje y competencias.
+
+Genera un JSON con esta forma exacta (solo el objeto, sin markdown):
+{
+  "byVersion": {
+    "A": { "narrative": "<6-10 líneas>" }
+    ${effectiveRequestedVersions.B ? ', "B": { "narrative": "<5-8 líneas: diferencias con A, simplificación, misma dificultad>" }' : ''}
+    ${effectiveRequestedVersions.C ? ', "C": { "narrative": "<5-8 líneas: adaptación excepcional, mismos objetivos>" }' : ''}
+  }
+}
+
+Responde ÚNICAMENTE con el JSON. Sin explicaciones ni \`\`\`json.`;
+
+  try {
+    const response = await fetchWithTimeout(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openAIApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: 'Eres un asistente que genera reportes pedagógicos en JSON. Responde solo con el objeto JSON solicitado, en español.' },
+            { role: 'user', content: userPrompt }
+          ],
+          max_completion_tokens: 1200,
+          temperature: 0.4
+        }),
+      },
+      BYVERSION_ONLY_TIMEOUT_MS,
+      requestId
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    const raw = data?.choices?.[0]?.message?.content?.trim?.();
+    if (typeof raw !== 'string' || raw.length < 50) return null;
+    const parsed = (() => {
+      try {
+        const cleaned = raw.replace(/^```\w*\n?|\n?```$/g, '').trim();
+        return JSON.parse(cleaned) as { byVersion?: Record<string, { narrative?: string }> };
+      } catch {
+        return null;
+      }
+    })();
+    if (!parsed?.byVersion || typeof parsed.byVersion !== 'object') return null;
+    const out: Record<string, { narrative: string }> = {};
+    for (const key of needed) {
+      const entry = (parsed.byVersion as Record<string, { narrative?: string }>)[key];
+      const narrative = typeof entry?.narrative === 'string' ? entry.narrative.trim() : '';
+      if (narrative.length >= 100) out[key] = { narrative };
+    }
+    if (Object.keys(out).length > 0) {
+      timer.log(`[AI_REPORT] ByVersion-only call returned: ${Object.keys(out).join(', ')}`);
+      return out;
+    }
+  } catch (e) {
+    timer.log(`[AI_REPORT] ByVersion-only call failed: ${e}`);
+  }
+  return null;
+}
+
+function isOpenEndedItemType(type: unknown): boolean {
+  if (typeof type !== 'string') return false;
+  const t = type.toLowerCase();
+  return (
+    t === 'essay' ||
+    t === 'paragraph' ||
+    t === 'short_answer' ||
+    t === 'source_analysis' ||
+    t === 'true_false_justify' ||
+    t === 'justify'
+  );
+}
+
+function buildFallbackRubric(itemPrompt: string, itemPoints: number): ItemRubricV2 {
+  const safePoints = Number.isFinite(itemPoints) && itemPoints > 0 ? itemPoints : 4;
+  const rounded = Math.max(1, Math.round(safePoints));
+  const highMin = Math.max(0, rounded - 1);
+  const midUpper = Math.max(1, highMin - 1);
+  const lowUpper = Math.max(0, Math.min(midUpper - 1, Math.round(rounded / 2)));
+
+  const promptHint = (itemPrompt || 'la consigna').trim().slice(0, 100);
+
+  return {
+    levels: [
+      {
+        key: 'excelente',
+        label: 'Excelente',
+        descriptor: `Responde ${promptHint} con precisión, profundidad y evidencia pertinente.`,
+        minPoints: rounded,
+        maxPoints: rounded,
+      },
+      {
+        key: 'bueno',
+        label: 'Bueno',
+        descriptor: `Responde ${promptHint} correctamente con alguna evidencia, pero con menor desarrollo.`,
+        minPoints: highMin,
+        maxPoints: highMin,
+      },
+      {
+        key: 'en_proceso',
+        label: 'En proceso',
+        descriptor: `Responde de forma parcial: identifica ideas relevantes, pero con vacíos o imprecisiones.`,
+        minPoints: lowUpper + 1,
+        maxPoints: midUpper,
+      },
+      {
+        key: 'insuficiente',
+        label: 'Insuficiente',
+        descriptor: `No logra responder la consigna de forma suficiente o presenta errores conceptuales relevantes.`,
+        minPoints: 0,
+        maxPoints: lowUpper,
+      },
+    ],
+  };
+}
+
+function normalizeAndValidateRubric(
+  rubric: unknown,
+  itemPrompt: string,
+  itemPoints: number
+): ItemRubricV2 | null {
+  if (!rubric || typeof rubric !== 'object') return null;
+  const r = rubric as Record<string, unknown>;
+  if (!Array.isArray(r.levels)) return null;
+
+  const levels = r.levels
+    .map((level) => {
+      if (!level || typeof level !== 'object') return null;
+      const l = level as Record<string, unknown>;
+      const key = typeof l.key === 'string' ? l.key.trim() : '';
+      const label = typeof l.label === 'string' ? l.label.trim() : '';
+      const descriptor = typeof l.descriptor === 'string' ? l.descriptor.trim() : '';
+      if (!key || !label || !descriptor) return null;
+      if (descriptor.length < 12) return null;
+      return {
+        key,
+        label,
+        descriptor,
+        minPoints: typeof l.minPoints === 'number' ? l.minPoints : undefined,
+        maxPoints: typeof l.maxPoints === 'number' ? l.maxPoints : undefined,
+      };
+    })
+    .filter((l): l is RubricLevelV2 => l !== null);
+
+  if (levels.length < 4) return null;
+
+  const points = Number.isFinite(itemPoints) ? itemPoints : 0;
+  if (points > 0) {
+    for (const level of levels) {
+      if (level.minPoints !== undefined && level.minPoints > points) {
+        level.minPoints = points;
+      }
+      if (level.maxPoints !== undefined && level.maxPoints > points) {
+        level.maxPoints = points;
+      }
+      if (
+        level.minPoints !== undefined &&
+        level.maxPoints !== undefined &&
+        level.minPoints > level.maxPoints
+      ) {
+        const tmp = level.minPoints;
+        level.minPoints = level.maxPoints;
+        level.maxPoints = tmp;
+      }
+    }
+  }
+
+  return { levels };
+}
+
+function ensureOpenEndedRubrics(spec: Record<string, unknown>): WarningV2[] {
+  const warnings: WarningV2[] = [];
+  const sections = Array.isArray(spec.sections) ? spec.sections : [];
+
+  sections.forEach((section, sectionIdx) => {
+    if (!section || typeof section !== 'object') return;
+    const s = section as Record<string, unknown>;
+    const items = Array.isArray(s.items) ? s.items : [];
+
+    items.forEach((item, itemIdx) => {
+      if (!item || typeof item !== 'object') return;
+      const i = item as Record<string, unknown>;
+      if (!isOpenEndedItemType(i.type)) return;
+
+      const prompt = typeof i.prompt === 'string' ? i.prompt : `ítem ${itemIdx + 1}`;
+      const points = typeof i.points === 'number' ? i.points : 4;
+      const normalizedRubric = normalizeAndValidateRubric(i.rubric, prompt, points);
+
+      if (normalizedRubric) {
+        i.rubric = normalizedRubric;
+        return;
+      }
+
+      i.rubric = buildFallbackRubric(prompt, points);
+      warnings.push({
+        code: 'OPEN_ENDED_RUBRIC_FALLBACK_APPLIED',
+        message: `Se aplicó rúbrica de respaldo en sección ${sectionIdx + 1}, ítem ${itemIdx + 1} (${String(i.type)}).`,
+        severity: 'warning',
+      });
+    });
+  });
+
+  return warnings;
+}
+
 /**
  * Build emergency template spec when OpenAI fails completely (non-AI fallback)
  * 
@@ -902,7 +1297,11 @@ function buildEmergencyTemplateSpec(
             guidingQuestions: [
               '¿Qué aspectos considera relevantes?',
               '¿Cómo se relacionan con el tema?'
-            ]
+            ],
+            rubric: buildFallbackRubric(
+              `Desarrolle una respuesta sobre ${subject}${gradeLevel ? ` (${gradeLevel})` : ''}.`,
+              5
+            )
           }
         ]
       }
@@ -975,6 +1374,15 @@ function validateAndNormalizeSpec(
     });
     return { spec: null, warnings };
   }
+
+  if (spec.sections.length < 1) {
+    warnings.push({
+      code: 'NO_SECTIONS',
+      message: 'La especificación debe tener al menos una sección',
+      severity: 'error'
+    });
+    return { spec: null, warnings };
+  }
   
   // Validate sections have items
   for (let i = 0; i < spec.sections.length; i++) {
@@ -988,42 +1396,27 @@ function validateAndNormalizeSpec(
       section.items = [];
     }
   }
+
+  // Ensure open-ended items always have a valid rubric (fallback if missing/malformed)
+  warnings.push(...ensureOpenEndedRubrics(spec));
   
-  // Validate versionedContent when Version B is requested
-  if (requestedVersions.B) {
-    let itemsWithVersionedContent = 0;
-    let totalItems = 0;
-    
-    for (const section of spec.sections as Array<Record<string, unknown>>) {
-      const items = section.items as Array<Record<string, unknown>>;
-      for (const item of items) {
-        totalItems++;
-        if (item.versionedContent && typeof item.versionedContent === 'object') {
-          const vc = item.versionedContent as Record<string, unknown>;
-          if (vc.promptB && typeof vc.promptB === 'string' && vc.promptB.length > 0) {
-            itemsWithVersionedContent++;
-          }
-        }
+  // Count items with versionedContent.promptB and .promptC (for effective-version logic)
+  let itemsWithPromptB = 0;
+  let itemsWithPromptC = 0;
+  let totalItems = 0;
+  for (const section of spec.sections as Array<Record<string, unknown>>) {
+    const items = section.items as Array<Record<string, unknown>>;
+    for (const item of items) {
+      totalItems++;
+      if (item.versionedContent && typeof item.versionedContent === 'object') {
+        const vc = item.versionedContent as Record<string, unknown>;
+        if (vc.promptB && typeof vc.promptB === 'string' && vc.promptB.trim().length > 0) itemsWithPromptB++;
+        if (vc.promptC && typeof vc.promptC === 'string' && vc.promptC.trim().length > 0) itemsWithPromptC++;
       }
     }
-    
-    console.log(`[V2_VALIDATION] Version B requested: ${itemsWithVersionedContent}/${totalItems} items have versionedContent.promptB`);
-    
-    if (totalItems > 0 && itemsWithVersionedContent === 0) {
-      warnings.push({
-        code: 'VERSION_B_NO_CONTENT',
-        message: `Versión B solicitada pero ningún item tiene versionedContent.promptB. La Versión B será idéntica a la A.`,
-        severity: 'warning'
-      });
-    } else if (itemsWithVersionedContent < totalItems) {
-      warnings.push({
-        code: 'VERSION_B_PARTIAL_CONTENT',
-        message: `Solo ${itemsWithVersionedContent} de ${totalItems} items tienen versionedContent.promptB adaptado.`,
-        severity: 'info'
-      });
-    }
   }
-  
+  console.log(`[V2_VALIDATION] versionedContent: ${itemsWithPromptB}/${totalItems} items have promptB, ${itemsWithPromptC}/${totalItems} have promptC`);
+
   // Normalize versionVariants
   if (!spec.versionVariants || typeof spec.versionVariants !== 'object') {
     spec.versionVariants = {
@@ -1037,20 +1430,44 @@ function validateAndNormalizeSpec(
   if (!variants.A) {
     variants.A = { label: 'Versión A (Universal)', isBase: true };
   }
-  
-  // Check B/C presence matches requested
-  if (requestedVersions.B && !variants.B) {
+
+  // Effective variants: only keep B/C if at least one item has that content (so UI never claims B/C exist when they don't)
+  if (requestedVersions.B && totalItems > 0 && itemsWithPromptB === 0) {
+    delete variants.B;
     warnings.push({
-      code: 'VERSION_B_MISSING',
-      message: 'La versión B (Adaptación de Contenido) fue solicitada pero no fue generada',
+      code: 'VERSION_B_NO_CONTENT',
+      message: 'Versión B solicitada pero ningún ítem tiene versionedContent.promptB. Se mostrará solo Versión A.',
       severity: 'warning'
     });
   }
+  if (requestedVersions.C && totalItems > 0 && itemsWithPromptC === 0) {
+    delete variants.C;
+    warnings.push({
+      code: 'VERSION_C_NO_CONTENT',
+      message: 'Versión C solicitada pero ningún ítem tiene versionedContent.promptC. Se mostrará solo Versión A (y B si existe).',
+      severity: 'warning'
+    });
+  }
+  if (requestedVersions.B && itemsWithPromptB > 0 && itemsWithPromptB < totalItems) {
+    warnings.push({
+      code: 'VERSION_B_PARTIAL_CONTENT',
+      message: `Solo ${itemsWithPromptB} de ${totalItems} ítems tienen versionedContent.promptB; el resto usa contenido base en B.`,
+      severity: 'info'
+    });
+  }
   
+  // Warn when B/C were requested but variant metadata missing (model didn't return variant)
+  if (requestedVersions.B && !variants.B) {
+    warnings.push({
+      code: 'VERSION_B_MISSING',
+      message: 'La versión B fue solicitada pero no fue generada.',
+      severity: 'warning'
+    });
+  }
   if (requestedVersions.C && !variants.C) {
     warnings.push({
       code: 'VERSION_C_MISSING',
-      message: 'La versión C (Adaptación Excepcional) fue solicitada pero no fue generada',
+      message: 'La versión C fue solicitada pero no fue generada.',
       severity: 'warning'
     });
   }
@@ -1088,10 +1505,54 @@ function validateAndNormalizeSpec(
         }
       }
     }
+    // Validate and trim byVersion to match actual versionVariants (only A when only A)
+    if (aiReport.byVersion !== undefined && typeof aiReport.byVersion === 'object') {
+      const byVersion = aiReport.byVersion as Record<string, unknown>;
+      const validKeys: ('A' | 'B' | 'C')[] = ['A'];
+      if (variants.B) validKeys.push('B');
+      if (variants.C) validKeys.push('C');
+      const trimmed: Record<string, unknown> = {};
+      for (const key of validKeys) {
+        const entry = byVersion[key];
+        if (entry && typeof entry === 'object') {
+          const e = entry as Record<string, unknown>;
+          const narrative = typeof e.narrative === 'string' ? e.narrative.trim() : '';
+          if (narrative.length > 0) {
+            trimmed[key] = {
+              narrative,
+              ...(Array.isArray(e.decisionsApplied) && e.decisionsApplied.length > 0 ? { decisionsApplied: e.decisionsApplied } : {}),
+              ...(Array.isArray(e.warnings) && e.warnings.length > 0 ? { warnings: e.warnings } : {})
+            };
+          }
+        }
+      }
+      if (Object.keys(trimmed).length > 0) {
+        aiReport.byVersion = trimmed;
+      } else {
+        delete aiReport.byVersion;
+      }
+    }
     // If aiReport exists but has no valid narrative, keep the object (it might have other fields in future)
   }
   
   return { spec: spec as unknown as EvaluationSpecV2, warnings };
+}
+
+/**
+ * Derive effective requested versions from actual versionVariants in spec.
+ * When only A was generated (e.g. fast fallback), return { A: true, B: false, C: false }
+ * so response is coherent and no student is shown as assigned to B/C.
+ */
+function getEffectiveRequestedVersions(versionVariants: EvaluationSpecV2['versionVariants'] | undefined): { A: boolean; B: boolean; C: boolean } {
+  if (!versionVariants || typeof versionVariants !== 'object') {
+    return { A: true, B: false, C: false };
+  }
+  const v = versionVariants as Record<string, unknown>;
+  return {
+    A: true,
+    B: !!v.B,
+    C: !!v.C
+  };
 }
 
 /**
@@ -1199,6 +1660,19 @@ ${responseOptionsInclude ? `
 - Cada opción representa un formato diferente pero equivalente en evidencia y dificultad.
 ` : '- NO incluir equivalentResponseOptions en ningún item.'}
 
+## RÚBRICA POR ÍTEM (CRÍTICO)
+
+- OBLIGATORIO para items de tipo: essay, paragraph, short_answer, source_analysis, true_false_justify.
+- Cada uno de esos ítems DEBE incluir:
+  "rubric": {
+    "levels": [
+      { "key": "...", "label": "...", "descriptor": "...", "minPoints": <n>, "maxPoints": <n> }
+    ]
+  }
+- Mínimo 4 niveles por ítem.
+- Los descriptores deben ser específicos a la consigna del ítem (NO genéricos).
+- Si incluyes minPoints/maxPoints, deben estar alineados con item.points.
+
 ## ESTRUCTURA JSON REQUERIDA
 
 {
@@ -1223,6 +1697,11 @@ ${responseOptionsInclude ? `
           "type": "<tipo>",
           "prompt": "<consigna versión A>",
           "points": <puntos>,
+          "rubric": {
+            "levels": [
+              { "key": "excelente", "label": "Excelente", "descriptor": "<descriptor específico>", "minPoints": <n>, "maxPoints": <n> }
+            ]
+          },
           ${requestedVersions.B ? '"versionedContent": { "promptB": "<consigna adaptada versión B>" },' : ''}
           ...campos específicos del tipo...
         }
@@ -1235,7 +1714,14 @@ ${responseOptionsInclude ? `
     ${requestedVersions.C ? ', "C": { "label": "Versión C (Adaptación Excepcional)", "isBase": false, "reason": "Adaptación excepcional" }' : ''}
   },
   "aiReport": {
-    "narrative": "<texto narrativo de 6-12 líneas explicando el diseño de la evaluación para el docente, sin mencionar estudiantes individuales, sin recomendaciones por estudiante, explicando: por qué se eligieron las secciones/items, cómo se mantiene la dificultad entre formatos de respuesta, por qué difieren las versiones A/B/C, y dónde se agregaron opciones de respuesta equivalentes>"
+    "narrative": "<texto narrativo global de 6-12 líneas (resumen para el docente)>",
+    "byVersion": {
+      "A": {
+        "narrative": "<6-12 líneas: qué contenidos se evaluaron, cómo se alinean con las competencias seleccionadas, cómo se aplicaron los requerimientos del docente, y cómo se usaron materiales/sesión si están presentes>"
+      }
+      ${requestedVersions.B ? ', "B": { "narrative": "<6-10 líneas: diferencias con la Versión A (formato, estructura, andamiaje, accesibilidad); por qué se preserva la dificultad y se mejora claridad/apoyo>" }' : ''}
+      ${requestedVersions.C ? ', "C": { "narrative": "<6-10 líneas: diferencias con A/B, adaptación excepcional; por qué preserva objetivos de aprendizaje>" }' : ''}
+    }
   }
 }
 
@@ -1243,11 +1729,11 @@ ${responseOptionsInclude ? `
 
 - multiple_choice: Requiere "options": [{"id": "a", "text": "...", "isCorrect": true/false}]
 - true_false: Requiere "correctAnswer": true/false
-- true_false_justify: Requiere "correctAnswer", "justificationRequired": true
-- short_answer: Puede incluir "maxLength"
-- paragraph: Puede incluir "minLength", "maxLength"
-- essay: Puede incluir "guidingQuestions", "equivalentResponseOptions"
-- source_analysis: Requiere "source": {"type": "text"|"image", "content"/"url", "caption"}
+- true_false_justify: Requiere "correctAnswer", "justificationRequired": true, "rubric" (mínimo 4 niveles)
+- short_answer: Puede incluir "maxLength" y DEBE incluir "rubric" (mínimo 4 niveles)
+- paragraph: Puede incluir "minLength", "maxLength" y DEBE incluir "rubric" (mínimo 4 niveles)
+- essay: Puede incluir "guidingQuestions", "equivalentResponseOptions" y DEBE incluir "rubric" (mínimo 4 niveles)
+- source_analysis: Requiere "source": {"type": "text"|"image", "content"/"url", "caption"} y DEBE incluir "rubric" (mínimo 4 niveles)
 - table_completion: Requiere "table": {"columns": [{"id": "col-1", "header": "Columna 1"}, ...], "rows": [["valor1", "", "valor3"], ["", "", ""]]}
   - columns: array de objetos con id y header (encabezados de columna)
   - rows: array de arrays de strings. Strings vacíos "" indican celdas para completar por el estudiante
@@ -1310,6 +1796,14 @@ EJEMPLO DE NARRATIVO ENRIQUECIDO:
 
 IMPORTANTE: aiReport.narrative es OPCIONAL. Si no puedes generarlo, omítelo pero NO falles la generación por esto.
 
+## REPORTE POR VERSIÓN (aiReport.byVersion) - OBLIGATORIO
+
+Debes incluir "aiReport.byVersion" con un reporte por cada versión que generes. Si generaste B o C, byVersion.B y/o byVersion.C son OBLIGATORIOS (no opcionales).
+- byVersion.A: Siempre obligatorio. narrative = qué contenidos se evaluaron, alineación con competencias/criterios, requerimientos del docente aplicados, uso de materiales/sesión si están presentes.
+- byVersion.B: OBLIGATORIO si generaste Versión B. narrative = misma cobertura que A más: diferencias explícitas con A (formato, estructura, andamiaje, accesibilidad); por qué estas adaptaciones apoyan a los estudiantes asignados a B sin bajar la dificultad conceptual.
+- byVersion.C: OBLIGATORIO si generaste Versión C. narrative = diferencias con A/B; andamiaje más fuerte si aplica; por qué preserva los objetivos de aprendizaje.
+No inventes B/C si no generaste esas versiones. Si generaste B o C, no omitas su narrative en byVersion.
+
 RESPONDE ÚNICAMENTE CON JSON VÁLIDO. SIN EXPLICACIONES.`;
 }
 
@@ -1358,8 +1852,10 @@ Genera una especificación JSON completa siguiendo el schema EvaluationSpecV2.
 - Asegúrate que los puntos sumen un total coherente.
 ${requestedVersions.B ? `- CRÍTICO: Para CADA item, incluye "versionedContent": { "promptB": "..." } con una versión PEDAGÓGICAMENTE ADAPTADA.
 - El promptB debe ser significativamente diferente: vocabulario más simple, oraciones más cortas, estructura más clara.
+- Si falta promptB en aunque sea un ítem, la Versión B no se ofrecerá al docente (solo A).
 - Ejemplo: Si prompt es "Analiza las consecuencias socioeconómicas...", promptB debe ser "Lee con atención. ¿Qué cambios importantes ocurrieron? Piensa en cómo afectó a las personas."` : '- NO incluyas versionedContent.'}
-${requestedVersions.C ? '- Incluye versionedContent.promptC para adaptación excepcional cuando corresponda.' : ''}
+${requestedVersions.C ? `- CRÍTICO: Para cada ítem que tenga promptB, incluye también "promptC" en versionedContent cuando corresponda a adaptación excepcional. Si falta promptC en ítems, la Versión C no se ofrecerá.` : ''}
+- CRÍTICO: Para cada item abierto (essay, paragraph, short_answer, source_analysis, true_false_justify) incluye "rubric.levels" con al menos 4 niveles y descriptores específicos al prompt del ítem.
 
 Responde ÚNICAMENTE con el objeto JSON. Sin explicaciones ni code fences.`;
 }
@@ -1402,7 +1898,7 @@ async function generateEvaluationV2(
   };
 }> {
   // RETRY STRATEGY:
-  // Attempt 1: Full prompt with generous timeout (55s), gpt-4.1-2025-04-14
+  // Attempt 1: Full prompt with 90s timeout (OPENAI_TIMEOUT_GENERATE_MS), gpt-4.1-2025-04-14
   // Attempt 2: Fast fallback with gpt-4o-mini, reduced prompt, 24s timeout, maxTokens <= 1800
   const MAX_ATTEMPTS = 2;
   const warnings: WarningV2[] = [];
@@ -1467,15 +1963,15 @@ async function generateEvaluationV2(
     
     if (isRetryAttempt) {
       timer.log(`═══════════════════════════════════════════════════════════════`);
-      timer.log(`FAST FALLBACK MODE: Using gpt-4o-mini with aggressive optimizations`);
+      timer.log(`FAST FALLBACK MODE: gpt-4o-mini, Version A only, full prompt structure preserved`);
       timer.log(`═══════════════════════════════════════════════════════════════`);
       
-      // Fast fallback: use gpt-4o-mini, lower tokens, lower temperature
+      // Fast fallback: use gpt-4o-mini, lower temperature; keep full prompt (instrumentDesignRules + narrative requirements)
       modelToUse = 'gpt-4o-mini';
-      maxTokensToUse = 1800; // Reduced for speed
+      maxTokensToUse = Math.max(2500, 1800); // At least 2500 to preserve structure and narrative
       temperatureToUse = 0.4; // More deterministic
       
-      // On retry: simplify to Version A only to reduce output size
+      // On retry: request Version A only to reduce output size; do NOT strip prompt (preserve section/duration/narrative instructions)
       if (requestedVersions.B || requestedVersions.C) {
         reducedVersions = { A: true, B: false, C: false };
         warnings.push({
@@ -1483,32 +1979,9 @@ async function generateEvaluationV2(
           message: 'Usando fast fallback: generando solo Versión A con gpt-4o-mini. Versiones B/C diferidas.',
           severity: 'warning'
         });
-        
-        // Aggressively reduce system prompt: remove Version B/C, narrative, extras
-        currentSystemPrompt = systemPrompt
-          .replace(/## VERSIÓN B[\s\S]*?(?=##|$)/g, '')
-          .replace(/## VERSIÓN C[\s\S]*?(?=##|$)/g, '')
-          .replace(/OBLIGATORIO: Generar "versionedContent\.promptB"[^\n]*/g, 'NO incluir versionedContent')
-          .replace(/- Incluir versionedContent\.promptC[^\n]*/g, '')
-          .replace(/## REPORTE NARRATIVO[\s\S]*?(?=##|$)/g, '') // Remove narrative instructions
-          .replace(/## OPCIONES DE RESPUESTA EQUIVALENTES[\s\S]*?(?=##|$)/g, '') // Remove equivalent options for speed
-          + '\n\nIMPORTANTE: Genera SOLO Versión A. NO incluyas versionedContent, narrative, ni opciones equivalentes.';
-        
-        // Reduce user prompt: keep only essential info
-        const essentialParts = userPrompt.split('\n\n').filter(part => {
-          const lower = part.toLowerCase();
-          return lower.includes('materia') || 
-                 lower.includes('contenidos') || 
-                 lower.includes('competencia') || 
-                 lower.includes('criterio') ||
-                 lower.includes('requerimiento');
-        });
-        currentUserPrompt = essentialParts.join('\n\n') || userPrompt.slice(0, 2000); // Fallback to truncated original
-        
-        timer.log(`  Original systemPrompt: ${systemPrompt.length} chars`);
-        timer.log(`  Reduced systemPrompt: ${currentSystemPrompt.length} chars`);
-        timer.log(`  Original userPrompt: ${userPrompt.length} chars`);
-        timer.log(`  Reduced userPrompt: ${currentUserPrompt.length} chars`);
+        // Keep currentSystemPrompt = systemPrompt and currentUserPrompt = userPrompt (full structure)
+        timer.log(`  Full systemPrompt preserved: ${systemPrompt.length} chars`);
+        timer.log(`  Full userPrompt preserved: ${userPrompt.length} chars`);
       }
       
       // If previous attempt had a response, build repair prompt
@@ -2072,14 +2545,43 @@ serve(async (req) => {
     
     // Build response
     if (result.spec) {
-      // Success - build base aiReport first
+      // Synchronize requestedVersions with actual versionVariants (e.g. fast fallback generated only A)
+      const effectiveRequestedVersions = getEffectiveRequestedVersions(result.spec.versionVariants);
+
+      // Structure validation: duration coherence with target (if provided)
+      const targetDurationMinutes = (designPlan as Record<string, unknown>)?.targetDurationMinutes as number | undefined;
+      const estimatedMinutes = result.spec.meta?.duration?.minutes ?? 90;
+      if (targetDurationMinutes != null && targetDurationMinutes > 0) {
+        const deviation = Math.abs(estimatedMinutes - targetDurationMinutes) / targetDurationMinutes;
+        if (deviation > 0.15) {
+          result.warnings.push({
+            code: 'DURATION_DEVIATION',
+            message: `La duración estimada (${estimatedMinutes} min) se desvía más del 15% del objetivo (${targetDurationMinutes} min). Considere revisar los tiempos por sección.`,
+            severity: 'warning'
+          });
+          // Optionally scale section durations proportionally
+          const scale = targetDurationMinutes / estimatedMinutes;
+          if (result.spec.sections?.length && scale > 0 && scale !== 1) {
+            for (const section of result.spec.sections) {
+              if (typeof section.duration === 'number') {
+                section.duration = Math.round(section.duration * scale);
+              }
+            }
+            if (result.spec.meta?.duration) {
+              result.spec.meta.duration.minutes = targetDurationMinutes;
+            }
+          }
+        }
+      }
+
+      // Success - build base aiReport first (use effectiveRequestedVersions for coherence)
       const baseAiReport: AIReportV2 = {
         designRationale: `Evaluación generada para ${groupContext?.subject || 'materia no especificada'} con ${result.spec.sections.length} secciones.`,
         versionsExplanation: {
-          generated: ['A', ...(requestedVersions.B ? ['B'] : []), ...(requestedVersions.C ? ['C'] : [])],
+          generated: ['A', ...(effectiveRequestedVersions.B ? ['B'] : []), ...(effectiveRequestedVersions.C ? ['C'] : [])],
           notGenerated: {
-            ...(requestedVersions.B ? {} : { B: 'No hay estudiantes con alta necesidad de estructuración' }),
-            ...(requestedVersions.C ? {} : { C: 'No hay estudiantes con adecuación de contenido declarada' })
+            ...(effectiveRequestedVersions.B ? {} : { B: 'No hay estudiantes con alta necesidad de estructuración' }),
+            ...(effectiveRequestedVersions.C ? {} : { C: 'No hay estudiantes con adecuación de contenido declarada' })
           }
         },
         contemplacionesApplied: {
@@ -2176,6 +2678,27 @@ serve(async (req) => {
         }
       }
       
+      // If narrative is present but too short (<200 chars), try narrative-only OpenAI call (openai or local source)
+      if (narrativeText && typeof narrativeText === 'string') {
+        const len = narrativeText.trim().length;
+        if (len > 0 && len < MIN_NARRATIVE_LENGTH) {
+          timer.log('[AI_REPORT] Narrative too short (any source), requesting narrative-only OpenAI call...');
+          const enhanced = await generateNarrativeOnlyCall(
+            result.spec,
+            groupContext || {},
+            modification || '',
+            evaluation_design_plan,
+            requestId,
+            timer
+          );
+          if (enhanced && enhanced.length >= MIN_NARRATIVE_LENGTH) {
+            narrativeText = enhanced;
+            narrativeSource = 'openai';
+            timer.log(`[AI_REPORT] Narrative-only call succeeded: len=${enhanced.length}`);
+          }
+        }
+      }
+
       // CRITICAL: Set narrative on baseAiReport if we have valid text
       // This ensures it flows through to normalization
       if (narrativeText && typeof narrativeText === 'string' && narrativeText.trim().length > 0) {
@@ -2186,14 +2709,55 @@ serve(async (req) => {
         timer.log(`[AI_REPORT] ⚠ Narrative NOT set on baseAiReport (text=${narrativeText ? 'present but invalid' : 'undefined'})`);
         console.log(`[AI_REPORT] ⚠ Narrative NOT set on baseAiReport (text=${narrativeText ? 'present but invalid' : 'undefined'})`);
       }
+
+      // Per-version report: use spec.aiReport.byVersion if present (already trimmed to match versionVariants), else build from global narrative. MUST always have byVersion with at least A.
+      const specByVersion = result.spec.aiReport?.byVersion && typeof result.spec.aiReport.byVersion === 'object'
+        ? result.spec.aiReport.byVersion as Record<string, AiReportPerVersion>
+        : null;
+      if (specByVersion && Object.keys(specByVersion).length > 0) {
+        baseAiReport.byVersion = { ...specByVersion };
+        timer.log(`[AI_REPORT] ✓ byVersion from spec: ${Object.keys(specByVersion).join(', ')}`);
+      } else {
+        const narrativeForA = (baseAiReport.narrative && baseAiReport.narrative.trim().length > 0)
+          ? baseAiReport.narrative.trim()
+          : FALLBACK_A_NARRATIVE;
+        baseAiReport.byVersion = { A: { narrative: narrativeForA } };
+        timer.log('[AI_REPORT] ✓ byVersion built from global narrative (A only)');
+      }
+      if (!baseAiReport.byVersion.A?.narrative?.trim()) {
+        baseAiReport.byVersion.A = { narrative: baseAiReport.narrative?.trim() || FALLBACK_A_NARRATIVE };
+      }
+      // When B/C are effective but narratives missing, attempt one fast secondary OpenAI call (no minimum A length)
+      const needsB = effectiveRequestedVersions.B && (!baseAiReport.byVersion?.B?.narrative?.trim());
+      const needsC = effectiveRequestedVersions.C && (!baseAiReport.byVersion?.C?.narrative?.trim());
+      if ((needsB || needsC) && baseAiReport.byVersion) {
+        const existingA = baseAiReport.byVersion.A?.narrative?.trim() || baseAiReport.narrative?.trim() || '';
+        const filled = await generateMissingByVersionNarrativesCall(
+          result.spec,
+          effectiveRequestedVersions,
+          existingA.length > 0 ? existingA : FALLBACK_A_NARRATIVE,
+          requestId,
+          timer
+        );
+        if (filled) {
+          if (filled.A?.narrative && !baseAiReport.byVersion.A?.narrative?.trim()) baseAiReport.byVersion.A = { narrative: filled.A.narrative };
+          if (filled.B?.narrative && !baseAiReport.byVersion?.B?.narrative?.trim()) baseAiReport.byVersion!.B = { narrative: filled.B.narrative };
+          if (filled.C?.narrative && !baseAiReport.byVersion?.C?.narrative?.trim()) baseAiReport.byVersion!.C = { narrative: filled.C.narrative };
+        }
+      }
+      // Guarantee byVersion.A/B/C for effective versions (deterministic fallbacks if still missing)
+      const meta = { subject: result.spec.meta?.subject, grade: result.spec.meta?.gradeLevel, groupName: result.spec.meta?.groupName ?? groupContext?.groupName };
+      let reportWithGuaranteedByVersion = ensureByVersionNarratives(baseAiReport, effectiveRequestedVersions, meta);
       
       // CRITICAL: Normalize aiReport to match frontend contract (AIDesignReportData)
-      // normalizeAiReportForFrontend preserves narrative from backendReport.narrative
-      const normalizedAiReport = normalizeAiReportForFrontend(
-        baseAiReport,
+      let normalizedAiReport: Record<string, unknown> = normalizeAiReportForFrontend(
+        reportWithGuaranteedByVersion,
         result.spec,
-        requestedVersions
+        effectiveRequestedVersions
       );
+      
+      // Safety: hard-ensure byVersion again on normalized output (prevent any later overwrite)
+      normalizedAiReport = ensureByVersionNarratives(normalizedAiReport, effectiveRequestedVersions, meta) as Record<string, unknown>;
       
       // Runtime validation: ensure narrative is valid if present
       if (normalizedAiReport.narrative !== undefined) {
@@ -2225,11 +2789,31 @@ serve(async (req) => {
         }
       }
       
-      // Build final response with normalized aiReport and warnings
+      // Build final response: root aiReport is canonical; do not duplicate aiReport inside evaluationSpec
+      const evaluationSpecForResponse = { ...result.spec } as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(evaluationSpecForResponse, 'aiReport')) {
+        delete evaluationSpecForResponse.aiReport;
+      }
+      const specHasAiReportAfterStrip = Object.prototype.hasOwnProperty.call(evaluationSpecForResponse, 'aiReport');
+      const byVersionOut = (normalizedAiReport as Record<string, unknown>).byVersion as Record<string, { narrative?: string }> | undefined;
+      const byVersionKeys = Object.keys(byVersionOut || {});
+      const aiReportByVersionLens = {
+        A: byVersionOut?.A?.narrative?.length ?? 0,
+        B: byVersionOut?.B?.narrative?.length ?? 0,
+        C: byVersionOut?.C?.narrative?.length ?? 0
+      };
+      console.log('[AI_REPORT] effective versions', effectiveRequestedVersions, 'byVersion keys', byVersionKeys, 'lens', aiReportByVersionLens);
+      if (effectiveRequestedVersions.B && !(byVersionOut?.B?.narrative?.trim?.())) {
+        console.warn('[AI_REPORT] effective B but B.narrative missing (should not happen after fixes)');
+      }
+      if (effectiveRequestedVersions.C && !(byVersionOut?.C?.narrative?.trim?.())) {
+        console.warn('[AI_REPORT] effective C but C.narrative missing (should not happen after fixes)');
+      }
+      console.log('[BUILD_FINGERPRINT]', DEBUG_BUILD, 'requestId=', requestId);
       const response: V2Response = {
         success: true,
-        evaluationSpec: result.spec,
-        requestedVersions,
+        evaluationSpec: evaluationSpecForResponse as typeof result.spec,
+        requestedVersions: effectiveRequestedVersions,
         instrumentDesignRulesApplied: instrumentDesignRules,
         teacherRemindersByStudent: teacherReminders,
         aiReport: normalizedAiReport, // Normalized to match AIDesignReportData contract
@@ -2251,13 +2835,15 @@ serve(async (req) => {
           timeoutUsedMs: result.debug.timeoutUsedMs,
           retryReason: result.debug.retryReason,
           attempts: result.attempts || [],
-          // Narrative debug info
           narrativeSource: narrativeSource,
-          narrativePresent: !!(normalizedAiReport.narrative && typeof normalizedAiReport.narrative === 'string' && normalizedAiReport.narrative.trim().length > 0)
+          narrativePresent: !!(normalizedAiReport.narrative && typeof normalizedAiReport.narrative === 'string' && normalizedAiReport.narrative.trim().length > 0),
+          specHasAiReportAfterStrip,
+          aiReportByVersionKeys: byVersionKeys,
+          aiReportByVersionLens
         }
       };
       
-      timer.log(`[DEPLOY_CHECK] build=DEPLOY_CHECK_2026_02_11 SUCCESS: sections=${result.spec.sections.length}, totalTime=${timer.elapsed()}ms, narrative=${baseAiReport.narrative ? 'yes' : 'no'}`);
+      timer.log(`[DEPLOY_CHECK] ${DEBUG_BUILD} SUCCESS: sections=${result.spec.sections.length}, totalTime=${timer.elapsed()}ms`);
       
       return new Response(JSON.stringify(response), {
         headers: { 

@@ -45,6 +45,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [session, setSession] = useState<Session | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const profileUpsertInProgress = useRef<Set<string>>(new Set());
+  const signOutRecoveryInProgress = useRef(false);
 
   // Function to ensure demo user exists and login silently in background
   const ensureSupabaseAuth = async () => {
@@ -77,6 +78,15 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         setSession(session);
+
+        // When session is lost (e.g. invalid refresh token cleared by edgeFunctionAuth),
+        // re-establish demo session so next Edge Function call has a valid JWT.
+        if (event === 'SIGNED_OUT' && !signOutRecoveryInProgress.current) {
+          signOutRecoveryInProgress.current = true;
+          ensureSupabaseAuth().finally(() => {
+            signOutRecoveryInProgress.current = false;
+          });
+        }
         
         // Create or update profile silently in background when authenticated
         // Use idempotent upsert with conflict handling to avoid 409 spam

@@ -7,7 +7,7 @@
  * Phase 3: Beta toggle + fallback logic
  */
 
-import { supabase } from '@/integrations/supabase/client';
+import { invokeEdgeFunctionAuthed } from '@/lib/edgeFunctionAuth';
 
 // ============================================================================
 // TYPES
@@ -304,7 +304,7 @@ async function requestV1(payload: EvaluationRequestPayload): Promise<EvaluationR
     console.log('[EVAL_SERVICE] Calling v1 endpoint');
   }
 
-  const { data, error } = await supabase.functions.invoke('modify-evaluation', {
+  const { data, error } = await invokeEdgeFunctionAuthed('modify-evaluation', {
     body: requestBody
   });
 
@@ -350,7 +350,7 @@ async function requestV2(payload: EvaluationRequestPayload): Promise<EvaluationR
     console.log('[EVAL_SERVICE] Calling v2 endpoint');
   }
 
-  const { data, error } = await supabase.functions.invoke('modify-evaluation-v2', {
+  const { data, error } = await invokeEdgeFunctionAuthed('modify-evaluation-v2', {
     body: requestBody
   });
 
