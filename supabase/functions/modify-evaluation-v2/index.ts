@@ -12,19 +12,27 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 const openAIApiKey = Deno.env.get('OPENAI_API_KEY');
 
 // ============================================================================
-// TIMEOUT CONFIGURATION (Tuned for evaluation generation)
+// MODEL CONFIGURATION (env overrides for stability / cost)
 // ============================================================================
-// Supabase Edge Functions: Pro plans have ~150s limit, free plans ~60s
-// OpenAI gpt-4.1 typically takes 20-50s for complex evaluation generation
-// Strategy: Allow long first attempt, retry with reduced payload if timeout
+const OPENAI_MODEL_PRIMARY = Deno.env.get('OPENAI_MODEL_PRIMARY') || 'gpt-4o';
+const OPENAI_MODEL_FALLBACK = Deno.env.get('OPENAI_MODEL_FALLBACK') || 'gpt-4o-mini';
 
-const OPENAI_TIMEOUT_GENERATE_MS = 90000;  // 90s for generate (first attempt) — reduced timeouts causing fallback
-const OPENAI_TIMEOUT_RETRY_MS = 24000;     // 24s for fast fallback (gpt-4o-mini, reduced tokens only)
-const OPENAI_TIMEOUT_ADJUST_MS = 30000;    // 30s for adjust mode (smaller changes)
-const TOTAL_TIMEOUT_MS = 120000;           // 2 minutes total budget
+// ============================================================================
+// TIMEOUT CONFIGURATION (Robust: 120s per attempt, deterministic retries)
+// ============================================================================
+const OPENAI_TIMEOUT_PER_ATTEMPT_MS = 120000;  // 120s per attempt (user requirement)
+const OPENAI_TIMEOUT_GENERATE_MS = OPENAI_TIMEOUT_PER_ATTEMPT_MS;
+const OPENAI_TIMEOUT_RETRY_MS = OPENAI_TIMEOUT_PER_ATTEMPT_MS;
+const OPENAI_TIMEOUT_ADJUST_MS = 60000;       // 60s for adjust mode (smaller payload)
+const TOTAL_TIMEOUT_MS = 400000;              // ~6.5 min total budget for 3 attempts of 120s
 
 // Debug build stamp — change this when deploying to prove which code is running
-const DEBUG_BUILD = 'v2-byVersion-DEPLOY-FINGERPRINT-2026-02-16-01';
+const DEBUG_BUILD = 'v3-timeout-fix-DEPLOY-FP-2026-02-17-05';
+
+/** Fingerprint for contingency responses (debuggable, non-destructive) */
+const CONTINGENCY_FINGERPRINT = 'v3-contingency-debug-DEPLOY-FP-2026-02-17-04';
+
+type ContingencyReason = 'openai_error' | 'openai_timeout' | 'invalid_payload' | 'spec_build_error' | 'unknown';
 
 // Legacy constant for backward compatibility
 const OPENAI_TIMEOUT_MS = OPENAI_TIMEOUT_GENERATE_MS;
@@ -41,8 +49,8 @@ const corsHeaders = {
 
 // Versioned content for pedagogical adaptation (Version B/C)
 interface VersionedContent {
-  promptB?: string;  // Simplified/adapted prompt for Version B
-  promptC?: string;  // Exceptional adaptation prompt for Version C
+  promptB?: string;  // Content-adapted prompt for Version B (declared, non-equivalent)
+  promptC?: string;  // Equivalent accessibility prompt for Version C
   optionsB?: Array<{ id: string; text: string; isCorrect?: boolean }>;  // Simplified options
 }
 
@@ -219,6 +227,13 @@ interface V2Response {
     specHasAiReportAfterStrip?: boolean;
     aiReportByVersionKeys?: string[];
     aiReportByVersionLens?: { A: number; B: number; C: number };
+    aiReportByVersionHasEvidence?: { A: boolean; B: boolean; C: boolean };
+    versionCDecision?: { shouldCreateC: boolean; explanation: string; triggersUsed: string[] };
+    declaredContentAdaptationCount?: number;
+    semanticMap?: { A: 'universal'; B: 'content_adaptation_declared'; C: 'equivalent_accessibility' };
+    contingency?: boolean;
+    contingencyReason?: string;
+    contingencyFingerprint?: string;
   };
 }
 
@@ -282,7 +297,7 @@ async function fetchWithTimeout(
     });
     return response;
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (error instanceof Error && (error.name === 'AbortError' || error.message?.includes('aborted'))) {
       console.error(`[${requestId}] OpenAI request timed out after ${timeoutMs}ms`);
       throw new Error(`TIMEOUT: OpenAI request exceeded ${timeoutMs}ms limit`);
     }
@@ -290,6 +305,78 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+/** Transient: retry. Non-transient: do not retry. */
+function isTransientError(statusCode: number | undefined, errorMessage: string): boolean {
+  if (statusCode === 408 || statusCode === 429) return true;
+  if (statusCode != null && statusCode >= 500) return true;
+  const msg = (errorMessage || '').toLowerCase();
+  if (msg.includes('timeout') || msg.includes('abort') || msg.includes('econnreset') || msg.includes('network')) return true;
+  return false;
+}
+
+/**
+ * Call OpenAI with deterministic retries. Only retries on timeout / 408 / 429 / 5xx / transient network.
+ */
+async function callOpenAIWithRetries(
+  purpose: string,
+  requestId: string,
+  buildRequest: (attempt: number, model: string) => { body: Record<string, unknown>; timeoutMs: number }
+): Promise<{ ok: true; rawContent: string; attempt: number; model: string; ms: number } | { ok: false; error: string; attempt: number; statusCode?: number }> {
+  const models = [OPENAI_MODEL_PRIMARY, OPENAI_MODEL_PRIMARY, OPENAI_MODEL_FALLBACK];
+  let lastError = '';
+  let lastStatus: number | undefined;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const model = models[attempt - 1];
+    const { body, timeoutMs } = buildRequest(attempt, model);
+    const startMs = Date.now();
+    console.log(`[OPENAI_CALL] start purpose=${purpose} model=${model} attempt=${attempt}`);
+    try {
+      const response = await fetchWithTimeout(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openAIApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        },
+        timeoutMs,
+        requestId
+      );
+      const ms = Date.now() - startMs;
+      console.log(`[OPENAI_CALL] end purpose=${purpose} model=${model} attempt=${attempt} ms=${ms}`);
+      if (!response.ok) {
+        const text = await response.text();
+        lastError = `OpenAI API ${response.status}: ${text.slice(0, 200)}`;
+        lastStatus = response.status;
+        if (isTransientError(response.status, lastError) && attempt < 3) {
+          console.log(`[OPENAI_RETRY] purpose=${purpose} reason=${response.status}`);
+          continue;
+        }
+        return { ok: false, error: lastError, attempt, statusCode: response.status };
+      }
+      const data = await response.json();
+      const rawContent = data?.choices?.[0]?.message?.content ?? '';
+      return { ok: true, rawContent: typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent), attempt, model, ms };
+    } catch (e) {
+      const ms = Date.now() - startMs;
+      lastError = e instanceof Error ? e.message : String(e);
+      if (lastError.includes('TIMEOUT') || lastError.includes('Abort')) {
+        console.log(`[OPENAI_TIMEOUT] purpose=${purpose} model=${model} attempt=${attempt}`);
+      }
+      if (isTransientError(undefined, lastError) && attempt < 3) {
+        console.log(`[OPENAI_RETRY] purpose=${purpose} reason=${lastError.slice(0, 80)}`);
+        continue;
+      }
+      console.log(`[OPENAI_FAIL_FINAL] purpose=${purpose} lastError=${lastError.slice(0, 120)}`);
+      return { ok: false, error: lastError, attempt };
+    }
+  }
+  console.log(`[OPENAI_FAIL_FINAL] purpose=${purpose} lastError=${lastError.slice(0, 120)}`);
+  return { ok: false, error: lastError || 'All attempts failed', attempt: 3, statusCode: lastStatus };
 }
 
 /**
@@ -319,10 +406,61 @@ function buildSafeMinimalResponse(
   };
 }
 
+function inferContingencyReason(attempts: Array<{ outcome?: string; errorMessage?: string }> | undefined): ContingencyReason {
+  if (!attempts || attempts.length === 0) return 'unknown';
+  const last = attempts[attempts.length - 1];
+  const outcome = last?.outcome ?? 'unknown_error';
+  const msg = (last?.errorMessage ?? '').toLowerCase();
+  if (outcome === 'timeout') return 'openai_timeout';
+  if (outcome === 'openai_error') return 'openai_error';
+  if (outcome === 'parse_error' || outcome === 'validation_error') return 'spec_build_error';
+  if (msg.includes('payload') || msg.includes('body') || msg.includes('invalid request')) return 'invalid_payload';
+  return 'unknown';
+}
+
+function buildMinimalAiReportForContingency(
+  reason: ContingencyReason,
+  requestedVersions: { A: boolean; B: boolean; C: boolean }
+): AIReportV2 {
+  const reasonText: Record<ContingencyReason, string> = {
+    openai_error: 'El servicio de IA no respondió correctamente.',
+    openai_timeout: 'El servicio de IA no respondió a tiempo.',
+    invalid_payload: 'Los datos enviados no son válidos.',
+    spec_build_error: 'No se pudo interpretar o validar la especificación generada.',
+    unknown: 'Ocurrió un problema durante la generación.'
+  };
+  const actionText =
+    'Puede reintentar la operación en unos momentos. Si el problema persiste, revise los materiales y el plan de diseño, o contacte soporte.';
+  const narrativeA =
+    `Se utilizó una evaluación de contingencia porque ${reasonText[reason]} ${actionText}`;
+  const byVersion: AIReportV2['byVersion'] = {
+    A: { narrative: narrativeA }
+  };
+  if (requestedVersions.B) byVersion.B = { narrative: narrativeA };
+  if (requestedVersions.C) byVersion.C = { narrative: narrativeA };
+  return {
+    narrative: narrativeA,
+    byVersion,
+    designRationale: 'Evaluación de contingencia generada por fallo del servicio de IA.',
+    versionsExplanation: {
+      generated: ['A', ...(requestedVersions.B ? ['B'] : []), ...(requestedVersions.C ? ['C'] : [])],
+      notGenerated: {}
+    },
+    contemplacionesApplied: {
+      instrumentDesign: [],
+      adminReminders: 0,
+      correctionReminders: 0
+    },
+    responseOptions: { included: false }
+  };
+}
+
 // Deterministic fallback narratives when model or secondary call omit byVersion.B/C
 const FALLBACK_A_NARRATIVE = 'Reporte de diseño. Contenidos y competencias alineados con la evaluación.';
-const FALLBACK_B_NARRATIVE = 'Versión B (adaptación de contenido): esta versión presenta las mismas consignas con vocabulario más accesible, oraciones más cortas y mayor andamiaje (instrucciones paso a paso, ejemplos). Se preserva la misma demanda cognitiva y los objetivos de evaluación que en la Versión A.';
-const FALLBACK_C_NARRATIVE = 'Versión C (adaptación excepcional): esta versión ofrece adecuaciones adicionales respecto a A y B (estructura más guiada, plantillas, mayor apoyo visual o textual). Mantiene los mismos objetivos de aprendizaje y criterios de evaluación.';
+/** When evaluationSpec exists but narrative generation timed out or failed */
+const NARRATIVE_TIMEOUT_MESSAGE = 'La generación de narrativas por IA no estuvo disponible; la evaluación está lista. Ver evidencia a continuación.';
+const FALLBACK_B_NARRATIVE = 'Versión B (adaptación de contenido declarada): esta versión no es comparable con A/C porque ajusta objetivos o contenidos, manteniendo accesibilidad con diseño, administración y corrección.';
+const FALLBACK_C_NARRATIVE = 'Versión C (adaptación equivalente de accesibilidad): mantiene los mismos objetivos, criterios, rúbrica y demanda cognitiva que A, cambiando solo formato/andamiaje para remover barreras.';
 
 /**
  * Guarantees byVersion.A always exists and is non-empty; byVersion.B/C when effectiveRequestedVersions.B/C.
@@ -433,13 +571,13 @@ function normalizeAiReportForFrontend(
       // Generate default reason if multiple versions
       const versionDescriptions: string[] = [];
       if (backendReport.versionsExplanation.generated.includes('B')) {
-        versionDescriptions.push('Versión B adapta formato y estructura');
+        versionDescriptions.push('Versión B aplica adaptación de contenido declarada (no comparable)');
       }
       if (backendReport.versionsExplanation.generated.includes('C')) {
-        versionDescriptions.push('Versión C ofrece adecuación excepcional');
+        versionDescriptions.push('Versión C aplica accesibilidad equivalente de formato');
       }
       if (versionDescriptions.length > 0) {
-        versions.reason = `Versión A es universal; ${versionDescriptions.join('; ')}. Todas mantienen la misma demanda cognitiva.`;
+        versions.reason = `Versión A es universal; ${versionDescriptions.join('; ')}. A y C mantienen la misma demanda cognitiva.`;
       }
     }
     
@@ -498,6 +636,832 @@ function normalizeAiReportForFrontend(
   }
   
   return normalized;
+}
+
+type VersionKey = 'A' | 'B' | 'C';
+
+interface VersionTriggerCount {
+  key: string;
+  count: number;
+}
+
+interface VersionRationalePackItem {
+  version: VersionKey;
+  assignedStudents: string[];
+  topTriggers: VersionTriggerCount[];
+  whySummary: string;
+  designChanges: string[];
+  adminCorrectionReminders: string[];
+}
+
+type VersionRationalePack = Record<VersionKey, VersionRationalePackItem>;
+
+type ContemplacionesByStudent = Record<string, Array<string | Record<string, unknown>>>;
+
+interface SpecEvidenceItemSummary {
+  id: string;
+  sectionId: string;
+  type: string;
+  points: number;
+  hasB: boolean;
+  hasC: boolean;
+  hasOptionsB: boolean;
+  hasEquivalentResponseOptions: boolean;
+}
+
+interface SpecEvidenceSectionSummary {
+  id: string;
+  title: string;
+  itemCount: number;
+  /** Material or dossier fragment reference, if present in spec metadata */
+  materialRef?: string;
+}
+
+interface SpecEvidenceSummary {
+  sections: SpecEvidenceSectionSummary[];
+  items: SpecEvidenceItemSummary[];
+  changedItemsB: string[];
+  changedItemsC: string[];
+}
+
+type ContemplationCategory = 'design' | 'admin' | 'correction' | 'content_adaptation';
+
+interface ContemplationMeta {
+  category: ContemplationCategory;
+  label: string;
+  canonicalKey: string;
+}
+
+const CONTEMPLATION_REGISTRY: Record<string, ContemplationMeta> = {
+  '1': { category: 'admin', label: 'Tiempo adicional para completar la evaluación', canonicalKey: 'más tiempo' },
+  '2': { category: 'design', label: 'Consignas en lectura fácil', canonicalKey: 'consignas lectura fácil' },
+  '3': { category: 'admin', label: 'Pausas breves durante la prueba', canonicalKey: 'pausas breves' },
+  '4': { category: 'design', label: 'Apoyos visuales en consignas', canonicalKey: 'apoyos visuales' },
+  '5': { category: 'design', label: 'Plantillas de respuesta', canonicalKey: 'plantillas de respuesta' },
+  '6': { category: 'admin', label: 'Lectura oral de consignas por docente', canonicalKey: 'lectura oral de consignas' },
+  '7': { category: 'admin', label: 'Ubicación con baja distracción', canonicalKey: 'entorno de baja distracción' },
+  '8': { category: 'admin', label: 'Seguimiento frecuente de avance', canonicalKey: 'seguimiento frecuente' },
+  '9': { category: 'correction', label: 'No penalizar ortografía cuando no es objetivo', canonicalKey: 'no penalizar ortografía' },
+  '10': { category: 'admin', label: 'Recordatorios de tiempo intermedio', canonicalKey: 'recordatorios de tiempo' },
+  '11': { category: 'admin', label: 'Reforzar comprensión de consigna al inicio', canonicalKey: 'refuerzo de comprensión de consigna' },
+  '12': { category: 'design', label: 'Segmentación de consignas en pasos claros', canonicalKey: 'consignas en pasos' },
+  '13': { category: 'design', label: 'Formato de respuesta estructurado', canonicalKey: 'formato de respuesta estructurado' },
+  '14': { category: 'design', label: 'Vocabulario más accesible', canonicalKey: 'vocabulario más accesible' },
+  '15': { category: 'admin', label: 'Recordatorio de estrategia antes de responder', canonicalKey: 'recordatorio de estrategia' },
+  '16': { category: 'design', label: 'Ejemplos breves de formato esperado', canonicalKey: 'ejemplos de formato esperado' },
+  '17': { category: 'design', label: 'Resaltar palabras clave en consignas', canonicalKey: 'resaltar palabras clave' },
+  '18': { category: 'design', label: 'Andamiaje con preguntas guía', canonicalKey: 'preguntas guía' },
+  '19': { category: 'design', label: 'División de tareas extensas en subpasos', canonicalKey: 'subpasos de tarea' },
+  '20': { category: 'admin', label: 'Control de ritmo por bloques', canonicalKey: 'control de ritmo por bloques' },
+  '21': { category: 'admin', label: 'Chequeos de comprensión durante la administración', canonicalKey: 'chequeos de comprensión' },
+  '22': { category: 'correction', label: 'Priorizar contenido sobre presentación formal', canonicalKey: 'priorizar contenido sobre forma' },
+  '23': { category: 'design', label: 'Opciones equivalentes de respuesta escrita', canonicalKey: 'opciones equivalentes de respuesta escrita' },
+  '24': { category: 'admin', label: 'Apoyo para organizar tiempos de resolución', canonicalKey: 'apoyo de organización temporal' },
+  '25': { category: 'admin', label: 'Permitir breves clarificaciones de procedimiento', canonicalKey: 'clarificación de procedimiento' },
+  '26': { category: 'admin', label: 'Monitoreo individual de avance', canonicalKey: 'monitoreo individual' },
+  '27': { category: 'design', label: 'Mnemonic starter cues (anchors/guide words)', canonicalKey: 'apoyos mnemotécnicos iniciales' },
+};
+
+const KNOWN_CONTEMPLATION_LABELS = new Set(
+  Object.values(CONTEMPLATION_REGISTRY).map(meta => meta.label.toLowerCase())
+);
+const KNOWN_CONTEMPLATION_LABELS_MATCH = new Set(
+  [...KNOWN_CONTEMPLATION_LABELS].map(label => label.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+);
+const CANONICAL_KEY_TO_LABEL = new Map(
+  Object.values(CONTEMPLATION_REGISTRY).map(meta => [meta.canonicalKey, meta.label])
+);
+const DESIGN_CANONICAL_KEYS = new Set(
+  Object.values(CONTEMPLATION_REGISTRY)
+    .filter(meta => meta.category === 'design')
+    .map(meta => meta.canonicalKey)
+);
+
+/** Short functional effect in plain language (for pedagogical narrative only) */
+function contemplationFunctionalEffect(label: string): string {
+  const lower = label.toLowerCase();
+  if (lower.includes('pasos') || lower.includes('segmentación')) return 'reduce la carga de tener que planificar todo de una vez.';
+  if (lower.includes('plantilla') || lower.includes('estructurado')) return 'ayuda a organizar la respuesta sin cambiar qué se pide.';
+  if (lower.includes('lectura fácil') || lower.includes('vocabulario')) return 'facilita entender la consigna, no la tarea.';
+  if (lower.includes('visual') || lower.includes('palabras clave')) return 'dirige la atención a lo importante.';
+  if (lower.includes('preguntas guía') || lower.includes('andamiaje')) return 'ofrece puntos de apoyo sin dar la respuesta.';
+  if (lower.includes('subpasos') || lower.includes('división')) return 'reparte la tarea en partes manejables.';
+  if (lower.includes('opciones equivalentes')) return 'permite elegir el formato de respuesta manteniendo la misma evidencia.';
+  if (lower.includes('ejemplo')) return 'aclara el formato esperado.';
+  return 'facilita el acceso sin bajar lo que se exige.';
+}
+
+function normalizeTriggerLabel(raw: string): string {
+  const compact = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!compact) return '';
+  const cleaned = compact.replace(/[.;,:]+$/g, '').trim();
+  if (!cleaned) return '';
+  const replacements: Array<{ from: RegExp; to: string }> = [
+    { from: /\bbrindar\s+m[aá]s\s+tiempo\b/g, to: 'más tiempo' },
+    { from: /\bdar\s+m[aá]s\s+tiempo\b/g, to: 'más tiempo' },
+    { from: /\bconsignas?\s+paso\s+a\s+paso\b/g, to: 'consignas en pasos' },
+    { from: /\bvocabulario\s+simplificado\b/g, to: 'vocabulario más accesible' },
+  ];
+  let normalized = cleaned;
+  for (const rule of replacements) normalized = normalized.replace(rule.from, rule.to);
+  return normalized;
+}
+
+function getContemplationMetaByToken(token: unknown): ContemplationMeta | null {
+  if (typeof token === 'number') return CONTEMPLATION_REGISTRY[String(token)] || null;
+  if (typeof token === 'string') {
+    const trimmed = token.trim();
+    if (!trimmed) return null;
+    if (/^\d+$/.test(trimmed)) return CONTEMPLATION_REGISTRY[trimmed] || null;
+  }
+  if (token && typeof token === 'object') {
+    const obj = token as Record<string, unknown>;
+    if (typeof obj.id === 'number' || typeof obj.id === 'string') {
+      const key = String(obj.id).trim();
+      if (/^\d+$/.test(key)) return CONTEMPLATION_REGISTRY[key] || null;
+    }
+    if (typeof obj.contemplacionId === 'number' || typeof obj.contemplacionId === 'string') {
+      const key = String(obj.contemplacionId).trim();
+      if (/^\d+$/.test(key)) return CONTEMPLATION_REGISTRY[key] || null;
+    }
+  }
+  return null;
+}
+
+function extractStringSignals(value: unknown, depth = 0): string[] {
+  if (depth > 2 || value == null) return [];
+  const meta = getContemplationMetaByToken(value);
+  if (meta) return [meta.canonicalKey];
+  if (typeof value === 'string') {
+    const normalized = normalizeTriggerLabel(value);
+    return normalized ? [normalized] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(v => extractStringSignals(v, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const out: string[] = [];
+    const directKeys = ['label', 'name', 'reason', 'trigger', 'description', 'text'];
+    for (const key of directKeys) {
+      if (obj[key] !== undefined) out.push(...extractStringSignals(obj[key], depth + 1));
+    }
+    return out;
+  }
+  return [];
+}
+
+function hasKnownContemplationLabel(narrative: string): boolean {
+  const lower = narrative
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  for (const label of KNOWN_CONTEMPLATION_LABELS_MATCH) {
+    if (lower.includes(label)) return true;
+  }
+  return false;
+}
+
+function toHumanTriggerLabel(key: string): string {
+  const fromRegistry = CANONICAL_KEY_TO_LABEL.get(key);
+  if (fromRegistry) return fromRegistry;
+  const contemplacionMatch = /^contemplacion-(\d+)$/i.exec(key.trim());
+  if (contemplacionMatch) {
+    const meta = CONTEMPLATION_REGISTRY[contemplacionMatch[1]];
+    if (meta) return meta.label;
+  }
+  return key;
+}
+
+function fallbackTriggerLabelForVersion(version: VersionKey): string {
+  if (version === 'A') return 'Versión base común para el grupo';
+  if (version === 'B') return 'Adecuaciones de acceso y andamiaje (Versión B)';
+  return 'Adecuaciones excepcionales de contenido/estructura (Versión C)';
+}
+
+function summarizeTopTriggers(topTriggers: VersionTriggerCount[], version: VersionKey): string {
+  if (topTriggers.length === 0) {
+    if (version === 'A') return 'Versión A se mantiene como base común para todo el grupo.';
+    if (version === 'B') return 'Versión B se activa por necesidades de acceso y andamiaje declaradas en el plan.';
+    return 'Versión C se activa por adecuaciones excepcionales de contenido/estructura declaradas en el plan.';
+  }
+  const top = topTriggers.slice(0, 3).map(t => `${toHumanTriggerLabel(t.key)} (${t.count})`).join('; ');
+  if (version === 'A') return `Predominan señales comunes del grupo: ${top}.`;
+  return `Se priorizan estas señales para la versión ${version}: ${top}.`;
+}
+
+function toVersionKey(value: unknown): VersionKey {
+  return value === 'B' ? 'B' : value === 'C' ? 'C' : 'A';
+}
+
+function buildStudentMaps(students: Array<Record<string, unknown>>): {
+  studentById: Map<string, Record<string, unknown>>;
+  nameById: Map<string, string>;
+  idByNameLower: Map<string, string>;
+  orderedStudentIds: string[];
+} {
+  const studentById = new Map<string, Record<string, unknown>>();
+  const nameById = new Map<string, string>();
+  const idByNameLower = new Map<string, string>();
+  const orderedStudentIds: string[] = [];
+  for (const student of students) {
+    const rawId = student?.studentId;
+    if (rawId == null) continue;
+    const sid = String(rawId);
+    const displayName = typeof student?.displayName === 'string' && student.displayName.trim().length > 0
+      ? student.displayName.trim()
+      : `Estudiante ${sid}`;
+    studentById.set(sid, student);
+    nameById.set(sid, displayName);
+    idByNameLower.set(displayName.toLowerCase(), sid);
+    orderedStudentIds.push(sid);
+  }
+  return { studentById, nameById, idByNameLower, orderedStudentIds };
+}
+
+function resolveAssignedStudentsByVersion(
+  studentAssignmentsPrimary: Record<string, unknown>,
+  studentAssignmentsFallback: Record<string, unknown>,
+  students: Array<Record<string, unknown>>,
+  declaredContentAdaptationByStudent?: Record<string, boolean>
+): { A: string[]; B: string[]; C: string[] } {
+  const { nameById, idByNameLower, orderedStudentIds } = buildStudentMaps(students);
+  const assignments = Object.keys(studentAssignmentsPrimary || {}).length > 0
+    ? studentAssignmentsPrimary
+    : studentAssignmentsFallback;
+
+  const assignedVersionById = new Map<string, VersionKey>();
+  for (const [sid, rawVersion] of Object.entries(assignments || {})) {
+    assignedVersionById.set(String(sid), toVersionKey(rawVersion));
+  }
+  for (const sid of orderedStudentIds) {
+    if (!assignedVersionById.has(sid)) assignedVersionById.set(sid, 'A');
+  }
+
+  // Explicit content adaptation always routes to B when available.
+  if (declaredContentAdaptationByStudent && typeof declaredContentAdaptationByStudent === 'object') {
+    for (const [studentKey, isDeclared] of Object.entries(declaredContentAdaptationByStudent)) {
+      if (!isDeclared) continue;
+      const byId = orderedStudentIds.includes(studentKey) ? studentKey : undefined;
+      const byName = idByNameLower.get(studentKey.toLowerCase().trim());
+      const resolvedId = byId || byName;
+      if (resolvedId) assignedVersionById.set(resolvedId, 'B');
+    }
+  }
+
+  const result: { A: string[]; B: string[]; C: string[] } = { A: [], B: [], C: [] };
+  for (const [sid, version] of assignedVersionById.entries()) {
+    const name = nameById.get(sid) || `Estudiante ${sid}`;
+    result[version].push(name);
+  }
+  return result;
+}
+
+function resolveDeclaredContentAdaptationByStudent(
+  designPlan: Record<string, unknown>,
+  students: Array<Record<string, unknown>>
+): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  const explicit = designPlan?.declaredContentAdaptationByStudent;
+  if (explicit && typeof explicit === 'object' && !Array.isArray(explicit)) {
+    for (const [key, value] of Object.entries(explicit as Record<string, unknown>)) {
+      out[String(key)] = value === true;
+    }
+  }
+  for (const student of students) {
+    const sidRaw = student?.studentId;
+    if (sidRaw == null) continue;
+    const sid = String(sidRaw);
+    if (student?.hasDeclaredContentAdaptation === true) out[sid] = true;
+  }
+  return out;
+}
+
+interface VersionCDecision {
+  shouldCreateC: boolean;
+  explanation: string;
+  triggersUsed: string[];
+}
+
+function buildContemplacionesByStudentFromRequest(
+  designPlan: Record<string, unknown>,
+  students: Array<Record<string, unknown>>
+): ContemplacionesByStudent {
+  const out: ContemplacionesByStudent = {};
+  const direct = designPlan?.contemplacionesByStudent;
+  if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
+    for (const [sid, raw] of Object.entries(direct as Record<string, unknown>)) {
+      const values = Array.isArray(raw) ? raw : extractStringSignals(raw);
+      if (values.length > 0) out[String(sid)] = values as Array<string | Record<string, unknown>>;
+    }
+  }
+  for (const student of students) {
+    const sidRaw = student?.studentId;
+    if (sidRaw == null) continue;
+    const sid = String(sidRaw);
+    if (out[sid]?.length) continue;
+    const signals = extractStringSignals((student as Record<string, unknown>).contemplaciones);
+    if (signals.length > 0) out[sid] = signals;
+  }
+  return out;
+}
+
+function evaluateDesignPackageNeedForC(
+  students: Array<Record<string, unknown>>,
+  contemplacionesByStudent: ContemplacionesByStudent,
+  teacherRemindersByStudent: TeacherReminderV2[]
+): VersionCDecision {
+  const { idByNameLower, orderedStudentIds } = buildStudentMaps(students);
+  const reminderByName = new Map<string, TeacherReminderV2>();
+  for (const r of teacherRemindersByStudent || []) {
+    if (r.studentName) reminderByName.set(r.studentName.trim().toLowerCase(), r);
+  }
+
+  const designKeysCounter = new Map<string, number>();
+  let designStudents = 0;
+  let adminCorrectionOnlyStudents = 0;
+
+  for (const sid of orderedStudentIds) {
+    const structured = contemplacionesByStudent?.[sid] || [];
+    const designKeys = extractStringSignals(structured).filter(key => DESIGN_CANONICAL_KEYS.has(key));
+    if (designKeys.length > 0) {
+      designStudents += 1;
+      for (const key of designKeys) {
+        designKeysCounter.set(key, (designKeysCounter.get(key) || 0) + 1);
+      }
+      continue;
+    }
+
+    const studentName = students.find(s => String(s.studentId) === sid)?.displayName;
+    const reminder = typeof studentName === 'string'
+      ? reminderByName.get(studentName.trim().toLowerCase())
+      : undefined;
+    const fallbackSignals = [
+      ...(Array.isArray(reminder?.admin) ? reminder.admin : []),
+      ...(Array.isArray(reminder?.correction) ? reminder.correction : [])
+    ].flatMap(text => extractStringSignals(text));
+    if (fallbackSignals.length > 0) adminCorrectionOnlyStudents += 1;
+  }
+
+  const totalStudents = Math.max(1, orderedStudentIds.length);
+  const uniqueDesignKeys = [...designKeysCounter.keys()];
+  const strongBarrierKeys = new Set([
+    'consignas en pasos',
+    'plantillas de respuesta',
+    'opciones equivalentes de respuesta escrita',
+    'apoyos mnemotécnicos iniciales',
+  ]);
+  const hasStrongBarrierSignal = uniqueDesignKeys.some(key => strongBarrierKeys.has(key));
+  const requiresFormatSplit =
+    designStudents > 0 &&
+    (
+      uniqueDesignKeys.length >= 2 ||
+      (designStudents / totalStudents) >= 0.25 ||
+      hasStrongBarrierSignal
+    ) &&
+    designStudents >= adminCorrectionOnlyStudents;
+
+  const triggersUsed = [...designKeysCounter.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'))
+    .slice(0, 5)
+    .map(([key, count]) => `${toHumanTriggerLabel(key)} (${count})`);
+
+  const explanation = requiresFormatSplit
+    ? `Se crea versión C: paquete de diseño equivalente detectado (estudiantes con diseño=${designStudents}/${totalStudents}; claves=${uniqueDesignKeys.length}).`
+    : `No se crea versión C: administración/corrección alcanza o no hay paquete de diseño suficiente (diseño=${designStudents}/${totalStudents}; claves=${uniqueDesignKeys.length}).`;
+
+  return {
+    shouldCreateC: requiresFormatSplit,
+    explanation,
+    triggersUsed
+  };
+}
+
+function extractTriggersForStudents(
+  assignedStudents: string[],
+  students: Array<Record<string, unknown>>,
+  teacherRemindersByStudent: TeacherReminderV2[],
+  contemplacionesByStudent?: ContemplacionesByStudent
+): Array<{ key: string; count: number }> {
+  const { studentById, idByNameLower } = buildStudentMaps(students);
+  const reminderByName = new Map<string, TeacherReminderV2>();
+  for (const r of teacherRemindersByStudent || []) {
+    if (r.studentName) reminderByName.set(r.studentName.trim().toLowerCase(), r);
+  }
+
+  const counts = new Map<string, number>();
+  const addSignal = (value: unknown) => {
+    const signals = extractStringSignals(value);
+    for (const signal of signals) {
+      const key = normalizeTriggerLabel(signal);
+      if (!key) continue;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+  };
+
+  for (const name of assignedStudents) {
+    const nameKey = name.trim().toLowerCase();
+    const sid = idByNameLower.get(nameKey);
+    let usedHigherPrioritySource = false;
+    if (sid) {
+      const structured = contemplacionesByStudent?.[sid];
+      if (structured && structured.length > 0) {
+        addSignal(structured);
+        usedHigherPrioritySource = true;
+      } else {
+        const studentSignals = extractStringSignals(studentById.get(sid)?.contemplaciones);
+        if (studentSignals.length > 0) {
+          addSignal(studentSignals);
+          usedHigherPrioritySource = true;
+        }
+      }
+      const student = studentById.get(sid) || {};
+      if (student?.hasDeclaredContentAdaptation === true || student?.requiresContentAdaptation === true) {
+        addSignal('adecuación de contenido declarada');
+      }
+    }
+    // Priority 3 fallback only if 1) and 2) are not available for this student.
+    if (!usedHigherPrioritySource) {
+      const reminder = reminderByName.get(nameKey);
+      if (reminder) {
+        addSignal(reminder.admin || []);
+        addSignal(reminder.correction || []);
+      }
+    }
+  }
+
+  if (counts.size === 0) {
+    return [{ key: '(sin datos)', count: Math.max(1, assignedStudents.length) }];
+  }
+  return [...counts.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key, 'es'))
+    .slice(0, 5);
+}
+
+function buildVersionRationalePack(
+  selectedVersion: VersionKey,
+  effectiveRequestedVersions: { A: boolean; B: boolean; C: boolean },
+  assignedStudents: string[],
+  students: Array<Record<string, unknown>>,
+  teacherRemindersByStudent: TeacherReminderV2[],
+  contemplacionesByStudent?: ContemplacionesByStudent,
+  instrumentDesignRules: string[] = []
+): VersionRationalePackItem {
+  if (selectedVersion === 'B' && !effectiveRequestedVersions.B) {
+    return { version: 'B', assignedStudents: [], topTriggers: [], whySummary: 'Versión B no está efectiva en esta evaluación.', designChanges: [], adminCorrectionReminders: [] };
+  }
+  if (selectedVersion === 'C' && !effectiveRequestedVersions.C) {
+    return { version: 'C', assignedStudents: [], topTriggers: [], whySummary: 'Versión C no está efectiva en esta evaluación.', designChanges: [], adminCorrectionReminders: [] };
+  }
+
+  const topTriggers = extractTriggersForStudents(
+    assignedStudents,
+    students,
+    teacherRemindersByStudent,
+    contemplacionesByStudent
+  );
+
+  const whySummary = topTriggers.some(t => t.key === '(sin datos)')
+    ? `No hubo datos estructurados suficientes para la versión ${selectedVersion}; se infirió con recordatorios docentes o se marcó ausencia de datos.`
+    : selectedVersion === 'A'
+      ? `Versión A funciona como base universal del grupo. Disparadores observados: ${topTriggers.slice(0, 3).map(t => `${toHumanTriggerLabel(t.key)} (${t.count})`).join('; ')}.`
+      : selectedVersion === 'B'
+        ? `La versión B es de adaptación de contenido declarada (no comparable con A/C) y mantiene accesibilidad por diseño/administración/corrección. Disparadores predominantes: ${topTriggers.slice(0, 3).map(t => `${toHumanTriggerLabel(t.key)} (${t.count})`).join('; ')}.`
+        : `La versión C se genera como adaptación equivalente de accesibilidad. Disparadores predominantes: ${topTriggers.slice(0, 3).map(t => `${toHumanTriggerLabel(t.key)} (${t.count})`).join('; ')}.`;
+
+  const designChangesFromTriggers = topTriggers
+    .map(t => t.key)
+    .filter(k => DESIGN_CANONICAL_KEYS.has(k))
+    .map(k => toHumanTriggerLabel(k));
+  const designChanges = [...new Set([...instrumentDesignRules, ...designChangesFromTriggers])].slice(0, 4);
+
+  const reminderByStudent = new Map<string, TeacherReminderV2>();
+  for (const reminder of teacherRemindersByStudent || []) {
+    reminderByStudent.set(reminder.studentName.trim().toLowerCase(), reminder);
+  }
+  const adminCorrectionReminders: string[] = [];
+  for (const studentName of assignedStudents) {
+    const reminder = reminderByStudent.get(studentName.trim().toLowerCase());
+    if (!reminder) continue;
+    adminCorrectionReminders.push(...(reminder.admin || []), ...(reminder.correction || []));
+  }
+  const normalizedReminders = [...new Set(adminCorrectionReminders.map(r => r.trim()).filter(Boolean))].slice(0, 4);
+
+  return {
+    version: selectedVersion,
+    assignedStudents,
+    topTriggers,
+    whySummary,
+    designChanges,
+    adminCorrectionReminders: normalizedReminders
+  };
+}
+
+function buildAllVersionRationalePacks(
+  effectiveRequestedVersions: { A: boolean; B: boolean; C: boolean },
+  assignedByVersion: { A: string[]; B: string[]; C: string[] },
+  students: Array<Record<string, unknown>>,
+  teacherRemindersByStudent: TeacherReminderV2[],
+  contemplacionesByStudent?: ContemplacionesByStudent,
+  instrumentDesignRules: string[] = []
+): VersionRationalePack {
+  return {
+    A: buildVersionRationalePack('A', effectiveRequestedVersions, assignedByVersion.A, students, teacherRemindersByStudent, contemplacionesByStudent, instrumentDesignRules),
+    B: buildVersionRationalePack('B', effectiveRequestedVersions, assignedByVersion.B, students, teacherRemindersByStudent, contemplacionesByStudent, instrumentDesignRules),
+    C: buildVersionRationalePack('C', effectiveRequestedVersions, assignedByVersion.C, students, teacherRemindersByStudent, contemplacionesByStudent, instrumentDesignRules),
+  };
+}
+
+function buildSpecEvidenceSummary(spec: EvaluationSpecV2): SpecEvidenceSummary {
+  const sections = Array.isArray(spec.sections) ? spec.sections : [];
+  const summary: SpecEvidenceSummary = { sections: [], items: [], changedItemsB: [], changedItemsC: [] };
+  let totalItems = 0;
+  const MAX_ITEMS = 40; // Keep prompt compact while preserving concrete references.
+
+  for (const section of sections) {
+    if (totalItems >= MAX_ITEMS) break;
+    const sectionMeta = (section as unknown) as Record<string, unknown>;
+    const sectionSummary: SpecEvidenceSectionSummary = {
+      id: section.id || '',
+      title: section.title || '',
+      itemCount: Array.isArray(section.items) ? section.items.length : 0,
+      materialRef: typeof sectionMeta.materialRef === 'string' && sectionMeta.materialRef.trim()
+        ? sectionMeta.materialRef.trim()
+        : typeof sectionMeta.dossierFragment === 'string' && sectionMeta.dossierFragment.trim()
+          ? sectionMeta.dossierFragment.trim()
+          : undefined
+    };
+    for (const item of section.items || []) {
+      if (totalItems >= MAX_ITEMS) break;
+      const vc = item.versionedContent || {};
+      const eqRaw = (item as unknown as Record<string, unknown>).equivalentResponseOptions;
+      const hasEquivalentResponseOptions = (() => {
+        if (Array.isArray(eqRaw)) return eqRaw.length > 0;
+        if (!eqRaw || typeof eqRaw !== 'object') return false;
+        const o = eqRaw as Record<string, unknown>;
+        if (Array.isArray(o.options)) return o.options.length > 0;
+        if (Array.isArray(o.formats)) return o.formats.length > 0;
+        return o.enabled === true;
+      })();
+      const itemSummary: SpecEvidenceItemSummary = {
+        id: item.id,
+        sectionId: section.id || '',
+        type: item.type,
+        points: item.points,
+        hasB: typeof vc.promptB === 'string' && vc.promptB.trim().length > 0,
+        hasC: typeof vc.promptC === 'string' && vc.promptC.trim().length > 0,
+        hasOptionsB: Array.isArray(vc.optionsB) && vc.optionsB.length > 0,
+        hasEquivalentResponseOptions
+      };
+      summary.items.push(itemSummary);
+      if (itemSummary.hasB) summary.changedItemsB.push(itemSummary.id);
+      if (itemSummary.hasC) summary.changedItemsC.push(itemSummary.id);
+      totalItems += 1;
+    }
+    summary.sections.push(sectionSummary);
+  }
+
+  return summary;
+}
+
+function formatStudentListForNarrative(names: string[], maxVisible = 10): string {
+  if (names.length === 0) return 'Sin asignaciones explícitas; versión definida por reglas del plan.';
+  const normalized = names.map(n => (typeof n === 'string' && n.trim() ? n.trim() : 'Sin nombre'));
+  if (normalized.length <= maxVisible) return normalized.join(', ');
+  const visible = normalized.slice(0, maxVisible).join(', ');
+  return `${visible}, +${normalized.length - maxVisible} más`;
+}
+
+function selectEvidenceReferences(
+  version: VersionKey,
+  specEvidenceSummary: SpecEvidenceSummary,
+  maxRefs = 3
+): SpecEvidenceItemSummary[] {
+  const byId = new Map(specEvidenceSummary.items.map(item => [item.id, item]));
+  const preferredIds = version === 'B'
+    ? specEvidenceSummary.changedItemsB
+    : version === 'C'
+      ? specEvidenceSummary.changedItemsC
+      : [];
+  const preferredItems = preferredIds
+    .map(id => byId.get(id))
+    .filter((x): x is SpecEvidenceItemSummary => Boolean(x));
+  const fallbackItems = specEvidenceSummary.items.filter(item => !preferredIds.includes(item.id));
+  const selected = [...preferredItems, ...fallbackItems].slice(0, maxRefs);
+
+  return selected;
+}
+
+function itemTypeTeacherLabel(type: string): string {
+  const map: Record<string, string> = {
+    multiple_choice: 'opción múltiple',
+    true_false: 'verdadero/falso',
+    true_false_justify: 'verdadero/falso con justificación',
+    short_answer: 'respuesta corta',
+    paragraph: 'párrafo',
+    essay: 'texto argumentativo',
+    source_analysis: 'análisis de fuente',
+    table_completion: 'completar tabla',
+    matching: 'relación de conceptos',
+    ordering: 'ordenamiento'
+  };
+  return map[type] || type;
+}
+
+/** Section openings to avoid repetitive "Esta sección evalúa..." */
+const SECTION_OPENINGS = [
+  (t: string) => `En la primera parte, el estudiante trabaja sobre "${t}".`,
+  (t: string) => `En la siguiente, el foco es "${t}".`,
+  (t: string) => `Aquí el instrumento aborda "${t}".`,
+  (t: string) => `Esta parte del cuadernillo se centra en "${t}".`
+];
+
+/** Natural section narrative: what students do, task type, alignment; contemplations only when relevant, with functional effect. No item ids, no template repetition. */
+function buildSectionNarrative(
+  version: VersionKey,
+  section: SpecEvidenceSectionSummary,
+  itemsInSection: SpecEvidenceItemSummary[],
+  sectionIndex: number,
+  designLabels: string[]
+): string {
+  const title = section.title || 'contenidos de la evaluación';
+  const types = [...new Set(itemsInSection.map(i => itemTypeTeacherLabel(i.type)))];
+  const taskDesc = types.length > 0
+    ? (types.length === 1 ? types[0] : `combinación de ${types.slice(0, 2).join(' y ')}`)
+    : 'respuesta escrita';
+  const open = SECTION_OPENINGS[sectionIndex % SECTION_OPENINGS.length](title);
+  const parts: string[] = [open];
+  const materialLine = section.materialRef
+    ? ` Se apoya en: ${section.materialRef}.`
+    : '';
+  const taskLine = ` La tarea pide interpretar, justificar o argumentar según el tipo de ítem (${taskDesc}), de modo que se pueda valorar si el estudiante alcanzó el objetivo.`;
+  parts.push(materialLine + taskLine);
+  if (designLabels.length > 0 && designLabels[0]) {
+    const firstLabel = designLabels[0];
+    const effect = contemplationFunctionalEffect(firstLabel);
+    parts.push(` Las consignas incorporan ${firstLabel.toLowerCase()}, lo que ${effect}`);
+  }
+  const hasEquivalentInSection = itemsInSection.some(i => i.hasEquivalentResponseOptions);
+  if (hasEquivalentInSection) {
+    parts.push(' Donde hay varias formas de responder (por ejemplo casillero o párrafo), se valora lo mismo: la calidad del contenido y la coherencia con la evidencia.');
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function trimLines(text: string, maxLines: number): string {
+  const lines = text.split('\n');
+  if (lines.length <= maxLines) return text;
+  return lines.slice(0, maxLines).join('\n');
+}
+
+function buildDeterministicEvidenceAppendix(
+  selectedVersion: VersionKey,
+  pack: VersionRationalePackItem,
+  specEvidenceSummary: SpecEvidenceSummary
+): string {
+  const studentsText = formatStudentListForNarrative(pack.assignedStudents);
+  const triggersTop3 = pack.topTriggers.slice(0, 3);
+  const designLabels = pack.designChanges.length > 0 ? pack.designChanges.slice(0, 3) : [];
+
+  const sectionTitles = specEvidenceSummary.sections.map((s, i) =>
+    (s.title && s.title.trim() ? s.title.trim() : `Sección ${i + 1}`)
+  );
+  const contentFocus = sectionTitles.length > 0 ? sectionTitles.join(', ') : 'los contenidos y habilidades definidos en el instrumento';
+
+  // —— Opening paragraph (natural summary) ——
+  let opening = '';
+  if (selectedVersion === 'A') {
+    opening = `Esta versión refleja los objetivos comunes del grupo y lo que se trabajó en clase. Evalúa los mismos contenidos y competencias para todos, en línea con el material y las prioridades del docente. Es la versión de referencia con la que se pueden comparar resultados cuando existan otras versiones.`;
+  } else if (selectedVersion === 'B') {
+    opening = `Esta versión corresponde a una adaptación explícita de contenidos u objetivos. No es comparable con la versión universal ni con la versión equivalente de accesibilidad: lo que se evalúa y la profundidad esperada pueden ser distintos. Las expectativas siguen siendo claras dentro de esos objetivos adaptados.`;
+  } else {
+    opening = `Esta versión mantiene exactamente los mismos objetivos y el mismo nivel de exigencia que la versión A. Solo cambia la forma de presentar las consignas y el formato de respuesta para facilitar el acceso. Los resultados son comparables entre A y C.`;
+  }
+
+  // —— 1. What is evaluated and why ——
+  let block1 = '';
+  if (selectedVersion === 'A') {
+    block1 = `Qué se evalúa y por qué: ${contentFocus}. Esos contenidos se eligieron a partir del material de clase, las indicaciones del docente y, cuando aplica, los lineamientos curriculares. Se espera que el estudiante interprete, compare, argumente o justifique según el tipo de ítem, en coherencia con lo trabajado.`;
+  } else if (selectedVersion === 'B') {
+    block1 = `Qué se evalúa y por qué: en esta versión se priorizan ${contentFocus}, con alcance y profundidad adaptados por declaración. No se evalúan los mismos contenidos ni al mismo nivel que la versión A o C. La elección responde a las necesidades pedagógicas del estudiante dentro del plan de adecuación. Se espera que demuestre logro en esos objetivos adaptados (interpretar, relacionar, argumentar según lo acordado).`;
+  } else {
+    block1 = `Qué se evalúa y por qué: los mismos contenidos que la versión A (${contentFocus}), con la misma profundidad. La selección de contenidos y habilidades es idéntica; solo cambian consignas y formato para reducir barreras. Se espera interpretar, argumentar y justificar igual que en A.`;
+  }
+
+  // —— 2. How this appears in the instrument (by section, natural prose) ——
+  const itemsBySectionId = new Map<string, SpecEvidenceItemSummary[]>();
+  for (const item of specEvidenceSummary.items) {
+    const sid = item.sectionId || '';
+    if (!itemsBySectionId.has(sid)) itemsBySectionId.set(sid, []);
+    itemsBySectionId.get(sid)!.push(item);
+  }
+  const sectionNarratives = specEvidenceSummary.sections.map((sec, idx) => {
+    const itemsInSection = itemsBySectionId.get(sec.id) || [];
+    return buildSectionNarrative(selectedVersion, sec, itemsInSection, idx, designLabels);
+  });
+  const instrumentProse = sectionNarratives.length > 0
+    ? sectionNarratives.join(' ')
+    : 'No se dispone de detalle por sección en este resumen.';
+
+  // —— 3. Metacognitive options (only when present) ——
+  const hasEquivalentOptions = specEvidenceSummary.items.some(i => i.hasEquivalentResponseOptions);
+  let block3 = '';
+  if (hasEquivalentOptions) {
+    block3 = `Opciones de respuesta equivalentes: en algunos ítems el estudiante puede elegir entre más de un formato (por ejemplo casillero breve o párrafo). Lo que se valora es la misma evidencia de aprendizaje: que use fuentes o ideas de forma coherente y que justifique. La rúbrica aplica igual a todos los formatos; no se baja la exigencia por elegir uno u otro.`;
+  }
+
+  // —— 4. Interpretation guidance for the teacher ——
+  let interpretation = '';
+  if (selectedVersion === 'A') {
+    interpretation = `Cómo interpretar los resultados de esta versión: los puntajes y niveles de logro reflejan el desempeño frente a los objetivos comunes del grupo. Puede comparar entre estudiantes que usaron esta versión. Si luego usa versiones B o C con otros estudiantes, no compare puntajes entre versiones distintas.`;
+  } else if (selectedVersion === 'B') {
+    interpretation = `Cómo interpretar los resultados de esta versión: los resultados reflejan el logro respecto de los objetivos adaptados declarados, no respecto de la versión A o C. No use esta versión para comparar con estudiantes que rindieron A o C. Interprete en función de qué se acordó evaluar para este estudiante.`;
+  } else {
+    interpretation = `Cómo interpretar los resultados de esta versión: los resultados son comparables con los de la versión A. Mismo estándar y misma interpretación de niveles de logro; la diferencia es solo de formato para el acceso.`;
+  }
+
+  const mainParts = [
+    'Informe pedagógico para el docente',
+    '',
+    opening,
+    '',
+    block1,
+    '',
+    'Cómo se ve en el instrumento',
+    instrumentProse,
+    '',
+    ...(block3 ? [block3, ''] : []),
+    interpretation
+  ];
+  const pedagogicalBlock = mainParts.join('\n');
+
+  const referencedSectionTitles = specEvidenceSummary.sections
+    .slice(0, 10)
+    .map((s, i) => (s.title && s.title.trim() ? s.title.trim() : `Sección ${i + 1}`));
+  const referencedItemIds = specEvidenceSummary.items.slice(0, 15).map(i => i.id);
+  const internalTrace = [
+    'Evidencia interna (para trazabilidad):',
+    `- estudiantes asignados: ${pack.assignedStudents.length > 0 ? pack.assignedStudents.join(', ') : '(sin asignaciones)'}`,
+    `- top 3 disparadores con conteo: ${triggersTop3.length > 0 ? triggersTop3.map(t => `${toHumanTriggerLabel(t.key)} (${t.count})`).join('; ') : '(sin datos)'}`,
+    `- secciones referenciadas: ${referencedSectionTitles.length > 0 ? referencedSectionTitles.join('; ') : '(ninguna)'}`,
+    `- ítems (ids): ${referencedItemIds.length > 0 ? referencedItemIds.join('; ') : '(ninguno)'}`
+  ].join('\n');
+
+  return [pedagogicalBlock, '', internalTrace].join('\n');
+}
+
+function hasNarrativeEvidenceMarkers(narrative: string): boolean {
+  const normalized = narrative
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const hasOldStructure =
+    /item-[a-z0-9_-]+/i.test(narrative) &&
+    /quienes\s+usan\s+esta\s+version|who\s+uses\s+this\s+version/.test(normalized);
+  const hasNewStructure =
+    /informe\s+pedagogico\s+para\s+el\s+docente/.test(normalized) &&
+    (/como\s+se\s+ve\s+en\s+el\s+instrumento|evidencia\s+interna\s+\(para\s+trazabilidad\)|como\s+interpretar\s+los\s+resultados|que\s+se\s+evalua\s+y\s+por\s+que/.test(normalized));
+  return (hasOldStructure || hasNewStructure) && hasKnownContemplationLabel(narrative);
+}
+
+function ensureNarrativeHasEvidence(
+  narrative: string,
+  pack: VersionRationalePackItem,
+  specEvidenceSummary: SpecEvidenceSummary
+): string {
+  const trimmed = narrative.trim();
+  if (hasNarrativeEvidenceMarkers(trimmed)) return trimmed;
+  const appendix = buildDeterministicEvidenceAppendix(pack.version, pack, specEvidenceSummary);
+  return `${trimmed}\n\n${appendix}`.trim();
+}
+
+function applyNarrativeEvidenceByVersion<T extends { byVersion?: Record<string, { narrative?: string }>; narrative?: string }>(
+  aiReport: T,
+  effectiveRequestedVersions: { A: boolean; B: boolean; C: boolean },
+  versionRationalePack: VersionRationalePack,
+  specEvidenceSummary: SpecEvidenceSummary
+): T {
+  const existingByVersion: Record<string, { narrative?: string }> =
+    aiReport.byVersion && typeof aiReport.byVersion === 'object' ? { ...aiReport.byVersion } : {};
+  const versions: VersionKey[] = ['A', 'B', 'C'];
+
+  for (const version of versions) {
+    if (version === 'B' && !effectiveRequestedVersions.B) continue;
+    if (version === 'C' && !effectiveRequestedVersions.C) continue;
+    const current = typeof existingByVersion[version]?.narrative === 'string'
+      ? existingByVersion[version]!.narrative!.trim()
+      : '';
+    const base = current.length > 0 ? current : (version === 'A' ? FALLBACK_A_NARRATIVE : version === 'B' ? FALLBACK_B_NARRATIVE : FALLBACK_C_NARRATIVE);
+    const narrative = ensureNarrativeHasEvidence(base, versionRationalePack[version], specEvidenceSummary);
+    existingByVersion[version] = { ...existingByVersion[version], narrative };
+  }
+
+  const out = { ...aiReport, byVersion: existingByVersion } as T;
+  if (!out.narrative && typeof out.byVersion?.A?.narrative === 'string') {
+    out.narrative = out.byVersion.A.narrative;
+  }
+  return out;
 }
 
 /**
@@ -778,17 +1742,17 @@ function buildNarrativeLocal(
   if (versionsExplanation.generated.length > 1) {
     const versionDescriptions: string[] = [];
     if (versionsExplanation.generated.includes('B')) {
-      versionDescriptions.push('Versión B adapta el formato y estructura para mayor claridad');
+      versionDescriptions.push('Versión B aplica adaptación de contenido declarada (no comparable con A/C)');
     }
     if (versionsExplanation.generated.includes('C')) {
-      versionDescriptions.push('Versión C ofrece adecuación excepcional de contenido');
+      versionDescriptions.push('Versión C aplica adaptación equivalente de accesibilidad (misma exigencia que A)');
     }
     
     if (versionDescriptions.length > 0) {
       decisiones.push(
         `• Se generaron ${versionsExplanation.generated.length} versiones (${versionsExplanation.generated.join(', ')}): ` +
         `Versión A es universal; ${versionDescriptions.join('; ')}. ` +
-        `Todas las versiones mantienen la misma demanda cognitiva y evalúan los mismos objetivos de aprendizaje.`
+        `A y C mantienen la misma demanda cognitiva; B puede ajustar objetivos/contenidos por declaración explícita.`
       );
     }
   }
@@ -1005,6 +1969,8 @@ async function generateMissingByVersionNarrativesCall(
   spec: EvaluationSpecV2,
   effectiveRequestedVersions: { A: boolean; B: boolean; C: boolean },
   existingNarrativeA: string,
+  versionRationalePack: VersionRationalePack,
+  specEvidenceSummary: SpecEvidenceSummary,
   requestId: string,
   timer: Timer
 ): Promise<Record<string, { narrative: string }> | null> {
@@ -1016,21 +1982,34 @@ async function generateMissingByVersionNarrativesCall(
 
 Contexto del reporte global / Versión A (resumen): ${existingNarrativeA.slice(0, 500)}
 
+VERSION_RATIONALE_PACK (usar literalmente para estudiantes y triggers):
+${JSON.stringify(versionRationalePack, null, 2)}
+
+SPEC_EVIDENCE_SUMMARY (citar referencias concretas de este bloque):
+${JSON.stringify(specEvidenceSummary, null, 2)}
+
 Requisitos por versión:
 - A: Contenidos evaluados, alineación con competencias/criterios, requerimientos del docente, materiales/sesión si hay. Misma demanda cognitiva.
-- B: Describir explícitamente cómo los prompts de B difieren de A (simplificación: vocabulario, estructura, andamiaje). Estrategia de simplificación pedagógica. Confirmar misma demanda cognitiva y competencias.
-- C: Diferencias con A y B. Estrategia de adaptación excepcional (andamiaje más fuerte, plantillas). Confirmar mismos objetivos de aprendizaje y competencias.
+- B: Versión de adaptación de contenido declarada (NO comparable con A/C). Explicar objetivos/contenidos ajustados y cómo se mantiene accesibilidad (diseño/admin/corrección).
+- C: Versión equivalente de accesibilidad (mismos objetivos, misma rúbrica y misma demanda cognitiva que A). Solo cambia formato/andamiaje.
+
+Estructura OBLIGATORIA dentro de CADA narrative:
+1) "Quiénes usan esta versión:": incluir assignedStudents (máximo 10 nombres y luego "+N más" si aplica). Si no hay nombres, usar "Grupo asignado a versión X".
+2) "Por qué existe esta versión (causas):": incluir topTriggers con conteos y usar etiquetas humanas de contemplaciones (no IDs numéricos).
+3) "Cómo se refleja en la evaluación (ejemplos concretos):": citar al menos 3 referencias concretas con id de ítem (item-...), tipo y descripción pedagógica.
+4) "Equivalencia y exigencia:": para A/C afirmar equivalencia completa; para B afirmar no comparabilidad por adaptación declarada.
 
 Genera un JSON con esta forma exacta (solo el objeto, sin markdown):
 {
   "byVersion": {
     "A": { "narrative": "<6-10 líneas>" }
-    ${effectiveRequestedVersions.B ? ', "B": { "narrative": "<5-8 líneas: diferencias con A, simplificación, misma dificultad>" }' : ''}
-    ${effectiveRequestedVersions.C ? ', "C": { "narrative": "<5-8 líneas: adaptación excepcional, mismos objetivos>" }' : ''}
+    ${effectiveRequestedVersions.B ? ', "B": { "narrative": "<5-8 líneas: adaptación de contenido declarada, no comparable con A/C, accesibilidad aplicada>" }' : ''}
+    ${effectiveRequestedVersions.C ? ', "C": { "narrative": "<5-8 líneas: equivalente a A en objetivos/rúbrica/demanda, con andamiaje de acceso>" }' : ''}
   }
 }
 
-Responde ÚNICAMENTE con el JSON. Sin explicaciones ni \`\`\`json.`;
+Responde ÚNICAMENTE con el JSON. Sin explicaciones ni \`\`\`json.
+No omitas las 4 secciones dentro de cada narrative.`;
 
   try {
     const response = await fetchWithTimeout(
@@ -1096,47 +2075,220 @@ function isOpenEndedItemType(type: unknown): boolean {
   );
 }
 
-function buildFallbackRubric(itemPrompt: string, itemPoints: number): ItemRubricV2 {
+/** Stopwords cortos en español para no usarlos como palabras clave del prompt */
+const RUBRIC_PROMPT_STOPWORDS = new Set([
+  'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 'al', 'a', 'en', 'y', 'o', 'pero', 'si', 'no',
+  'que', 'qué', 'con', 'por', 'para', 'su', 'sus', 'se', 'lo', 'le', 'es', 'son', 'esta', 'este', 'estos', 'estas',
+  'las', 'los', 'como', 'más', 'muy', 'sin', 'sobre', 'entre', 'hasta', 'desde', 'cuál', 'cuales', 'cómo', 'cuando',
+]);
+
+/**
+ * Extrae 3–5 palabras significativas del prompt para heurística de calidad de rúbrica.
+ * Filtra stopwords y palabras muy cortas; normaliza a minúsculas para comparación.
+ */
+function extractPromptKeywords(prompt: string): string[] {
+  if (!prompt || typeof prompt !== 'string') return [];
+  const normalized = prompt
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !RUBRIC_PROMPT_STOPWORDS.has(w));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const w of normalized) {
+    if (seen.has(w)) continue;
+    seen.add(w);
+    out.push(w);
+    if (out.length >= 5) break;
+  }
+  return out.slice(0, 5);
+}
+
+/**
+ * Mapeo de formas verbales (imperativo/infinitivo) a verbo normalizado en infinitivo.
+ * Se buscan en el prompt en minúsculas con límite de palabra.
+ */
+const PROMPT_ACTION_MAP: Array<{ pattern: RegExp; action: string }> = [
+  { pattern: /\b(analiza|analice|analizar|analizando)\b/, action: 'analizar' },
+  { pattern: /\b(compara|compare|comparar|comparando)\b/, action: 'comparar' },
+  { pattern: /\b(justifica|justifique|justificar|justificando)\b/, action: 'justificar' },
+  { pattern: /\b(explica|explique|explicar|explicando)\b/, action: 'explicar' },
+  { pattern: /\b(interpreta|interprete|interpretar|interpretando)\b/, action: 'interpretar' },
+  { pattern: /\b(argumenta|argumente|argumentar|argumentando)\b/, action: 'argumentar' },
+  { pattern: /\b(relaciona|relacione|relacionar|relacionando)\b/, action: 'relacionar' },
+  { pattern: /\b(describe|describa|describir|describiendo)\b/, action: 'describir' },
+  { pattern: /\b(evalúa|evalue|evalua|evaluar|evaluando)\b/, action: 'evaluar' },
+];
+
+/**
+ * Extrae el verbo de acción cognitiva principal del prompt y lo devuelve en infinitivo.
+ * Si no se detecta ninguno, devuelve null.
+ */
+function extractPromptAction(prompt: string): string | null {
+  if (!prompt || typeof prompt !== 'string') return null;
+  const lower = prompt.toLowerCase().trim();
+  for (const { pattern, action } of PROMPT_ACTION_MAP) {
+    if (pattern.test(lower)) return action;
+  }
+  return null;
+}
+
+/** Conectores que introducen el tema/contenido; texto después se usa como frase de contenido */
+const CONTENT_CONNECTORS: Array<{ pattern: RegExp; maxLen: number }> = [
+  { pattern: /sobre\s+([^.?!]+)/i, maxLen: 70 },
+  { pattern: /acerca\s+de\s+([^.?!]+)/i, maxLen: 70 },
+  { pattern: /respecto\s+a\s+([^.?!]+)/i, maxLen: 70 },
+  { pattern: /en\s+relación\s+con\s+([^.?!]+)/i, maxLen: 70 },
+  { pattern: /causas\s+de\s+([^.?!]+)/i, maxLen: 60 },
+  { pattern: /consecuencias\s+de\s+([^.?!]+)/i, maxLen: 60 },
+  { pattern: /rol\s+de\s+([^.?!]+)/i, maxLen: 60 },
+  { pattern: /impacto\s+de\s+([^.?!]+)/i, maxLen: 60 },
+];
+
+/**
+ * Extrae una frase de contenido legible a partir del prompt (tema evaluado).
+ * Prioriza texto tras conectores; si no hay, usa un trozo del prompt sin el verbo inicial.
+ */
+function extractContentPhrase(prompt: string): string {
+  if (!prompt || typeof prompt !== 'string') return 'el contenido de la consigna';
+  const trimmed = prompt.trim();
+  if (!trimmed) return 'el contenido de la consigna';
+
+  for (const { pattern, maxLen } of CONTENT_CONNECTORS) {
+    const m = trimmed.match(pattern);
+    if (m && m[1]) {
+      const phrase = m[1].trim().replace(/\s+/g, ' ').slice(0, maxLen);
+      if (phrase.length >= 5) return phrase;
+    }
+  }
+
+  const lower = trimmed.toLowerCase();
+  const words = trimmed.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length <= 3) return trimmed.slice(0, 60);
+
+  let start = 0;
+  for (const { pattern } of PROMPT_ACTION_MAP) {
+    const idx = lower.search(pattern);
+    if (idx !== -1) {
+      const before = trimmed.slice(0, idx);
+      const beforeWords = before.split(/\s+/).filter((w) => w.length > 0);
+      start = Math.min(beforeWords.length + 1, words.length);
+      break;
+    }
+  }
+  if (start === 0) start = 1;
+  const slice = words.slice(start, start + 12).join(' ').trim();
+  return slice.length >= 3 ? slice.slice(0, 80) : trimmed.slice(0, 80);
+}
+
+/**
+ * Resultado del chequeo de calidad: si falta contenido y/o acción se considera baja calidad.
+ */
+type RubricQualityResult = { lowQuality: boolean; missingContent: boolean; missingAction: boolean };
+
+/**
+ * Comprueba si la rúbrica es de baja calidad: falta contenido específico y/o acción cognitiva.
+ * (A) Contenido: al menos una palabra clave O la frase de contenido (coincidencia parcial) en descriptores.
+ * (B) Acción: el verbo de acción (o familia cercana) aparece en al menos 1–2 descriptores.
+ */
+function checkRubricQuality(
+  rubric: ItemRubricV2,
+  keywords: string[],
+  contentPhrase: string,
+  action: string | null
+): RubricQualityResult {
+  const descriptors = (rubric.levels || []).map((l) => (l.descriptor || '').toLowerCase());
+  const allText = descriptors.join(' ');
+
+  const hasContentKeyword = keywords.length > 0 && keywords.some((k) => allText.includes(k.toLowerCase()));
+  const contentPhraseWords = contentPhrase.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
+  const phraseWordsInDescriptors = contentPhraseWords.filter((w) => allText.includes(w)).length;
+  const hasContentPhrase = contentPhraseWords.length >= 2 && phraseWordsInDescriptors >= 2;
+  const missingContent = !hasContentKeyword && !hasContentPhrase;
+
+  const actionStems = action ? [action, action.replace(/ar$/, 'a'), action.replace(/er$/, 'e'), action.replace(/ir$/, 'e')] : [];
+  const descriptorWithAction = action
+    ? descriptors.filter((d) => actionStems.some((stem) => d.includes(stem)))
+    : [];
+  const missingAction = action !== null && descriptorWithAction.length < 1;
+
+  return {
+    lowQuality: missingContent || missingAction,
+    missingContent,
+    missingAction,
+  };
+}
+
+/**
+ * Comprueba si los descriptores de la rúbrica son demasiado genéricos:
+ * ninguno contiene al menos una de las palabras clave extraídas del prompt.
+ * @deprecated Prefer checkRubricQuality for action+content checks.
+ */
+function areDescriptorsGeneric(rubric: ItemRubricV2, keywords: string[]): boolean {
+  if (!keywords.length) return false;
+  const text = (rubric.levels || [])
+    .map((l) => (l.descriptor || '').toLowerCase())
+    .join(' ');
+  return !keywords.some((k) => text.includes(k.toLowerCase()));
+}
+
+/**
+ * Fallback de rúbrica con acción y contenido: cada descriptor incluye el verbo de acción
+ * (o "explicar") y la frase de contenido extraída del prompt. Redacción natural en español.
+ */
+function buildContentSpecificFallbackRubric(itemPrompt: string, itemPoints: number): ItemRubricV2 {
   const safePoints = Number.isFinite(itemPoints) && itemPoints > 0 ? itemPoints : 4;
   const rounded = Math.max(1, Math.round(safePoints));
   const highMin = Math.max(0, rounded - 1);
   const midUpper = Math.max(1, highMin - 1);
   const lowUpper = Math.max(0, Math.min(midUpper - 1, Math.round(rounded / 2)));
 
-  const promptHint = (itemPrompt || 'la consigna').trim().slice(0, 100);
+  const action = extractPromptAction(itemPrompt) ?? 'explicar';
+  const tema = extractContentPhrase(itemPrompt);
+
+  const imperative: Record<string, string> = {
+    analizar: 'Analiza', explicar: 'Explica', comparar: 'Compara', justificar: 'Justifica',
+    interpretar: 'Interpreta', argumentar: 'Argumenta', relacionar: 'Relaciona', describir: 'Describe', evaluar: 'Evalúa',
+  };
+  const verbCap = imperative[action] ?? `Realiza la acción de ${action}`;
+  const verbLower = imperative[action] ? imperative[action].charAt(0).toLowerCase() + imperative[action].slice(1) : action;
 
   return {
     levels: [
       {
         key: 'excelente',
         label: 'Excelente',
-        descriptor: `Responde ${promptHint} con precisión, profundidad y evidencia pertinente.`,
+        descriptor: `${verbCap} ${tema} con precisión, evidencia pertinente y desarrollo claro.`,
         minPoints: rounded,
         maxPoints: rounded,
       },
       {
         key: 'bueno',
         label: 'Bueno',
-        descriptor: `Responde ${promptHint} correctamente con alguna evidencia, pero con menor desarrollo.`,
+        descriptor: `${verbLower} ${tema} adecuadamente, con alguna evidencia o desarrollo, pero con menor profundidad.`,
         minPoints: highMin,
         maxPoints: highMin,
       },
       {
         key: 'en_proceso',
         label: 'En proceso',
-        descriptor: `Responde de forma parcial: identifica ideas relevantes, pero con vacíos o imprecisiones.`,
+        descriptor: `Aborda parcialmente ${tema}: identifica ideas relacionadas, pero con vacíos o imprecisiones en la ${action}.`,
         minPoints: lowUpper + 1,
         maxPoints: midUpper,
       },
       {
         key: 'insuficiente',
         label: 'Insuficiente',
-        descriptor: `No logra responder la consigna de forma suficiente o presenta errores conceptuales relevantes.`,
+        descriptor: `No logra ${action} de forma suficiente ${tema}, o presenta errores conceptuales relevantes.`,
         minPoints: 0,
         maxPoints: lowUpper,
       },
     ],
   };
+}
+
+function buildFallbackRubric(itemPrompt: string, itemPoints: number): ItemRubricV2 {
+  return buildContentSpecificFallbackRubric(itemPrompt, itemPoints);
 }
 
 function normalizeAndValidateRubric(
@@ -1213,6 +2365,22 @@ function ensureOpenEndedRubrics(spec: Record<string, unknown>): WarningV2[] {
 
       if (normalizedRubric) {
         i.rubric = normalizedRubric;
+        const keywords = extractPromptKeywords(prompt);
+        const contentPhrase = extractContentPhrase(prompt);
+        const action = extractPromptAction(prompt);
+        const quality = checkRubricQuality(normalizedRubric, keywords, contentPhrase, action);
+        if (quality.lowQuality) {
+          i.rubric = buildContentSpecificFallbackRubric(prompt, points);
+          const reasons: string[] = [];
+          if (quality.missingContent) reasons.push('falta de contenido específico');
+          if (quality.missingAction) reasons.push('falta de acción cognitiva');
+          const reasonText = reasons.join(' y ');
+          warnings.push({
+            code: 'RUBRIC_LOW_QUALITY_REPLACED',
+            message: `Rúbrica de baja calidad reemplazada (${reasonText}) en sección ${sectionIdx + 1}, ítem ${itemIdx + 1} (${String(i.type)}).`,
+            severity: 'warning',
+          });
+        }
         return;
       }
 
@@ -1317,7 +2485,7 @@ function buildEmergencyTemplateSpec(
   // Add B/C variants if requested (but mark as not generated)
   if (requestedVersions.B) {
     spec.versionVariants.B = {
-      label: 'Versión B (No generada - servicio de IA no disponible)',
+      label: 'Version B (Content Adaptation - Declared, no generada)',
       isBase: false,
       reason: 'No generada debido a problemas de conectividad con el servicio de IA',
       modifications: []
@@ -1326,7 +2494,7 @@ function buildEmergencyTemplateSpec(
   
   if (requestedVersions.C) {
     spec.versionVariants.C = {
-      label: 'Versión C (No generada - servicio de IA no disponible)',
+      label: 'Version C (Equivalent Accessibility Adaptation, no generada)',
       isBase: false,
       reason: 'No generada debido a problemas de conectividad con el servicio de IA',
       modifications: []
@@ -1538,6 +2706,101 @@ function validateAndNormalizeSpec(
   return { spec: spec as unknown as EvaluationSpecV2, warnings };
 }
 
+/** Open-ended item types that should have equivalentResponseOptions when the feature is enabled. */
+const OPEN_ENDED_ITEM_TYPES = new Set<string>(['essay', 'paragraph', 'short_answer', 'source_analysis', 'true_false_justify']);
+
+function isOpenEndedItemType(type: unknown): type is string {
+  return typeof type === 'string' && OPEN_ENDED_ITEM_TYPES.has(type);
+}
+
+/** Get current equivalentResponseOptions option count from an item (raw spec shape). */
+function getEquivalentOptionsCount(item: Record<string, unknown>): number {
+  const ero = item.equivalentResponseOptions;
+  if (!ero) return 0;
+  if (Array.isArray(ero)) return ero.length;
+  if (typeof ero === 'object' && ero !== null) {
+    const opts = (ero as Record<string, unknown>).options;
+    return Array.isArray(opts) ? opts.length : 0;
+  }
+  return 0;
+}
+
+/** Deterministic fallback options by open-ended type (2–3 options). */
+function getFallbackEquivalentOptions(itemType: string, minCount: number): Array<{ id: string; format: string; description: string }> {
+  const optionsByType: Record<string, Array<{ format: string; description: string }>> = {
+    essay: [
+      { format: 'texto argumentativo', description: 'desarrollado' },
+      { format: 'esquema o mapa conceptual', description: 'con ideas principales y secundarias' },
+      { format: 'lista numerada de ideas', description: 'con argumentos claros' }
+    ],
+    paragraph: [
+      { format: 'párrafo desarrollado', description: 'conectado' },
+      { format: 'esquema claro', description: 'con ideas ordenadas' },
+      { format: 'lista de ideas', description: 'con desarrollo breve' }
+    ],
+    short_answer: [
+      { format: 'texto breve', description: 'directo' },
+      { format: 'esquema o lista', description: 'de puntos clave' }
+    ],
+    source_analysis: [
+      { format: 'texto analítico', description: 'breve' },
+      { format: 'esquema o tabla', description: 'con citas o referencias' },
+      { format: 'lista de ideas', description: 'fundamentadas en la fuente' }
+    ],
+    true_false_justify: [
+      { format: 'texto breve', description: 'justificando tu respuesta' },
+      { format: 'esquema o lista', description: 'de razones' }
+    ]
+  };
+  const templates = optionsByType[itemType] ?? optionsByType.short_answer;
+  const take = Math.min(Math.max(2, minCount), templates.length);
+  return templates.slice(0, take).map((t, i) => ({
+    id: `fallback-${itemType}-${i + 1}`,
+    format: t.format,
+    description: t.description
+  }));
+}
+
+/**
+ * When response options are enabled, ensure every open-ended item has at least 2 equivalentResponseOptions.
+ * Fills missing or insufficient options with a deterministic fallback and adds RESPONSE_OPTIONS_FALLBACK_APPLIED warning.
+ */
+function ensureEquivalentResponseOptionsForOpenEnded(
+  spec: EvaluationSpecV2,
+  responseOptionsInclude: boolean,
+  responseOptionCount: number,
+  warnings: WarningV2[]
+): void {
+  if (!responseOptionsInclude || !spec.sections?.length) return;
+  const minOptions = Math.max(2, responseOptionCount);
+  let fallbackCount = 0;
+  for (const section of spec.sections) {
+    const items = section.items ?? [];
+    for (const item of items) {
+      const type = item.type as string;
+      if (!isOpenEndedItemType(type)) continue;
+      const itemRecord = item as unknown as Record<string, unknown>;
+      const count = getEquivalentOptionsCount(itemRecord);
+      if (count >= minOptions) continue;
+      const fallback = getFallbackEquivalentOptions(type, minOptions);
+      itemRecord.equivalentResponseOptions = {
+        enabled: true,
+        options: fallback,
+        metacognitionText: 'Elegí el formato que mejor te ayude a mostrar lo que aprendiste.'
+      };
+      fallbackCount++;
+    }
+  }
+  if (fallbackCount > 0) {
+    warnings.push({
+      code: 'RESPONSE_OPTIONS_FALLBACK_APPLIED',
+      message: `Se completaron opciones de respuesta equivalentes en ${fallbackCount} ítem(s) abierto(s) que no las tenían.`,
+      severity: 'info'
+    });
+    console.log(`[V2_RESPONSE_OPTIONS] fallback applied to ${fallbackCount} open-ended items`);
+  }
+}
+
 /**
  * Derive effective requested versions from actual versionVariants in spec.
  * When only A was generated (e.g. fast fallback), return { A: true, B: false, C: false }
@@ -1568,7 +2831,10 @@ function extractTeacherReminders(
   students: Array<{ studentId: string | number; displayName?: string }>
 ): TeacherReminderV2[] {
   const studentMap = new Map(
-    students.map(s => [String(s.studentId), s.displayName || `Estudiante ${s.studentId}`])
+    students.map(s => [
+      String(s.studentId),
+      (typeof s.displayName === 'string' && s.displayName.trim()) ? s.displayName.trim() : `Estudiante ${s.studentId}`
+    ])
   );
   
   return perStudentReminders
@@ -1592,7 +2858,7 @@ function buildV2SystemPrompt(
   requestedVersions: { A: boolean; B: boolean; C: boolean }
 ): string {
   const versionBInstructions = requestedVersions.B ? `
-## VERSIÓN B - ADAPTACIÓN DE CONTENIDO (CRÍTICO)
+## VERSIÓN B - ADAPTACIÓN DE CONTENIDO DECLARADA (CRÍTICO)
 
 Cuando Version B es requerida, CADA item DEBE incluir un campo "versionedContent" con contenido PEDAGÓGICAMENTE DIFERENTE:
 
@@ -1611,7 +2877,7 @@ Cuando Version B es requerida, CADA item DEBE incluir un campo "versionedContent
 }
 \`\`\`
 
-### Estrategias OBLIGATORIAS para versionedContent.promptB:
+### Estrategias OBLIGATORIAS para versionedContent.promptB (no equivalente):
 
 1. **Vocabulario simplificado**: Reemplazar palabras complejas por equivalentes cotidianos
    - "analiza" → "piensa y responde"
@@ -1634,7 +2900,7 @@ Cuando Version B es requerida, CADA item DEBE incluir un campo "versionedContent
 
 5. **Ejemplos concretos**: Cuando sea apropiado, incluir un ejemplo breve
 
-IMPORTANTE: El promptB debe evaluar LOS MISMOS OBJETIVOS DE APRENDIZAJE que el prompt base, solo con presentación adaptada.
+IMPORTANTE: El promptB puede ajustar objetivos/contenidos solo cuando hay adaptación declarada. Aun así, debe conservar evidencia escrita y contemplaciones de accesibilidad (diseño/admin/corrección).
 ` : '';
 
   return `Eres un especialista en evaluación educativa con experiencia en diseño universal para el aprendizaje (DUA). Tu tarea es generar una especificación JSON estructurada para una evaluación escrita.
@@ -1651,13 +2917,13 @@ IMPORTANTE: El promptB debe evaluar LOS MISMOS OBJETIVOS DE APRENDIZAJE que el p
 
 5. **Versiones**:
    - Siempre generar contenido base en "prompt" (Versión A - universal)
-   ${requestedVersions.B ? '- OBLIGATORIO: Generar "versionedContent.promptB" con contenido pedagógicamente adaptado para CADA item' : '- NO incluir versionedContent (Version B no solicitada)'}
-   ${requestedVersions.C ? '- Incluir versionedContent.promptC para adaptación excepcional' : ''}
+   ${requestedVersions.B ? '- OBLIGATORIO: Generar "versionedContent.promptB" para adaptación de contenido declarada (NO comparable con A/C)' : '- NO incluir versionedContent (Version B no solicitada)'}
+   ${requestedVersions.C ? '- Incluir versionedContent.promptC para adaptación equivalente de accesibilidad (mismos objetivos/criterios que A)' : ''}
 ${versionBInstructions}
 ## OPCIONES DE RESPUESTA EQUIVALENTES
 ${responseOptionsInclude ? `
-- OBLIGATORIO: Items de desarrollo (essay, paragraph) DEBEN incluir equivalentResponseOptions con ${responseOptionCount} opciones.
-- Cada opción representa un formato diferente pero equivalente en evidencia y dificultad.
+- OBLIGATORIO: Todos los ítems ABIERTOS (essay, paragraph, short_answer, source_analysis, true_false_justify) DEBEN incluir equivalentResponseOptions con al menos ${responseOptionCount} opciones.
+- Cada opción representa un formato diferente pero equivalente en evidencia y dificultad (ej.: texto, esquema, lista).
 ` : '- NO incluir equivalentResponseOptions en ningún item.'}
 
 ## RÚBRICA POR ÍTEM (CRÍTICO)
@@ -1670,8 +2936,19 @@ ${responseOptionsInclude ? `
     ]
   }
 - Mínimo 4 niveles por ítem.
-- Los descriptores deben ser específicos a la consigna del ítem (NO genéricos).
 - Si incluyes minPoints/maxPoints, deben estar alineados con item.points.
+
+REGLAS OBLIGATORIAS PARA CADA DESCRIPTOR DE RÚBRICA:
+1) Extrae el verbo de acción principal de la consigna del ítem (ej.: explicar, justificar, analizar, comparar, argumentar, interpretar).
+2) Identifica los conceptos o contenidos clave mencionados en la consigna (ej.: causas económicas de la PGM, rol de las potencias centrales, reformas batllistas).
+3) Cada descriptor de nivel DEBE mencionar explícitamente:
+   - La acción requerida (ej.: "analiza", "justifica con evidencia", "explica de forma clara").
+   - El contenido concreto evaluado (ej.: "causas de la Primera Guerra Mundial", "consecuencias sociales del proceso").
+- PROHIBIDO usar frases genéricas o intercambiables entre ítems, por ejemplo:
+  - "responde correctamente", "desarrolla una respuesta adecuada", "argumenta de forma clara"
+  - "responde la consigna", "identifica ideas relevantes" sin mencionar el tema de la pregunta
+- Cada descriptor de nivel debe referirse claramente al tema/contenido evaluado en la pregunta y a la acción requerida. No se permite redacción genérica ni reutilizable entre ítems.
+- Rule (English): Each level descriptor must clearly mention the specific topic/content evaluated in the question and the action required. Generic, reusable wording is not allowed.
 
 ## ESTRUCTURA JSON REQUERIDA
 
@@ -1710,8 +2987,8 @@ ${responseOptionsInclude ? `
   ],
   "versionVariants": {
     "A": { "label": "Versión A (Universal)", "isBase": true }
-    ${requestedVersions.B ? ', "B": { "label": "Versión B (Adaptación de Contenido)", "isBase": false, "reason": "Contenido adaptado pedagógicamente para estudiantes que requieren simplificación" }' : ''}
-    ${requestedVersions.C ? ', "C": { "label": "Versión C (Adaptación Excepcional)", "isBase": false, "reason": "Adaptación excepcional" }' : ''}
+    ${requestedVersions.B ? ', "B": { "label": "Version B (Content Adaptation - Declared)", "isBase": false, "reason": "No comparable con A/C: adaptación explícita de objetivos o contenidos" }' : ''}
+    ${requestedVersions.C ? ', "C": { "label": "Version C (Equivalent Accessibility Adaptation)", "isBase": false, "reason": "Mismos objetivos/criterios y demanda cognitiva; cambia formato/andamiaje" }' : ''}
   },
   "aiReport": {
     "narrative": "<texto narrativo global de 6-12 líneas (resumen para el docente)>",
@@ -1719,8 +2996,8 @@ ${responseOptionsInclude ? `
       "A": {
         "narrative": "<6-12 líneas: qué contenidos se evaluaron, cómo se alinean con las competencias seleccionadas, cómo se aplicaron los requerimientos del docente, y cómo se usaron materiales/sesión si están presentes>"
       }
-      ${requestedVersions.B ? ', "B": { "narrative": "<6-10 líneas: diferencias con la Versión A (formato, estructura, andamiaje, accesibilidad); por qué se preserva la dificultad y se mejora claridad/apoyo>" }' : ''}
-      ${requestedVersions.C ? ', "C": { "narrative": "<6-10 líneas: diferencias con A/B, adaptación excepcional; por qué preserva objetivos de aprendizaje>" }' : ''}
+      ${requestedVersions.B ? ', "B": { "narrative": "<6-10 líneas: adaptación de contenido declarada, no comparable con A/C, y accesibilidad aplicada>" }' : ''}
+      ${requestedVersions.C ? ', "C": { "narrative": "<6-10 líneas: adaptación equivalente de accesibilidad, mismos objetivos/rúbrica/demanda que A>" }' : ''}
     }
   }
 }
@@ -1833,8 +3110,8 @@ Criterios de logro: ${groupContext.criteriosLogro?.join(', ') || 'No provistos'}
 ## VERSIONES SOLICITADAS
 
 - Versión A: SIEMPRE requerida (evaluación universal base - para estudiantes sin necesidad de adaptaciones)
-${requestedVersions.B ? '- Versión B: Requerida (ADAPTACIÓN DE CONTENIDO - vocabulario simplificado, mayor apoyo visual, consignas más claras)' : '- Versión B: NO generar'}
-${requestedVersions.C ? '- Versión C: Requerida (ADAPTACIÓN EXCEPCIONAL - modificaciones significativas para casos especiales)' : '- Versión C: NO generar'}
+${requestedVersions.B ? '- Versión B: Requerida (ADAPTACIÓN DE CONTENIDO DECLARADA: no equivalente/comparable con A/C)' : '- Versión B: NO generar'}
+${requestedVersions.C ? '- Versión C: Requerida (EQUIVALENTE: mismos objetivos/criterios y misma demanda cognitiva; cambia solo formato/andamiaje)' : '- Versión C: NO generar'}
 
 ## REGLAS DE DISEÑO DEL INSTRUMENTO
 
@@ -1850,12 +3127,12 @@ Genera una especificación JSON completa siguiendo el schema EvaluationSpecV2.
 - La evaluación debe ser apropiada para secundaria.
 - Incluye variedad de tipos de items.
 - Asegúrate que los puntos sumen un total coherente.
-${requestedVersions.B ? `- CRÍTICO: Para CADA item, incluye "versionedContent": { "promptB": "..." } con una versión PEDAGÓGICAMENTE ADAPTADA.
-- El promptB debe ser significativamente diferente: vocabulario más simple, oraciones más cortas, estructura más clara.
+${requestedVersions.B ? `- CRÍTICO: Para CADA item de adaptación declarada, incluye "versionedContent": { "promptB": "..." } para ajuste de contenido/objetivos (no equivalente).
+- El promptB debe mantener evidencia escrita y contemplaciones de accesibilidad aplicables.
 - Si falta promptB en aunque sea un ítem, la Versión B no se ofrecerá al docente (solo A).
 - Ejemplo: Si prompt es "Analiza las consecuencias socioeconómicas...", promptB debe ser "Lee con atención. ¿Qué cambios importantes ocurrieron? Piensa en cómo afectó a las personas."` : '- NO incluyas versionedContent.'}
-${requestedVersions.C ? `- CRÍTICO: Para cada ítem que tenga promptB, incluye también "promptC" en versionedContent cuando corresponda a adaptación excepcional. Si falta promptC en ítems, la Versión C no se ofrecerá.` : ''}
-- CRÍTICO: Para cada item abierto (essay, paragraph, short_answer, source_analysis, true_false_justify) incluye "rubric.levels" con al menos 4 niveles y descriptores específicos al prompt del ítem.
+${requestedVersions.C ? `- CRÍTICO: Para ítems con adaptación equivalente de accesibilidad, incluye "promptC" en versionedContent. Version C conserva objetivos/rúbrica/demanda de A y cambia solo formato/andamiaje.` : ''}
+- CRÍTICO: Para cada item abierto (essay, paragraph, short_answer, source_analysis, true_false_justify) incluye "rubric.levels" con al menos 4 niveles. Cada descriptor debe mencionar explícitamente la acción pedida en la consigna (analizar, justificar, explicar, etc.) y el contenido específico del ítem; está prohibido usar descriptores genéricos reutilizables.
 
 Responde ÚNICAMENTE con el objeto JSON. Sin explicaciones ni code fences.`;
 }
@@ -1897,14 +3174,10 @@ async function generateEvaluationV2(
     retryReason?: string;
   };
 }> {
-  // RETRY STRATEGY:
-  // Attempt 1: Full prompt with 90s timeout (OPENAI_TIMEOUT_GENERATE_MS), gpt-4.1-2025-04-14
-  // Attempt 2: Fast fallback with gpt-4o-mini, reduced prompt, 24s timeout, maxTokens <= 1800
-  const MAX_ATTEMPTS = 2;
+  const MAX_ATTEMPTS = 3;
   const warnings: WarningV2[] = [];
   type AttemptOutcome = 'success' | 'timeout' | 'openai_error' | 'parse_error' | 'validation_error' | 'unknown_error';
   type AttemptMode = 'full' | 'fast_fallback' | 'emergency_template';
-  
   const attempts: Array<{
     attempt: number;
     mode: AttemptMode;
@@ -1918,299 +3191,262 @@ async function generateEvaluationV2(
     outcome: AttemptOutcome;
     errorMessage?: string;
   }> = [];
-  let attempt = 0;
-  let extractionMethod = 'json_parse';
-  let lastRawResponse = '';
-  let openaiDurationMs = 0;
-  let retryReason = '';
-  
-  // Determine timeouts based on mode
-  const firstAttemptTimeout = isAdjustMode ? OPENAI_TIMEOUT_ADJUST_MS : OPENAI_TIMEOUT_GENERATE_MS;
-  const retryTimeout = OPENAI_TIMEOUT_RETRY_MS;
-  
-  for (attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const currentTimeout = attempt === 1 ? firstAttemptTimeout : retryTimeout;
-    const isRetryAttempt = attempt > 1;
-    
-    timer.log(`═══════════════════════════════════════════════════════════════`);
-    timer.log(`OpenAI attempt ${attempt}/${MAX_ATTEMPTS} starting`);
-    timer.log(`  timeout: ${currentTimeout}ms, isRetry: ${isRetryAttempt}, isAdjustMode: ${isAdjustMode}`);
-    timer.log(`═══════════════════════════════════════════════════════════════`);
-    
-    // Check if we're running out of total time budget
-    const remainingBudget = TOTAL_TIMEOUT_MS - timer.elapsed();
-    if (remainingBudget < 10000) {
-      timer.log(`ABORT: Only ${remainingBudget}ms remaining in total budget, skipping attempt`);
-      warnings.push({
-        code: 'TIMEOUT_BUDGET_EXCEEDED',
-        message: `Se agotó el tiempo disponible antes del intento ${attempt}`,
-        severity: 'error'
-      });
-      break;
-    }
-    
-    // Use actual remaining time if less than planned timeout
-    const effectiveTimeout = Math.min(currentTimeout, remainingBudget - 2000);
-    
-    // Build reduced prompt for retry (FAST FALLBACK: gpt-4o-mini, Version A only, minimal prompt)
-    let currentSystemPrompt = systemPrompt;
-    let currentUserPrompt = userPrompt;
-    let reducedVersions = requestedVersions;
-    let modelToUse = 'gpt-4.1-2025-04-14';
-    let maxTokensToUse = isRetryAttempt ? 6000 : 6000;
-    let temperatureToUse = 0.7;
-    const attemptStartTime = timer.elapsed();
-    
-    if (isRetryAttempt) {
-      timer.log(`═══════════════════════════════════════════════════════════════`);
-      timer.log(`FAST FALLBACK MODE: gpt-4o-mini, Version A only, full prompt structure preserved`);
-      timer.log(`═══════════════════════════════════════════════════════════════`);
-      
-      // Fast fallback: use gpt-4o-mini, lower temperature; keep full prompt (instrumentDesignRules + narrative requirements)
-      modelToUse = 'gpt-4o-mini';
-      maxTokensToUse = Math.max(2500, 1800); // At least 2500 to preserve structure and narrative
-      temperatureToUse = 0.4; // More deterministic
-      
-      // On retry: request Version A only to reduce output size; do NOT strip prompt (preserve section/duration/narrative instructions)
-      if (requestedVersions.B || requestedVersions.C) {
-        reducedVersions = { A: true, B: false, C: false };
-        warnings.push({
-          code: 'RETRY_FAST_FALLBACK_USED',
-          message: 'Usando fast fallback: generando solo Versión A con gpt-4o-mini. Versiones B/C diferidas.',
-          severity: 'warning'
-        });
-        // Keep currentSystemPrompt = systemPrompt and currentUserPrompt = userPrompt (full structure)
-        timer.log(`  Full systemPrompt preserved: ${systemPrompt.length} chars`);
-        timer.log(`  Full userPrompt preserved: ${userPrompt.length} chars`);
-      }
-      
-      // If previous attempt had a response, build repair prompt
-      if (lastRawResponse && retryReason === 'parse_error') {
-        const truncated = lastRawResponse.slice(0, 300);
-        currentUserPrompt = `JSON parse error. Previous response (truncated):\n${truncated}\n\nREQUIREMENTS: Respond ONLY with valid JSON. No code fences, no comments.\n\n${currentUserPrompt.slice(0, 1500)}`;
-      }
-    }
-    
-    // Log request metadata for debugging
-    const promptSizeKB = parseFloat(((currentSystemPrompt.length + currentUserPrompt.length) / 1024).toFixed(1));
-    timer.log(`OpenAI request details:`);
-    timer.log(`  model: ${modelToUse}`);
-    timer.log(`  systemPrompt: ${currentSystemPrompt.length} chars`);
-    timer.log(`  userPrompt: ${currentUserPrompt.length} chars`);
-    timer.log(`  totalPromptSize: ${promptSizeKB} KB`);
-    timer.log(`  effectiveTimeout: ${effectiveTimeout}ms`);
-    timer.log(`  maxTokens: ${maxTokensToUse}`);
-    timer.log(`  temperature: ${temperatureToUse}`);
-    timer.log(`  requestedVersions: A=${reducedVersions.A}, B=${reducedVersions.B}, C=${reducedVersions.C}`);
-    
-    const openaiStartTime = Date.now();
-    
-    // Record attempt start
-    const attemptRecord: {
-      attempt: number;
-      mode: AttemptMode;
-      model: string;
-      timeoutMs: number;
-      maxTokens: number;
-      temperature?: number;
-      promptSizeKB: number;
-      startedAtMs: number;
-      outcome: AttemptOutcome;
-      errorMessage?: string;
-      openaiDurationMs?: number;
-    } = {
-      attempt,
-      mode: isRetryAttempt ? 'fast_fallback' : 'full',
-      model: modelToUse,
-      timeoutMs: effectiveTimeout,
-      maxTokens: maxTokensToUse,
-      temperature: temperatureToUse,
-      promptSizeKB,
-      startedAtMs: attemptStartTime,
-      outcome: 'unknown_error',
-      errorMessage: undefined,
-      openaiDurationMs: undefined
-    };
-    
+  const timeoutMs = isAdjustMode ? OPENAI_TIMEOUT_ADJUST_MS : OPENAI_TIMEOUT_PER_ATTEMPT_MS;
+  const promptLength = systemPrompt.length + userPrompt.length;
+  const promptSizeKB = parseFloat((promptLength / 1024).toFixed(1));
+
+  const result = await callOpenAIWithRetries('spec', requestId, (attemptNum, model) => ({
+    body: {
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      response_format: { type: 'json_object' },
+      max_completion_tokens: 6000,
+      temperature: attemptNum === 3 ? 0.4 : 0.7
+    },
+    timeoutMs
+  }));
+
+  if (result.ok) {
+    let parsed: unknown;
     try {
-      const response = await fetchWithTimeout(
-        'https://api.openai.com/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${openAIApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: modelToUse,
-            messages: [
-              { role: 'system', content: currentSystemPrompt },
-              { role: 'user', content: currentUserPrompt }
-            ],
-            response_format: { type: 'json_object' },
-            max_completion_tokens: maxTokensToUse,
-            temperature: temperatureToUse
-          }),
-        },
-        effectiveTimeout,
-        requestId
-      );
-      
-      openaiDurationMs = Date.now() - openaiStartTime;
-      timer.log(`✓ OpenAI response received in ${openaiDurationMs}ms`);
-      timer.mark(`openai_attempt_${attempt}`);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        timer.log(`✗ OpenAI API error ${response.status}: ${errorText.slice(0, 200)}`);
-        
-        // Record API error attempt
-        attemptRecord.outcome = 'openai_error';
-        attemptRecord.openaiDurationMs = openaiDurationMs;
-        attemptRecord.errorMessage = `OpenAI API error ${response.status}: ${errorText.slice(0, 200)}`;
-        attempts.push(attemptRecord);
-        
-        throw new Error(`OpenAI API error: ${response.status}`);
+      let cleanContent = result.rawContent.trim();
+      if (cleanContent.startsWith('```')) {
+        cleanContent = cleanContent.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
       }
-      
-      const result = await response.json();
-      const rawContent = result.choices[0]?.message?.content || '';
-      lastRawResponse = rawContent;
-      
-      timer.log(`OpenAI response parsed, length=${rawContent.length} chars`);
-      
-      // Try to parse JSON
-      let parsed: unknown;
-      try {
-        // Remove potential code fences
-        let cleanContent = rawContent.trim();
-        if (cleanContent.startsWith('```')) {
-          cleanContent = cleanContent.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
-        }
-        
-        parsed = JSON.parse(cleanContent);
-        extractionMethod = 'json_parse';
-        timer.mark('json_parsed');
-      } catch (parseError) {
-        timer.log(`✗ JSON parse error: ${parseError}`);
-        warnings.push({
-          code: 'JSON_PARSE_ERROR',
-          message: `Intento ${attempt}: Error al parsear respuesta JSON`,
-          severity: 'warning',
-          context: { parseError: String(parseError) }
-        });
-        retryReason = 'parse_error';
-        
-        // Record parse error attempt
-        attemptRecord.outcome = 'parse_error' as AttemptOutcome;
-        attemptRecord.openaiDurationMs = openaiDurationMs;
-        attemptRecord.errorMessage = `JSON parse error: ${parseError}`;
-        attempts.push(attemptRecord);
-        
-        continue; // Retry
-      }
-      
-      // Validate and normalize
-      const { spec, warnings: validationWarnings } = validateAndNormalizeSpec(parsed, reducedVersions);
-      warnings.push(...validationWarnings);
-      timer.mark('validation_complete');
-      
-      if (spec) {
-        timer.log(`✓ SUCCESS on attempt ${attempt} (${openaiDurationMs}ms)`);
-        if (isRetryAttempt) {
-          warnings.push({
-            code: 'RETRY_SUCCESS',
-            message: `Generación exitosa después de ${attempt} intentos`,
-            severity: 'info'
-          });
-        }
-        
-        // Record successful attempt
-        attemptRecord.outcome = 'success' as AttemptOutcome;
-        attemptRecord.openaiDurationMs = openaiDurationMs;
-        attempts.push(attemptRecord);
-        
-        return {
-          spec,
-          warnings,
-          attempt,
-          extractionMethod,
-          attempts,
-          debug: {
-            promptLength: currentSystemPrompt.length + currentUserPrompt.length,
-            responseLength: rawContent.length,
-            openaiDurationMs,
-            timeoutUsedMs: effectiveTimeout,
-            retryReason: isRetryAttempt ? retryReason : undefined
-          }
-        };
-      }
-      
-      // Validation failed, retry
-      timer.log('Validation failed, will retry if attempts remain');
-      retryReason = 'validation_failed';
-      
-      // Record validation error attempt
-      attemptRecord.outcome = 'validation_error' as AttemptOutcome;
-      attemptRecord.openaiDurationMs = openaiDurationMs;
-      attemptRecord.errorMessage = 'Validation failed: spec is null after normalization';
-      attempts.push(attemptRecord);
-      
-    } catch (apiError) {
-      openaiDurationMs = Date.now() - openaiStartTime;
-      const errorMsg = apiError instanceof Error ? apiError.message : String(apiError);
-      timer.log(`✗ API call failed after ${openaiDurationMs}ms: ${errorMsg}`);
-      
-      // Check if it's a timeout error
-      const isTimeout = errorMsg.includes('TIMEOUT') || errorMsg.includes('AbortError') || errorMsg.includes('aborted');
-      const outcome: AttemptOutcome = isTimeout ? 'timeout' : (errorMsg.includes('API') || errorMsg.includes('fetch') ? 'openai_error' : 'unknown_error');
-      
-      warnings.push({
-        code: isTimeout ? 'OPENAI_TIMEOUT' : 'API_ERROR',
-        message: isTimeout 
-          ? `El servicio de IA tardó demasiado (>${effectiveTimeout}ms). ${attempt < MAX_ATTEMPTS ? 'Reintentando con fast fallback...' : 'Intenta de nuevo.'}`
-          : `Intento ${attempt}: Error de API - ${errorMsg}`,
-        severity: attempt >= MAX_ATTEMPTS ? 'error' : 'warning'
+      parsed = JSON.parse(cleanContent);
+    } catch (parseError) {
+      timer.log(`✗ JSON parse error after ${result.attempt} attempt(s)`);
+      warnings.push({ code: 'JSON_PARSE_ERROR', message: 'Error al parsear respuesta JSON', severity: 'warning' });
+      attempts.push({
+        attempt: result.attempt,
+        mode: result.attempt === 3 ? 'fast_fallback' : 'full',
+        model: result.model,
+        timeoutMs,
+        maxTokens: 6000,
+        promptSizeKB,
+        startedAtMs: timer.elapsed(),
+        outcome: 'parse_error',
+        errorMessage: String(parseError)
       });
-      
-      retryReason = isTimeout ? 'timeout' : 'api_error';
-      
-      // Record failed attempt
-      attemptRecord.outcome = outcome;
-      attemptRecord.openaiDurationMs = openaiDurationMs;
-      attemptRecord.errorMessage = errorMsg;
-      attempts.push(attemptRecord);
-      
-      // On timeout, ALLOW retry with fast fallback
-      if (isTimeout && attempt < MAX_ATTEMPTS) {
-        timer.log(`Timeout on attempt ${attempt}, will retry with fast fallback (gpt-4o-mini)`);
-        continue;
-      }
+      return {
+        spec: null,
+        warnings,
+        attempt: result.attempt,
+        extractionMethod: 'failed',
+        attempts,
+        debug: { promptLength, responseLength: result.rawContent.length, timeoutUsedMs: timeoutMs }
+      };
     }
+    const { spec, warnings: validationWarnings } = validateAndNormalizeSpec(parsed, requestedVersions);
+    warnings.push(...validationWarnings);
+    if (spec) {
+      timer.log(`✓ SUCCESS on attempt ${result.attempt} (${result.ms}ms)`);
+      if (result.attempt > 1) {
+        warnings.push({ code: 'RETRY_SUCCESS', message: `Generación exitosa después de ${result.attempt} intentos`, severity: 'info' });
+      }
+      attempts.push({
+        attempt: result.attempt,
+        mode: result.attempt === 3 ? 'fast_fallback' : 'full',
+        model: result.model,
+        timeoutMs,
+        maxTokens: 6000,
+        promptSizeKB,
+        startedAtMs: 0,
+        outcome: 'success',
+        openaiDurationMs: result.ms
+      });
+      return {
+        spec,
+        warnings,
+        attempt: result.attempt,
+        extractionMethod: 'json_parse',
+        attempts,
+        debug: {
+          promptLength,
+          responseLength: result.rawContent.length,
+          openaiDurationMs: result.ms,
+          timeoutUsedMs: timeoutMs,
+          retryReason: result.attempt > 1 ? 'retry_used' : undefined
+        }
+      };
+    }
+    attempts.push({
+      attempt: result.attempt,
+      mode: result.attempt === 3 ? 'fast_fallback' : 'full',
+      model: result.model,
+      timeoutMs,
+      maxTokens: 6000,
+      promptSizeKB,
+      startedAtMs: 0,
+      outcome: 'validation_error',
+      errorMessage: 'Validation failed: spec is null after normalization'
+    });
   }
-  
-  // All attempts failed
-  timer.log(`═══════════════════════════════════════════════════════════════`);
-  timer.log(`✗ All ${MAX_ATTEMPTS} attempts failed`);
-  timer.log(`  lastRetryReason: ${retryReason}`);
-  timer.log(`  totalElapsed: ${timer.elapsed()}ms`);
-  timer.log(`  attempts recorded: ${attempts.length}`);
-  timer.log(`═══════════════════════════════════════════════════════════════`);
-  
+
+  let lastResponseLength = 0;
+  if (result.ok) lastResponseLength = result.rawContent.length;
+
+  if (!result.ok) {
+    attempts.push({
+      attempt: result.attempt,
+      mode: result.attempt === 3 ? 'fast_fallback' : 'full',
+      model: result.attempt === 3 ? OPENAI_MODEL_FALLBACK : OPENAI_MODEL_PRIMARY,
+      timeoutMs,
+      maxTokens: 6000,
+      promptSizeKB,
+      startedAtMs: 0,
+      outcome: result.error.includes('TIMEOUT') ? 'timeout' : 'openai_error',
+      errorMessage: result.error
+    });
+    warnings.push({
+      code: 'OPENAI_FAIL_FINAL',
+      message: result.error.slice(0, 200),
+      severity: 'error'
+    });
+  }
+
+  const lastAttempt = result.attempt;
+  timer.log(`✗ All ${MAX_ATTEMPTS} attempts exhausted; spec=null`);
   return {
     spec: null,
     warnings,
-    attempt,
+    attempt: lastAttempt,
     extractionMethod: 'failed',
     attempts,
     debug: {
-      promptLength: systemPrompt.length + userPrompt.length,
-      responseLength: lastRawResponse.length,
-      openaiDurationMs,
-      timeoutUsedMs: attempt === 1 ? firstAttemptTimeout : retryTimeout,
-      retryReason
+      promptLength,
+      responseLength: lastResponseLength,
+      timeoutUsedMs: timeoutMs
     }
   };
+}
+
+// ============================================================================
+// DURATION COHERENCE: deterministic estimate + optional auto-extend
+// ============================================================================
+
+/** Minutes per item type (heuristic for exam-like pacing). Used for estimate and auto-extend. */
+const DURATION_MINUTES_BY_ITEM_TYPE: Record<string, number> = {
+  multiple_choice: 2,
+  true_false: 1,
+  true_false_justify: 4,
+  short_answer: 4,
+  paragraph: 9,
+  essay: 14,
+  source_analysis: 14,
+  table_completion: 5,
+  matching: 5,
+  ordering: 5,
+};
+
+const DEFAULT_MINUTES_PER_ITEM = 5;
+const SECTION_OVERHEAD_MINUTES = 1;
+
+/**
+ * Deterministic estimate of total duration (minutes) from a V2 spec.
+ * Sums per-item estimates by type plus optional section overhead.
+ */
+function estimateDurationFromSpec(spec: EvaluationSpecV2): number {
+  let total = 0;
+  for (const section of spec.sections || []) {
+    total += SECTION_OVERHEAD_MINUTES;
+    for (const item of section.items || []) {
+      const t = item.type as string;
+      total += DURATION_MINUTES_BY_ITEM_TYPE[t] ?? DEFAULT_MINUTES_PER_ITEM;
+    }
+  }
+  return Math.max(0, total);
+}
+
+/**
+ * One-shot auto-extend: call OpenAI to add/expand items so estimated duration reaches target (±10%).
+ * Returns extended spec + warnings, or null spec on parse/validation failure.
+ */
+async function runDurationAutoExtend(
+  currentSpec: EvaluationSpecV2,
+  targetDurationMinutes: number,
+  requestedVersions: { A: boolean; B: boolean; C: boolean },
+  requestId: string,
+  timer: Timer
+): Promise<{ spec: EvaluationSpecV2 | null; warnings: WarningV2[] }> {
+  const warnings: WarningV2[] = [];
+  const low = Math.round(targetDurationMinutes * 0.9);
+  const high = Math.round(targetDurationMinutes * 1.1);
+  const systemPrompt = `Eres un asistente que solo devuelve JSON válido.
+Tu ÚNICA tarea: extender la evaluación proporcionada para que su duración estimada total esté entre ${low} y ${high} minutos.
+Reglas:
+- Añade ítems nuevos o expande ítems existentes (más sub-ítems, preguntas guía, etc.).
+- Mantén meta (contentIds, competencyIds, criteriosLogro), versionVariants y versionedContent donde existan.
+- No cambies los IDs de secciones/ítems existentes; los nuevos ítems deben tener IDs únicos.
+- Responde ÚNICAMENTE con el objeto JSON de la evaluación completa. Sin explicaciones ni code fences.`;
+
+  const specJson = JSON.stringify(currentSpec);
+  const userPrompt = `Evaluación actual (duración objetivo: ${targetDurationMinutes} min, rango aceptable: ${low}-${high} min):
+
+${specJson}
+
+Devuelve la evaluación extendida en JSON completo para alcanzar entre ${low} y ${high} minutos de duración estimada.`;
+
+  timer.log(`[DURATION_AUTO_EXTEND] calling OpenAI target=${targetDurationMinutes} low=${low} high=${high}`);
+  console.log(`[DURATION_AUTO_EXTEND] target=${targetDurationMinutes} requestId=${requestId}`);
+
+  const openaiResult = await callOpenAIWithRetries('duration_extend', requestId, () => ({
+    body: {
+      model: OPENAI_MODEL_PRIMARY,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      response_format: { type: 'json_object' },
+      max_completion_tokens: 6000,
+      temperature: 0.4
+    },
+    timeoutMs: Math.min(OPENAI_TIMEOUT_PER_ATTEMPT_MS, 90000)
+  }));
+
+  if (!openaiResult.ok) {
+    warnings.push({
+      code: 'DURATION_EXTEND_OPENAI_ERROR',
+      message: `No se pudo extender la evaluación: ${openaiResult.error.slice(0, 120)}`,
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+
+  let parsed: unknown;
+  try {
+    let cleanContent = openaiResult.rawContent.trim();
+    if (cleanContent.startsWith('```')) {
+      cleanContent = cleanContent.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+    }
+    parsed = JSON.parse(cleanContent);
+  } catch (e) {
+    warnings.push({
+      code: 'DURATION_EXTEND_PARSE_ERROR',
+      message: 'Error al parsear la evaluación extendida',
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+
+  const { spec, warnings: validationWarnings } = validateAndNormalizeSpec(parsed, requestedVersions);
+  warnings.push(...validationWarnings);
+  if (!spec) {
+    warnings.push({
+      code: 'DURATION_EXTEND_VALIDATION_FAILED',
+      message: 'La evaluación extendida no pasó la validación',
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+
+  const newEst = estimateDurationFromSpec(spec);
+  timer.log(`[DURATION_AUTO_EXTEND] extended estimate=${newEst} target=${targetDurationMinutes}`);
+  console.log(`[DURATION_AUTO_EXTEND] extended estimate=${newEst} target=${targetDurationMinutes}`);
+  return { spec, warnings };
 }
 
 // ============================================================================
@@ -2465,43 +3701,36 @@ serve(async (req) => {
       ? responseOptions.optionCount
       : 2;
     
-    // Compute requested versions (single source of truth)
-    // DEV LOG: Student-by-student content adaptation detection
-    const assignmentsIncludeB = Object.values(studentAssignments).includes('B');
-    const assignmentsIncludeC = Object.values(studentAssignments).includes('C');
-    
-    // Check students for content adaptation flag
-    let hasContentAdaptationStudent = false;
     const studentsForVersioning = Array.isArray(groupContext?.students) ? groupContext.students : [];
-    
-    timer.log(`Checking ${studentsForVersioning.length} students for content adaptation...`);
-    studentsForVersioning.forEach((student: Record<string, unknown>, idx: number) => {
-      const hasFlag = student?.hasDeclaredContentAdaptation === true || 
-                      student?.requiresContentAdaptation === true;
-      if (hasFlag) {
-        hasContentAdaptationStudent = true;
-        timer.log(`  [CONTENT_ADAPT] Student ${idx} (id=${student.studentId}): hasDeclaredContentAdaptation=true → Version B/C`);
-      }
-    });
-    
-    if (!hasContentAdaptationStudent && studentsForVersioning.length > 0) {
-      timer.log(`  [CONTENT_ADAPT] No students with declared content adaptation found`);
-    }
-    
-    const requestedVersions = {
-      A: true,
-      B: designPlan.triggers?.versionB === true || assignmentsIncludeB,
-      C: designPlan.triggers?.versionC === true || assignmentsIncludeC || hasContentAdaptationStudent
-    };
-    
-    timer.log(`versions: A=true, B=${requestedVersions.B}, C=${requestedVersions.C} (hasContentAdaptationStudent=${hasContentAdaptationStudent})`);
-    timer.mark('versions_computed');
-    
+    const declaredContentAdaptationByStudent = resolveDeclaredContentAdaptationByStudent(
+      designPlan as Record<string, unknown>,
+      studentsForVersioning as Array<Record<string, unknown>>
+    );
+    const declaredContentAdaptationCount = Object.values(declaredContentAdaptationByStudent).filter(Boolean).length;
+
     // Extract teacher reminders (admin + correction only, NOT allowances)
     const teacherReminders = extractTeacherReminders(
       perStudentReminders,
       groupContext?.students || []
     );
+    const contemplacionesForDecision = buildContemplacionesByStudentFromRequest(
+      designPlan as Record<string, unknown>,
+      studentsForVersioning as Array<Record<string, unknown>>
+    );
+    const versionCDecision = evaluateDesignPackageNeedForC(
+      studentsForVersioning as Array<Record<string, unknown>>,
+      contemplacionesForDecision,
+      teacherReminders
+    );
+    const requestedVersions = {
+      A: true,
+      B: declaredContentAdaptationCount > 0,
+      C: versionCDecision.shouldCreateC || designPlan?.triggers?.versionC === true
+    };
+    timer.log(`[REGULATION_V3] versionCDecision shouldCreateC=${versionCDecision.shouldCreateC} explanation=${versionCDecision.explanation}`);
+    timer.log(`[REGULATION_V3] declaredContentAdaptationCount=${declaredContentAdaptationCount}`);
+    timer.log(`versions: A=true, B=${requestedVersions.B}, C=${requestedVersions.C}`);
+    timer.mark('versions_computed');
     
     // Build prompts
     const systemPrompt = buildV2SystemPrompt(
@@ -2547,19 +3776,91 @@ serve(async (req) => {
     if (result.spec) {
       // Synchronize requestedVersions with actual versionVariants (e.g. fast fallback generated only A)
       const effectiveRequestedVersions = getEffectiveRequestedVersions(result.spec.versionVariants);
+      const studentsForRationale = Array.isArray(groupContext?.students) ? groupContext.students as Array<Record<string, unknown>> : [];
+      const assignedByVersion = resolveAssignedStudentsByVersion(
+        (designPlan.studentAssignments || {}) as Record<string, unknown>,
+        (designPlan.assignmentByStudentId || {}) as Record<string, unknown>,
+        studentsForRationale,
+        declaredContentAdaptationByStudent
+      );
+      const contemplacionesByStudent = contemplacionesForDecision;
+      const rationalePack = buildAllVersionRationalePacks(
+        effectiveRequestedVersions,
+        assignedByVersion,
+        studentsForRationale,
+        teacherReminders,
+        contemplacionesByStudent,
+        instrumentDesignRules
+      );
+      const specEvidenceSummary = buildSpecEvidenceSummary(result.spec);
 
-      // Structure validation: duration coherence with target (if provided)
+      // Ensure open-ended items have equivalentResponseOptions when feature is enabled (fallback if missing)
+      ensureEquivalentResponseOptionsForOpenEnded(
+        result.spec,
+        responseOptionsInclude,
+        responseOptionCount,
+        result.warnings
+      );
+
+      // Duration coherence: canonical target from designPlan, deterministic estimate from spec
       const targetDurationMinutes = (designPlan as Record<string, unknown>)?.targetDurationMinutes as number | undefined;
-      const estimatedMinutes = result.spec.meta?.duration?.minutes ?? 90;
+      let estimatedMinutes = estimateDurationFromSpec(result.spec);
+      if (!result.spec.meta.duration) result.spec.meta.duration = { minutes: 90 };
+      result.spec.meta.duration.minutes = estimatedMinutes;
+      timer.log(`[DURATION] target=${targetDurationMinutes ?? 'none'} estimated=${estimatedMinutes}`);
+      console.log(`[DURATION] target=${targetDurationMinutes ?? 'none'} estimated=${estimatedMinutes}`);
+
+      // Auto-extend: one attempt if generated evaluation is materially shorter than target
+      if (targetDurationMinutes != null && targetDurationMinutes > 0 && estimatedMinutes < targetDurationMinutes * 0.85) {
+        const extended = await runDurationAutoExtend(
+          result.spec,
+          targetDurationMinutes,
+          requestedVersions,
+          requestId,
+          timer
+        );
+        result.warnings.push(...extended.warnings);
+        if (extended.spec) {
+          const newEst = estimateDurationFromSpec(extended.spec);
+          if (newEst >= targetDurationMinutes * 0.9) {
+            result.spec = extended.spec;
+            estimatedMinutes = newEst;
+            if (!result.spec.meta.duration) result.spec.meta.duration = { minutes: 90 };
+            result.spec.meta.duration.minutes = estimatedMinutes;
+            timer.log(`[DURATION] auto-extend applied new_estimated=${estimatedMinutes}`);
+            console.log(`[DURATION] auto-extend applied new_estimated=${estimatedMinutes}`);
+          } else {
+            result.warnings.push({
+              code: 'DURATION_EXTEND_FAILED',
+              message: `Tras extender, la duración estimada (${newEst} min) no alcanzó el objetivo (${targetDurationMinutes} min).`,
+              severity: 'warning'
+            });
+          }
+        } else {
+          result.warnings.push({
+            code: 'DURATION_EXTEND_FAILED',
+            message: `No se pudo extender la evaluación para alcanzar ${targetDurationMinutes} min.`,
+            severity: 'warning'
+          });
+        }
+      }
+
+      // Structure validation: deviation warning and optional section scaling (using final spec + estimate)
       if (targetDurationMinutes != null && targetDurationMinutes > 0) {
         const deviation = Math.abs(estimatedMinutes - targetDurationMinutes) / targetDurationMinutes;
+        if (estimatedMinutes > targetDurationMinutes * 1.2) {
+          result.warnings.push({
+            code: 'DURATION_TOO_LONG',
+            message: `La duración estimada (${estimatedMinutes} min) supera el 120% del objetivo (${targetDurationMinutes} min). Puede considerar acortar o simplificar ítems.`,
+            severity: 'warning'
+          });
+        }
         if (deviation > 0.15) {
           result.warnings.push({
             code: 'DURATION_DEVIATION',
             message: `La duración estimada (${estimatedMinutes} min) se desvía más del 15% del objetivo (${targetDurationMinutes} min). Considere revisar los tiempos por sección.`,
             severity: 'warning'
           });
-          // Optionally scale section durations proportionally
           const scale = targetDurationMinutes / estimatedMinutes;
           if (result.spec.sections?.length && scale > 0 && scale !== 1) {
             for (const section of result.spec.sections) {
@@ -2580,8 +3881,8 @@ serve(async (req) => {
         versionsExplanation: {
           generated: ['A', ...(effectiveRequestedVersions.B ? ['B'] : []), ...(effectiveRequestedVersions.C ? ['C'] : [])],
           notGenerated: {
-            ...(effectiveRequestedVersions.B ? {} : { B: 'No hay estudiantes con alta necesidad de estructuración' }),
-            ...(effectiveRequestedVersions.C ? {} : { C: 'No hay estudiantes con adecuación de contenido declarada' })
+            ...(effectiveRequestedVersions.B ? {} : { B: 'No hay estudiantes con adaptación de contenido declarada' }),
+            ...(effectiveRequestedVersions.C ? {} : { C: 'No se requiere un segundo instrumento equivalente de accesibilidad' })
           }
         },
         contemplacionesApplied: {
@@ -2706,8 +4007,9 @@ serve(async (req) => {
         timer.log(`[AI_REPORT] ✓ Narrative set on baseAiReport: len=${baseAiReport.narrative.length}, source=${narrativeSource}`);
         console.log(`[AI_REPORT] ✓ Narrative set on baseAiReport: len=${baseAiReport.narrative.length}, source=${narrativeSource}`);
       } else {
-        timer.log(`[AI_REPORT] ⚠ Narrative NOT set on baseAiReport (text=${narrativeText ? 'present but invalid' : 'undefined'})`);
-        console.log(`[AI_REPORT] ⚠ Narrative NOT set on baseAiReport (text=${narrativeText ? 'present but invalid' : 'undefined'})`);
+        baseAiReport.narrative = NARRATIVE_TIMEOUT_MESSAGE;
+        timer.log(`[AI_REPORT] ⚠ Narrative fallback: evaluation ready; see evidence below`);
+        console.log(`[AI_REPORT] ⚠ Narrative NOT set on baseAiReport (text=${narrativeText ? 'present but invalid' : 'undefined'}) - using timeout message`);
       }
 
       // Per-version report: use spec.aiReport.byVersion if present (already trimmed to match versionVariants), else build from global narrative. MUST always have byVersion with at least A.
@@ -2736,6 +4038,8 @@ serve(async (req) => {
           result.spec,
           effectiveRequestedVersions,
           existingA.length > 0 ? existingA : FALLBACK_A_NARRATIVE,
+          rationalePack,
+          specEvidenceSummary,
           requestId,
           timer
         );
@@ -2748,6 +4052,12 @@ serve(async (req) => {
       // Guarantee byVersion.A/B/C for effective versions (deterministic fallbacks if still missing)
       const meta = { subject: result.spec.meta?.subject, grade: result.spec.meta?.gradeLevel, groupName: result.spec.meta?.groupName ?? groupContext?.groupName };
       let reportWithGuaranteedByVersion = ensureByVersionNarratives(baseAiReport, effectiveRequestedVersions, meta);
+      reportWithGuaranteedByVersion = applyNarrativeEvidenceByVersion(
+        reportWithGuaranteedByVersion,
+        effectiveRequestedVersions,
+        rationalePack,
+        specEvidenceSummary
+      );
       
       // CRITICAL: Normalize aiReport to match frontend contract (AIDesignReportData)
       let normalizedAiReport: Record<string, unknown> = normalizeAiReportForFrontend(
@@ -2758,6 +4068,12 @@ serve(async (req) => {
       
       // Safety: hard-ensure byVersion again on normalized output (prevent any later overwrite)
       normalizedAiReport = ensureByVersionNarratives(normalizedAiReport, effectiveRequestedVersions, meta) as Record<string, unknown>;
+      normalizedAiReport = applyNarrativeEvidenceByVersion(
+        normalizedAiReport,
+        effectiveRequestedVersions,
+        rationalePack,
+        specEvidenceSummary
+      ) as Record<string, unknown>;
       
       // Runtime validation: ensure narrative is valid if present
       if (normalizedAiReport.narrative !== undefined) {
@@ -2802,6 +4118,27 @@ serve(async (req) => {
         B: byVersionOut?.B?.narrative?.length ?? 0,
         C: byVersionOut?.C?.narrative?.length ?? 0
       };
+      const aiReportByVersionHasEvidence = {
+        A: hasNarrativeEvidenceMarkers(byVersionOut?.A?.narrative || ''),
+        B: hasNarrativeEvidenceMarkers(byVersionOut?.B?.narrative || ''),
+        C: hasNarrativeEvidenceMarkers(byVersionOut?.C?.narrative || '')
+      };
+      console.log('[AI_REPORT_EVIDENCE_CHECK]', {
+        requestId,
+        effectiveRequestedVersions,
+        byVersionKeys,
+        hasEvidence: aiReportByVersionHasEvidence,
+        assignedCounts: {
+          A: assignedByVersion.A.length,
+          B: assignedByVersion.B.length,
+          C: assignedByVersion.C.length
+        },
+        topTriggers: {
+          A: rationalePack.A.topTriggers.map(t => `${toHumanTriggerLabel(t.key)} (${t.count})`),
+          B: rationalePack.B.topTriggers.map(t => `${toHumanTriggerLabel(t.key)} (${t.count})`),
+          C: rationalePack.C.topTriggers.map(t => `${toHumanTriggerLabel(t.key)} (${t.count})`)
+        }
+      });
       console.log('[AI_REPORT] effective versions', effectiveRequestedVersions, 'byVersion keys', byVersionKeys, 'lens', aiReportByVersionLens);
       if (effectiveRequestedVersions.B && !(byVersionOut?.B?.narrative?.trim?.())) {
         console.warn('[AI_REPORT] effective B but B.narrative missing (should not happen after fixes)');
@@ -2823,7 +4160,7 @@ serve(async (req) => {
         ],
         debug: {
           build: DEBUG_BUILD,
-          model: 'gpt-4.1-2025-04-14',
+          model: result.attempts?.[result.attempts.length - 1]?.model ?? OPENAI_MODEL_PRIMARY,
           promptTokensEstimate: Math.ceil(result.debug.promptLength / 4),
           completionTokensEstimate: Math.ceil(result.debug.responseLength / 4),
           attempt: result.attempt,
@@ -2839,7 +4176,15 @@ serve(async (req) => {
           narrativePresent: !!(normalizedAiReport.narrative && typeof normalizedAiReport.narrative === 'string' && normalizedAiReport.narrative.trim().length > 0),
           specHasAiReportAfterStrip,
           aiReportByVersionKeys: byVersionKeys,
-          aiReportByVersionLens
+          aiReportByVersionLens,
+          aiReportByVersionHasEvidence,
+          versionCDecision: {
+            shouldCreateC: versionCDecision.shouldCreateC,
+            explanation: versionCDecision.explanation,
+            triggersUsed: versionCDecision.triggersUsed
+          },
+          declaredContentAdaptationCount,
+          semanticMap: { A: 'universal', B: 'content_adaptation_declared', C: 'equivalent_accessibility' }
         }
       };
       
@@ -2868,6 +4213,23 @@ serve(async (req) => {
           evaluation_design_plan
         );
         
+        // Contingency: debuggable and non-destructive — always return minimal aiReport
+        const isContingencySpec = emergencySpec.sections?.some(
+          (s: { title?: string }) => (s.title || '').includes('Versión de contingencia')
+        );
+        const reason = inferContingencyReason(result.attempts);
+        const lastAttempt = result.attempts?.length ? result.attempts[result.attempts.length - 1] : undefined;
+        const errorMessage = lastAttempt?.errorMessage;
+        if (isContingencySpec) {
+          console.error('[V2_CONTINGENCY]', {
+            reason,
+            errorMessage: errorMessage ?? null,
+            stack: undefined,
+            fingerprint: CONTINGENCY_FINGERPRINT
+          });
+        }
+        const contingencyAiReport = buildMinimalAiReportForContingency(reason, requestedVersions);
+        
         // Record emergency template attempt
         const emergencyAttempt = {
           attempt: 3,
@@ -2894,14 +4256,14 @@ serve(async (req) => {
           }
         ];
         
-        // Build response with emergency spec (success:true to prevent V1 fallback)
+        // Build response with emergency spec (success:true to prevent V1 fallback); always include aiReport
         const response: V2Response = {
           success: true, // CRITICAL: Must be true to prevent V1 fallback
           evaluationSpec: emergencySpec,
           requestedVersions,
           instrumentDesignRulesApplied: instrumentDesignRules,
           teacherRemindersByStudent: teacherReminders,
-          aiReport: null, // No AI report for emergency template
+          aiReport: contingencyAiReport,
           warnings: emergencyWarnings,
           debug: {
             build: DEBUG_BUILD,
@@ -2913,7 +4275,10 @@ serve(async (req) => {
             requestId,
             timings: timer.summary(),
             totalDurationMs: timer.elapsed(),
-            attempts: allAttempts
+            attempts: allAttempts,
+            contingency: true,
+            contingencyReason: reason,
+            contingencyFingerprint: CONTINGENCY_FINGERPRINT
           }
         };
         

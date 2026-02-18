@@ -15,6 +15,7 @@ import type { V2Response } from '@/services/evaluations/v2Types';
 import { getSubtemaPorId } from '@/data/catalogo';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { mockGroups } from '@/data/mockData';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface Evaluacion {
   id: string;
@@ -81,6 +82,7 @@ const EvaluacionDetalle: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
   const [evaluacion, setEvaluacion] = useState<Evaluacion | null>(null);
   const [students, setStudents] = useState<Array<{ id: number; name: string; contemplaciones: string[] }>>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -392,6 +394,7 @@ const EvaluacionDetalle: React.FC = () => {
               v2Response={v2ResponseForDetail}
               selectedVersion="A"
               showDebug={false}
+              teacherName={user?.name}
             />
             {hasPerItemRubricInDetail && v2ResponseForDetail?.evaluationSpec && (
               <Card>

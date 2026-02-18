@@ -20,13 +20,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertTriangle, FileWarning, Bug, Download, FileText } from 'lucide-react';
+import { AlertTriangle, FileWarning, Bug, Download, FileText, FileDown } from 'lucide-react';
 import { 
   V2Response, 
   NormalizedEvaluation, 
   NormalizationResult 
 } from '@/services/evaluations/v2Types';
 import { normalizeV2Response, canRenderV2 } from '@/services/evaluations/v2Normalizer';
+import { generateAcademicEvaluationPdf, getAcademicPdfFilename } from '@/components/evaluaciones/pdf';
 import EvalHeader from './EvalHeader';
 import MapTable from './MapTable';
 import EvalSection from './EvalSection';
@@ -48,6 +49,12 @@ interface EvaluationRendererV2Props {
   onRenderError?: (reason: string) => void;
   /** Show debug panel (controlled by env flag) */
   showDebug?: boolean;
+  /** Teacher name for academic PDF header (fallback "Docente") */
+  teacherName?: string | null;
+  /** When set, teacher can edit points in MapTable; updates are applied via this callback */
+  onV2ResponseChange?: (next: V2Response) => void;
+  /** Optional: show warning when point edit hits constraints (e.g. min points) */
+  onPointsWarning?: (message: string) => void;
 }
 
 // ============================================================================
@@ -122,10 +129,56 @@ interface DebugPanelProps {
   rawResponse: V2Response | null;
 }
 
+const OPEN_ENDED_TYPES = new Set(['essay', 'paragraph', 'short_answer', 'source_analysis', 'true_false_justify']);
+
+function isOpenEndedType(type: string): boolean {
+  return OPEN_ENDED_TYPES.has(type);
+}
+
+function getRawEquivalentOptionsCount(item: Record<string, unknown>): number {
+  const ero = item.equivalentResponseOptions;
+  if (!ero) return 0;
+  if (Array.isArray(ero)) return ero.length;
+  if (typeof ero === 'object' && ero !== null && Array.isArray((ero as Record<string, unknown>).options)) {
+    return ((ero as Record<string, unknown>).options as unknown[]).length;
+  }
+  return 0;
+}
+
 const DebugPanel: React.FC<DebugPanelProps> = ({ normalization, rawResponse }) => {
   const showDebug = import.meta.env.VITE_DEBUG_EVAL_PIPELINE === 'true';
-  
   if (!showDebug) return null;
+
+  const rawSpec = rawResponse?.evaluationSpec;
+  const openEndedDiagnostics: Array<{
+    sectionTitle: string;
+    itemId: string;
+    type: string;
+    rawHasOptions: boolean;
+    rawOptionCount: number;
+    normalizedEnabled: boolean;
+    normalizedOptionCount: number;
+  }> = [];
+  if (rawSpec?.sections && normalization.evaluation?.sections) {
+    rawSpec.sections.forEach((sec: { id: string; title?: string; items?: Record<string, unknown>[] }, si: number) => {
+      const normSec = normalization.evaluation!.sections[si];
+      (sec.items || []).forEach((rawItem: Record<string, unknown>, ii: number) => {
+        const type = String(rawItem.type || '');
+        if (!isOpenEndedType(type)) return;
+        const normItem = normSec?.items?.[ii];
+        const rawCount = getRawEquivalentOptionsCount(rawItem);
+        openEndedDiagnostics.push({
+          sectionTitle: sec.title || sec.id,
+          itemId: String(rawItem.id || ii),
+          type,
+          rawHasOptions: rawCount > 0,
+          rawOptionCount: rawCount,
+          normalizedEnabled: Boolean(normItem?.responseOptions?.enabled),
+          normalizedOptionCount: normItem?.responseOptions?.options?.length ?? 0,
+        });
+      });
+    });
+  }
 
   return (
     <Card className="border-2 border-dashed border-purple-400 bg-purple-50 dark:bg-purple-950/20">
@@ -139,8 +192,24 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ normalization, rawResponse }) =
         
         <div className="space-y-2 text-xs font-mono">
           <div>
+            <strong>V2 response used:</strong> {rawResponse?.evaluationSpec ? '✅ Yes' : '❌ No (V1 fallback)'}
+          </div>
+          <div>
             <strong>Normalization success:</strong> {normalization.success ? '✅' : '❌'}
           </div>
+
+          {openEndedDiagnostics.length > 0 && (
+            <div>
+              <strong>Inline response options (open-ended items):</strong>
+              <ul className="list-disc list-inside ml-2 mt-1 space-y-0.5">
+                {openEndedDiagnostics.map((d, i) => (
+                  <li key={i}>
+                    {d.sectionTitle} / {d.itemId} ({d.type}): raw equivalentResponseOptions={d.rawHasOptions ? `yes (${d.rawOptionCount})` : 'no'}, normalized responseOptions.enabled={d.normalizedEnabled ? 'yes' : 'no'}, options={d.normalizedOptionCount}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           
           {normalization.warnings.length > 0 && (
             <div>
@@ -235,6 +304,9 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
   isLoading = false,
   onRenderError,
   showDebug,
+  teacherName,
+  onV2ResponseChange,
+  onPointsWarning,
 }) => {
   // Internal version state if not controlled externally
   const [internalVersion, setInternalVersion] = useState<'A' | 'B' | 'C'>('A');
@@ -243,6 +315,7 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
   // Ref for PDF export
   const contentRef = useRef<HTMLDivElement>(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isExportingAcademicPdf, setIsExportingAcademicPdf] = useState(false);
 
   // DEBUG: Log every render to diagnose blank screen
   console.log('[V2_RENDERER] Render called', {
@@ -493,6 +566,33 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
     }
   };
 
+  const handleExportAcademicPdf = async () => {
+    if (!normalization.success || !normalization.evaluation || isExportingAcademicPdf) return;
+    setIsExportingAcademicPdf(true);
+    try {
+      const blob = await generateAcademicEvaluationPdf({
+        evaluation: normalization.evaluation,
+        meta: normalization.rawSpec?.meta ?? undefined,
+        teacherName: teacherName ?? undefined,
+      });
+      const filename = getAcademicPdfFilename({
+        evaluation: normalization.evaluation,
+        meta: normalization.rawSpec?.meta ?? undefined,
+        devUniqueFilename: import.meta.env.DEV,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('[PDF_ACADEMIC] Error:', err);
+    } finally {
+      setIsExportingAcademicPdf(false);
+    }
+  };
+
   // Loading state
   if (isLoading) {
     console.log('[V2_RENDERER] Showing loading skeleton');
@@ -581,25 +681,45 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
               </div>
             </div>
 
-            {/* Export Button */}
-            <Button
-              variant="outline"
-              onClick={handleExportPdf}
-              disabled={isExportingPdf}
-              className="gap-2"
-            >
-              {isExportingPdf ? (
-                <>
-                  <Download className="h-4 w-4 animate-spin" />
-                  Exportando...
-                </>
-              ) : (
-                <>
-                  <FileText className="h-4 w-4" />
-                  Descargar PDF
-                </>
-              )}
-            </Button>
+            {/* Export Buttons: screenshot PDF + academic PDF */}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={handleExportAcademicPdf}
+                disabled={isExportingAcademicPdf}
+                className="gap-2"
+              >
+                {isExportingAcademicPdf ? (
+                  <>
+                    <FileDown className="h-4 w-4 animate-spin" />
+                    Exportando...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="h-4 w-4" />
+                    Descargar PDF (Académico)
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleExportPdf}
+                disabled={isExportingPdf}
+                className="gap-2"
+              >
+                {isExportingPdf ? (
+                  <>
+                    <Download className="h-4 w-4 animate-spin" />
+                    Exportando...
+                  </>
+                ) : (
+                  <>
+                    <FileText className="h-4 w-4" />
+                    Descargar PDF
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -609,8 +729,18 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
         {/* Header - PDF no break */}
         <EvalHeader evaluation={evaluation} />
 
-        {/* Map of the test - PDF no break */}
-        <MapTable evaluation={evaluation} />
+        {/* Map of the test - PDF no break; editable when onV2ResponseChange provided (teacher) */}
+        <MapTable
+          evaluation={evaluation}
+          evaluationSpec={v2Response?.evaluationSpec ?? null}
+          editable={Boolean(onV2ResponseChange && v2Response?.evaluationSpec)}
+          onPointsChange={
+            onV2ResponseChange && v2Response
+              ? (updatedSpec) => onV2ResponseChange({ ...v2Response, evaluationSpec: updatedSpec })
+              : undefined
+          }
+          onWarning={onPointsWarning}
+        />
 
         {/* Sections - Each section has pdf-no-break */}
         <div className="space-y-6 print:space-y-4">

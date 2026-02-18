@@ -8,7 +8,7 @@
 import React from 'react';
 import { Badge } from '@/components/ui/badge';
 import { NormalizedItem } from '@/services/evaluations/v2Types';
-import ResponseOptions from './ResponseOptions';
+import { getDisplayPromptWithInlineOptions } from '@/services/evaluations/responseOptionsInline';
 import { Sparkles } from 'lucide-react';
 
 interface EvalItemProps {
@@ -17,9 +17,10 @@ interface EvalItemProps {
 }
 
 export const EvalItem: React.FC<EvalItemProps> = ({ item, showPoints = true }) => {
+  const displayPrompt = getDisplayPromptWithInlineOptions(item.prompt, item.responseOptions);
   return (
     <div className="py-4 border-b last:border-b-0 eval-item pdf-no-break">
-      {/* Item header */}
+      {/* Item header: prompt includes inline response strategies (no separate options block) */}
       <div className="flex items-start justify-between gap-4 mb-2">
         <div className="flex items-start gap-3">
           <span className="font-bold text-lg text-primary min-w-[2rem]">
@@ -27,7 +28,7 @@ export const EvalItem: React.FC<EvalItemProps> = ({ item, showPoints = true }) =
           </span>
           <div className="flex-1">
             <p className="font-medium text-foreground leading-relaxed">
-              {item.prompt}
+              {displayPrompt}
             </p>
           </div>
         </div>
@@ -54,13 +55,6 @@ export const EvalItem: React.FC<EvalItemProps> = ({ item, showPoints = true }) =
       <div className="ml-10">
         {renderItemContent(item)}
       </div>
-
-      {/* Equivalent response options - inline within item block */}
-      {item.responseOptions?.enabled && item.responseOptions.options && item.responseOptions.options.length > 0 && (
-        <div className="ml-10 mt-2">
-          <ResponseOptions options={item.responseOptions} variant="inline" />
-        </div>
-      )}
     </div>
   );
 };

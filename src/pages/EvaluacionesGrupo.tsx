@@ -33,6 +33,7 @@ import type { AIDesignReportData } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { EvaluationDesignPlan, StudentReminders, MissingTemplateError } from "@/services/evaluations";
 import { requestEvaluation, getBetaToggleState } from "@/services/evaluations/requestService";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface ResultadoEvaluacion {
   grupo: string;
@@ -378,6 +379,7 @@ ${requerimientos ? `\n**APOYOS BIOLÓGICOS:** ${requerimientos}` : ""}`
 
 const EvaluacionesGrupo = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const [selectedGroupId, setSelectedGroupId] = useState<string>(searchParams.get("grupo") || "");
   const [esInterdisciplinaria, setEsInterdisciplinaria] = useState(false);
@@ -534,7 +536,9 @@ const EvaluacionesGrupo = () => {
       return;
     }
 
-    if (generatedEvaluations.length === 0) {
+    const hasV2Spec = useBetaV2 && v2RawResponse?.evaluationSpec && v2RawResponse.evaluationSpec.sections?.some((s: { items?: unknown[] }) => (s.items?.length ?? 0) > 0);
+    const hasV1 = (displayEvaluations?.length ?? 0) > 0;
+    if (!hasV2Spec && !hasV1) {
       toast({
         title: "Error",
         description: "No hay evaluaciones generadas para guardar",
@@ -593,6 +597,25 @@ const EvaluacionesGrupo = () => {
         return '8vo';
       };
       
+      const evaluationsToSave = hasV2Spec && v2RawResponse?.evaluationSpec
+        ? (() => {
+            const spec = v2RawResponse.evaluationSpec as { meta?: { subject?: string }; sections?: unknown[] };
+            const title = spec.meta?.subject ? `Evaluación — ${spec.meta.subject}` : 'Evaluación (V2)';
+            const sectionCount = spec.sections?.length ?? 0;
+            return [{
+              id: 'A',
+              title: 'Versión A (Universal)',
+              content: `<h1>${title}</h1><p>Esta evaluación se almacena como especificación V2 (${sectionCount} sección(es)).</p>`,
+              version: 1,
+              versionKind: 'A' as const,
+              versionLabel: 'Versión A (Universal)',
+              adaptations: [] as string[],
+              assignedStudents: [] as string[],
+              assignedStudentIds: [] as (string | number)[]
+            }];
+          })()
+        : displayEvaluations;
+
       const evaluacionData = {
         user_id: user.id,
         nombre: nombreEvaluacion.trim(),
@@ -605,7 +628,7 @@ const EvaluacionesGrupo = () => {
         criterios_logro: normalizeArrayField(selectedCriteriosLogro),
         requerimientos,
         evaluacion_generada: {
-          evaluaciones: displayEvaluations,
+          evaluaciones: evaluationsToSave,
           base_prototype: basePrototype,
           // PHASE 6: Time budgeting + AI Design Report
           targetDurationMinutes,
@@ -1176,7 +1199,8 @@ const EvaluacionesGrupo = () => {
             varkDistribution: effectivePlan.varkDistribution,
             highStructureNeed: effectivePlan.highStructureNeed,
             designComplexityCount: effectivePlan.designComplexityCount,
-            bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds
+            bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds,
+            targetDurationMinutes
           }
         };
         
@@ -2813,6 +2837,11 @@ const EvaluacionesGrupo = () => {
                       onVersionChange={setV2SelectedVersion}
                       isLoading={isGenerating}
                       showDebug={showDebugPanel}
+                      teacherName={user?.name}
+                      onV2ResponseChange={setV2RawResponse}
+                      onPointsWarning={(message) =>
+                        toast({ title: 'Puntos', description: message, variant: 'default' })
+                      }
                       onRenderError={(reason) => {
                         console.warn('[EVAL_PIPELINE] V2 render error, using V1 fallback:', reason);
                         setV2RawResponse(null);
