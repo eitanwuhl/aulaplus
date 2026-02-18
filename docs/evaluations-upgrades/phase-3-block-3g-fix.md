@@ -47,3 +47,36 @@
 
 5. **If UI still does not change after verified deploy**
    - Check `response.aiReport.byVersion` in Network: if keys and narratives are correct, the issue is frontend (e.g. wrong object or caching). If byVersion is missing or empty, implement or tighten the minimal backend guarantee (ensureByVersionNarratives + normalizer) as in `phase-3-block-3g-fix-backend.md`.
+
+---
+
+## Narrative evidence per version
+
+Se reforzó `modify-evaluation-v2` para que la narrativa por versión (A/B/C) incluya evidencia explícita y verificable en texto:
+
+- **VERSION_RATIONALE_PACK (determinístico)** por versión:
+  - estudiantes asignados (`assignedStudents`, con formato de nombres de estudiante),
+  - disparadores agregados (`topTriggers`, top 5 con conteos),
+  - resumen causal (`whySummary`).
+- **SPEC_EVIDENCE_SUMMARY (determinístico)** de la especificación:
+  - secciones (`id`, `title`),
+  - ítems (`id`, `type`, `points`, `hasB`, `hasC`, `hasOptionsB`, `hasEquivalentResponseOptions`).
+- **Prompt aiReport-only por versión** ahora exige, para cada narrativa:
+  1) quiénes usan la versión,
+  2) por qué existe (adecuaciones/contemplaciones con conteos),
+  3) cómo se refleja en la evaluación citando referencias concretas (`item-*`, tipo y evidencia B/C/options/equivalentResponseOptions),
+  4) frase explícita de misma exigencia cognitiva/objetivos.
+- **Garantía backend post-OpenAI**:
+  - si una narrativa no trae evidencia mínima, se agrega un apéndice determinístico con los 4 bloques anteriores;
+  - se mantiene `ensureByVersionNarratives` para no romper compatibilidad y garantizar A (y B/C cuando efectivas).
+- **Nuevo debug de evidencia**:
+  - `debug.aiReportByVersionHasEvidence = { A, B, C }` (true cuando contiene referencia `item-` + marcador “Quiénes”).
+
+### Manual test checklist (evidencia narrativa)
+
+1. Forzar un escenario efectivo **A+B+C** y generar evaluación.
+2. En Network (`modify-evaluation-v2`), validar:
+   - `aiReport.byVersion.B.narrative` y `aiReport.byVersion.C.narrative` son distintos de A.
+   - Cada narrativa menciona alumnos asignados, triggers con conteo y referencias `item-*`.
+   - `debug.aiReportByVersionHasEvidence.B === true` y `debug.aiReportByVersionHasEvidence.C === true`.
+3. En UI, cambiar versión A→B→C y confirmar que el texto narrativo cambia acorde a la versión seleccionada.
