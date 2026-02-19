@@ -11,10 +11,9 @@ import React, { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { FileText, Plus, X, AlertCircle } from 'lucide-react';
+import { FileText, Plus, X } from 'lucide-react';
 import { MaterialsLibraryDialog } from '@/components/materials';
 import { useMaterialsList } from '@/hooks/useMaterials';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface PlanMaterialsSectionProps {
   attachedMaterialIds?: string[];
@@ -55,23 +54,13 @@ export function PlanMaterialsSection({
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-lg">
           <FileText className="h-5 w-5" />
-          Material Docente (Nivel Planificación)
+          Adjunta tu material como fuente
         </CardTitle>
         <CardDescription>
-          Adjunta materiales que se aplicarán a todas las sesiones de esta planificación.
-          Podrás agregar materiales adicionales específicos por sesión más tarde.
+          Adjunta el material que tú quieras para tomar como fuente para tus clases.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Info alert */}
-        <Alert>
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-sm">
-            <strong>Validación A/B/C:</strong> Para generar planes automáticamente necesitas al menos uno de: 
-            (A) contenido ANEP, (B) materiales adjuntos, o (C) texto de foco suficiente en temas/requerimientos.
-          </AlertDescription>
-        </Alert>
-        
         {/* Attached materials list */}
         {attachedMaterials.length > 0 && (
           <div className="space-y-2">

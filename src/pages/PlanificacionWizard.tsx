@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Bot, Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
@@ -1401,26 +1401,24 @@ export default function PlanificacionWizard() {
             <div className="space-y-6">
               <div className="flex justify-center">
                 <div className="rounded-full bg-primary/10 p-6">
-                  <Bot className="h-16 w-16 text-primary animate-pulse" />
+                  <Loader2 className="h-16 w-16 text-primary animate-spin" />
                 </div>
               </div>
               
               <div className="space-y-2">
                 <h2 className="text-2xl font-bold">
-                  {generationError ? 'Error en la generación' : 'Generando planes automáticamente. Tu clase estará lista pronto!'}
+                  {generationError ? 'Error en la generación' : 'Aguarda un instante mientras generamos las clases. Espero no demorar mucho'}
                 </h2>
-                <p className="text-muted-foreground">
-                  {generationError 
-                    ? (generationError.includes('429') || generationError.includes('Too Many Requests')
-                        ? 'Demasiadas solicitudes a la IA. El sistema está esperando antes de reintentar...'
-                        : 'Hubo un problema al generar los planes. Por favor, reintentar.')
-                    : 'La IA está creando el contenido de todas las sesiones. Esto puede tomar varios minutos porque queremos asegurar la mejor calidad posible.'
-                  }
-                </p>
+                {generationError && (
+                  <p className="text-muted-foreground">
+                    {generationError.includes('429') || generationError.includes('Too Many Requests')
+                      ? 'Demasiadas solicitudes a la IA. El sistema está esperando antes de reintentar...'
+                      : 'Hubo un problema al generar los planes. Por favor, reintentar.'}
+                  </p>
+                )}
                 {!generationError && (
-                  <div className="text-sm text-blue-600 bg-blue-50 p-3 rounded-lg">
-                    <strong>Nota:</strong> El proceso es lento intencionalmente para evitar errores de velocidad. 
-                    Por favor, no cierres esta ventana.
+                  <div className="text-sm text-blue-600 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-200 p-3 rounded-lg max-w-md mx-auto">
+                    No cierres esta ventana ni navegues a otra página mientras la generación está en curso.
                   </div>
                 )}
               </div>
@@ -1453,12 +1451,11 @@ export default function PlanificacionWizard() {
                 </div>
               )}
               
-              <div className="text-sm text-muted-foreground">
-                {generationError 
-                  ? 'Revisa la consola del navegador (F12) para ver los detalles del error.'
-                  : 'Por favor, no cierres esta ventana mientras se generan los planes.'
-                }
-              </div>
+              {generationError && (
+                <div className="text-sm text-muted-foreground">
+                  Revisa la consola del navegador (F12) para ver los detalles del error.
+                </div>
+              )}
             </div>
           </Card>
       </div>
@@ -1479,10 +1476,7 @@ export default function PlanificacionWizard() {
         </Button>
         
         <div>
-          <h1 className="text-2xl font-bold">Asistente de Planificación Inteligente</h1>
-          <p className="text-muted-foreground">
-            Crea una planificación completa con IA paso a paso
-          </p>
+          <h1 className="text-2xl font-bold">Asistente para planificación de clases</h1>
         </div>
       </div>
 
@@ -1499,20 +1493,6 @@ export default function PlanificacionWizard() {
         isLoading={isLoading || isGenerating || isCreating}
         validation={validation}
       />
-
-      {/* Info Card */}
-      <Card className="mt-8">
-        <CardHeader>
-          <CardTitle className="text-base">🤖 Planificación Automática con IA</CardTitle>
-        </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          <p>
-            Este asistente genera automáticamente planes completos para cada clase usando IA. 
-            Cada sesión incluirá actividades estructuradas (inicio, desarrollo, cierre), 
-            diferenciación integrada, recursos específicos y evaluación alineada con competencias ANEP.
-          </p>
-        </CardContent>
-      </Card>
     </div>
   );
 }

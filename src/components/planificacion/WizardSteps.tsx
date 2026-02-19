@@ -795,15 +795,6 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
 
   const renderPaso2 = () => (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Enfoque Pedagógico</CardTitle>
-          <CardDescription>
-            Define competencias, contenidos y preferencias metodológicas para este período
-          </CardDescription>
-        </CardHeader>
-      </Card>
-
       {/* Material Docente (Plan-level) - SINGLE materials attach section - BEFORE Resumen */}
       <PlanMaterialsSection
         attachedMaterialIds={wizardData.enfoque?.attachedPlanMaterialIds || []}
