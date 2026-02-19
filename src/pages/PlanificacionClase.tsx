@@ -1,27 +1,19 @@
 import React from 'react';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, FileText, Calendar } from 'lucide-react';
+import { Plus, Calendar } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export default function PlanificacionClase() {
   const navigate = useNavigate();
 
   return (
-    <div className="containerspace-y-6">
+    <div className="container space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-3xl font-bold">Planificación de Clases</h1>
-          <p className="text-muted-foreground mt-2">
-            Gestiona tus planificaciones pedagógicas con asistencia de IA
-          </p>
-        </div>
-        
-        <Button onClick={() => navigate('/planificacion/nuevo')} size="lg">
-          <Plus className="h-5 w-5 mr-2" />
-          Nueva Planificación
-        </Button>
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold">Planificación de Clases</h1>
+        <p className="text-muted-foreground mt-2">
+          Gestiona tus planificaciones pedagógicas con asistencia de IA
+        </p>
       </div>
 
       {/* Options Grid */}
@@ -48,17 +40,6 @@ export default function PlanificacionClase() {
               Wizard inteligente que te guía desde la configuración del horario hasta 
               la generación de sesiones adaptadas a tu grupo.
             </p>
-            <div className="flex flex-wrap gap-2 mt-3">
-              <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
-                Wizard 4 pasos
-              </span>
-              <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
-                IA contextual
-              </span>
-              <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
-                ANEP oficial
-              </span>
-            </div>
           </CardContent>
         </Card>
 
@@ -83,10 +64,6 @@ export default function PlanificacionClase() {
               Accede a tus planificaciones guardadas, edita sesiones 
               y exporta a Excel.
             </p>
-            <Button variant="outline" className="mt-3">
-              <Calendar className="h-4 w-4 mr-2" />
-              Ver planificaciones
-            </Button>
           </CardContent>
         </Card>
       </div>

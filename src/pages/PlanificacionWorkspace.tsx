@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, Download, Settings, GripVertical, Minimize2, ChevronUp, Loader2, Save, BookmarkCheck } from 'lucide-react';
+import { ArrowLeft, Download, GripVertical, Minimize2, ChevronUp, Loader2, Save, BookmarkCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -911,16 +911,16 @@ export default function PlanificacionWorkspace() {
                 <h1 className="text-xl font-bold">
                   {planificacion.materia} - {planificacion.grupo_id}
                 </h1>
-                <p className="text-sm text-muted-foreground">
-                  {planificacion.fecha_inicio && planificacion.fecha_fin
-                    ? `${new Date(planificacion.fecha_inicio).toLocaleDateString('es-ES')} - ${new Date(planificacion.fecha_fin).toLocaleDateString('es-ES')}`
-                    : 'Planificaci?n flexible (sin fechas fijas)'}
-                </p>
+                {planificacion.fecha_inicio && planificacion.fecha_fin && (
+                  <p className="text-sm text-muted-foreground">
+                    {new Date(planificacion.fecha_inicio).toLocaleDateString('es-ES')} - {new Date(planificacion.fecha_fin).toLocaleDateString('es-ES')}
+                  </p>
+                )}
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Show "Guardar sesi?n" button only if not saved yet */}
+              {/* Show "Guardar sesión" button only if not saved yet */}
               {planificacion && !planificacion.is_saved && (
                 <Button 
                   variant="default" 
@@ -929,7 +929,7 @@ export default function PlanificacionWorkspace() {
                   className="bg-green-600 hover:bg-green-700 text-white"
                 >
                   <Save className="h-4 w-4 mr-2" />
-                  Guardar sesi?n
+                  Guardar sesión
                 </Button>
               )}
 
@@ -944,11 +944,6 @@ export default function PlanificacionWorkspace() {
               <Button variant="outline" size="sm" onClick={handleExportarExcel}>
                 <Download className="h-4 w-4 mr-2" />
                 Exportar Excel
-              </Button>
-              
-              <Button variant="outline" size="sm">
-                <Settings className="h-4 w-4 mr-2" />
-                Configuraci?n
               </Button>
             </div>
           </div>

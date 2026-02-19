@@ -1,7 +1,6 @@
 import React from 'react';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, FolderOpen, FileText } from 'lucide-react';
+import { Plus, FolderOpen } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export default function EvaluacionesChoice() {
@@ -10,18 +9,11 @@ export default function EvaluacionesChoice() {
   return (
     <div className="container space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-3xl font-bold">Evaluaciones Grupales</h1>
-          <p className="text-muted-foreground mt-2">
-            Genera y gestiona evaluaciones adaptadas con asistencia de IA
-          </p>
-        </div>
-        
-        <Button onClick={() => navigate('/evaluaciones/nuevo')} size="lg">
-          <Plus className="h-5 w-5 mr-2" />
-          Nueva Evaluación
-        </Button>
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold">Evaluaciones Grupales</h1>
+        <p className="text-muted-foreground mt-2">
+          Genera y gestiona evaluaciones adaptadas con asistencia de IA
+        </p>
       </div>
 
       {/* Options Grid */}
@@ -48,17 +40,6 @@ export default function EvaluacionesChoice() {
               Generador inteligente que crea evaluaciones adaptadas a los perfiles 
               de aprendizaje de tu grupo con múltiples versiones.
             </p>
-            <div className="flex flex-wrap gap-2 mt-3">
-              <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
-                IA adaptativa
-              </span>
-              <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
-                Multi-versión
-              </span>
-              <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
-                ANEP oficial
-              </span>
-            </div>
           </CardContent>
         </Card>
 
@@ -83,10 +64,6 @@ export default function EvaluacionesChoice() {
               Accede a tus evaluaciones guardadas, analiza el balance de competencias 
               y gestiona tu repositorio de evaluaciones.
             </p>
-            <Button variant="outline" className="mt-3">
-              <FolderOpen className="h-4 w-4 mr-2" />
-              Ver evaluaciones
-            </Button>
           </CardContent>
         </Card>
       </div>

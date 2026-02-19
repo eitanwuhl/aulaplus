@@ -117,8 +117,7 @@ export function EvaluationMaterialsSection({
           Material Docente para Evaluación
         </CardTitle>
         <CardDescription>
-          Adjunta materiales que serán la base para generar la evaluación. 
-          Puedes adjuntar materiales directamente o incluir los de las sesiones seleccionadas.
+          Adjunta cualquiera de tus materiales para usarlos como fuente de evaluación
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

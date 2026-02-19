@@ -2706,13 +2706,6 @@ function validateAndNormalizeSpec(
   return { spec: spec as unknown as EvaluationSpecV2, warnings };
 }
 
-/** Open-ended item types that should have equivalentResponseOptions when the feature is enabled. */
-const OPEN_ENDED_ITEM_TYPES = new Set<string>(['essay', 'paragraph', 'short_answer', 'source_analysis', 'true_false_justify']);
-
-function isOpenEndedItemType(type: unknown): type is string {
-  return typeof type === 'string' && OPEN_ENDED_ITEM_TYPES.has(type);
-}
-
 /** Get current equivalentResponseOptions option count from an item (raw spec shape). */
 function getEquivalentOptionsCount(item: Record<string, unknown>): number {
   const ero = item.equivalentResponseOptions;

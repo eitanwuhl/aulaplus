@@ -2,7 +2,7 @@ import { ReactNode } from "react"
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { AppSidebar } from "./AppSidebar"
 import { Breadcrumbs } from "./Breadcrumbs"
-import { Bell, Search, User, LogOut } from "lucide-react"
+import { Search, LogOut } from "lucide-react"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { useAuth } from "@/contexts/AuthContext"
@@ -51,14 +51,6 @@ export function AppLayout({ children }: AppLayoutProps) {
                     <span className="text-sm text-foreground-subtle hidden md:block">
                       {user?.name}
                     </span>
-                    
-                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                      <Bell className="h-4 w-4" />
-                    </Button>
-                    
-                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                      <User className="h-4 w-4" />
-                    </Button>
 
                     <Button 
                       variant="ghost" 

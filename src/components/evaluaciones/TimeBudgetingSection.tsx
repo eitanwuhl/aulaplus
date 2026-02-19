@@ -59,7 +59,7 @@ export function TimeBudgetingSection({
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-lg">
           <Clock className="h-5 w-5" />
-          Presupuesto de Tiempo
+          Duración de la evaluación
         </CardTitle>
         <CardDescription>
           Define la duración objetivo de la evaluación. La IA ajustará el contenido para que se ajuste al tiempo disponible.
@@ -160,15 +160,6 @@ export function TimeBudgetingSection({
           </div>
         )}
         
-        {/* Info if not yet generated */}
-        {estimatedMinutes === null && (
-          <Alert>
-            <Clock className="h-4 w-4" />
-            <AlertDescription className="text-sm">
-              Después de generar la evaluación, aquí verás el tiempo estimado y su desglose por sección.
-            </AlertDescription>
-          </Alert>
-        )}
       </CardContent>
     </Card>
   );

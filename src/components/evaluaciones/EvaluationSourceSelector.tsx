@@ -162,8 +162,7 @@ export function EvaluationSourceSelector({
           Selecciona tu clase como fuente
         </CardTitle>
         <CardDescription>
-          Selecciona una planificación guardada y las sesiones que quieres evaluar. 
-          Esto es opcional - también puedes usar solo contenido ANEP o materiales docentes.
+          Selecciona tus clases para utilizar como fuente de evaluación
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

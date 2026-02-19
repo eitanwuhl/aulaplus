@@ -7,13 +7,11 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { motion } from "framer-motion";
-import { Upload, FileText, MessageCircle, ThumbsUp, ThumbsDown, RefreshCw, Lightbulb, ChevronDown, ChevronUp, Save, AlertTriangle } from 'lucide-react';
+import { Upload, FileText, MessageCircle, ThumbsUp, ThumbsDown, RefreshCw, Lightbulb, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { invokeEdgeFunctionAuthed } from "@/lib/edgeFunctionAuth";
@@ -24,16 +22,16 @@ import { getCompetenciasEspecificas, getCriteriosLogroPorCompetencias, type Comp
 import { getCompetenciasEspecificasLiteratura, getCriteriosLogroPorCompetenciasLiteratura } from "@/data/competenciasLiteratura";
 import { getCompetenciasEspecificasCiudadania, getCriteriosLogroPorCompetenciasCiudadania } from "@/data/competenciasCiudadania";
 import { RubricaIntegrada } from "@/components/RubricaIntegrada";
-import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
-import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport, EvaluationAssignmentsPanel, TeacherRemindersPanel, BetaToggle } from "@/components/evaluaciones";
-import { EvaluationRendererV2, V2InfoPanels } from "@/components/evaluaciones/v2/index";
-import { EvaluationAdjustmentsPanel } from "@/components/evaluaciones/v2/EvaluationAdjustmentsPanel";
+import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, BetaToggle } from "@/components/evaluaciones";
 import type { V2Response } from "@/services/evaluations/v2Types";
-import type { AIDesignReportData } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { EvaluationDesignPlan, StudentReminders, MissingTemplateError } from "@/services/evaluations";
-import { requestEvaluation, getBetaToggleState } from "@/services/evaluations/requestService";
+import { getBetaToggleState } from "@/services/evaluations/requestService";
 import { useAuth } from "@/contexts/AuthContext";
+import { useEvaluationPipeline } from "@/features/evaluaciones/hooks/useEvaluationPipeline";
+import type { GeneratedEvaluation, EvaluationBundle } from "@/features/evaluaciones/types";
+import { EvaluationResultsSection } from "@/features/evaluaciones/components/EvaluationResultsSection";
+import { SaveEvaluationSection } from "@/features/evaluaciones/components/SaveEvaluationSection";
 
 interface ResultadoEvaluacion {
   grupo: string;
@@ -44,34 +42,6 @@ interface ResultadoEvaluacion {
   criteriosLogro: string[]; // ids de criterios de logro seleccionados
   contenidos: string[]; // ids
   requerimientos: string;
-}
-
-interface GeneratedEvaluation {
-  id: string;
-  version: number;
-  title: string;
-  content: string;
-  versionLabel?: string;
-  versionKind?: string;
-  adaptations: string[];
-  assignedStudents: string[];  // Legacy: Student names (for backward compatibility)
-  assignedStudentIds?: (string | number)[];  // NEW: Student IDs assigned to this version
-  rubrica?: any[];
-  feedback?: {
-    liked: string[];
-    disliked: string[];
-    suggestions: string[];
-  };
-}
-
-interface EvaluationBundle {
-  baseHtml?: string;
-  versionBHtml?: string | null;
-  versionCHtml?: string | null;
-  versions?: { A: string; B?: string | null; C?: string | null };
-  responseOptionsIncluded?: boolean;
-  responseOptionCount?: number;
-  finalAssignmentCounts?: { A: number; B: number; C: number }; // STEP 2: Store from backend
 }
 
 function getPersistedContemplaciones(studentId: number): string[] {
@@ -393,15 +363,7 @@ const EvaluacionesGrupo = () => {
   
   // Estados del generador unificado
   const [basePrototype, setBasePrototype] = useState('');
-  const [generatedEvaluations, setGeneratedEvaluations] = useState<GeneratedEvaluation[]>([]);
-  const [evaluationBundle, setEvaluationBundle] = useState<EvaluationBundle | null>(null);
-  const [evaluationDesignPlan, setEvaluationDesignPlan] = useState<EvaluationDesignPlan | null>(null);
-  const [studentAssignments, setStudentAssignments] = useState<Record<string, 'A' | 'B' | 'C'>>({});
-  const [teacherReminders, setTeacherReminders] = useState<StudentReminders[]>([]);
-  const [missingTemplateErrors, setMissingTemplateErrors] = useState<MissingTemplateError[]>([]);
-  const [assignmentWarnings, setAssignmentWarnings] = useState<string[]>([]);
   const [currentFeedback, setCurrentFeedback] = useState<Record<string, { liked: string; disliked: string; suggestions: string }>>({});
-  const [isGenerating, setIsGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState('setup');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [chatMessages, setChatMessages] = useState<Array<{role: 'user' | 'ai', content: string}>>([]);
@@ -445,48 +407,70 @@ const EvaluacionesGrupo = () => {
   const [timeBreakdown, setTimeBreakdown] = useState<any>(null);
   const [aiDesignReport, setAiDesignReport] = useState<string | null>(null);
   
-  // PHASE 4: V2 Beta - JSON-based evaluation rendering
+  // PHASE 4: V2 Beta - JSON-based evaluation rendering (toggle lives in page for UI)
   const [useBetaV2, setUseBetaV2] = useState<boolean>(getBetaToggleState());
-  const [v2RawResponse, setV2RawResponse] = useState<V2Response | null>(null);
-  const [v2SelectedVersion, setV2SelectedVersion] = useState<'A' | 'B' | 'C'>('A');
-  // V2 Adjustments - track previous response for single-step undo
-  const [previousV2Response, setPreviousV2Response] = useState<V2Response | null>(null);
   
   // Configuration panel collapse state (auto-collapse after generation)
   const [isConfigCollapsed, setIsConfigCollapsed] = useState<boolean>(false);
-  
-  // DEBUG: Pipeline debug panel (gated by feature flag)
-  const [pipelineDebug, setPipelineDebug] = useState<{
-    lastRequest?: {
-      generationMode: string;
-      hasEvaluationDesignPlan: boolean;
-      hasGenerationContext: boolean;
-      triggers: { versionB: boolean; versionC: boolean };
-      responseOptionsInclude: boolean;
-      assignmentsCount: number;
-    };
-    lastResponse?: {
-      hasAiReport: boolean;
-      hasEvaluationBundle: boolean;
-      versionsGenerated: string[];
-      warningsCount: number;
-      endpoint: string;
-      error?: string;
-    };
-  }>({});
-  const showDebugPanel = import.meta.env.VITE_DEBUG_EVAL_PIPELINE === 'true';
-  
-  // ENFORCE: Track if modify-evaluation was called
-  const [generationError, setGenerationError] = useState<{
-    message: string;
-    details?: string;
-    show: boolean;
-  } | null>(null);
 
   const selectedGroup: Group | undefined = useMemo(
     () => mockGroups.find(g => g.id === selectedGroupId),
     [selectedGroupId]
   );
+
+  const showDebugPanel = import.meta.env.VITE_DEBUG_EVAL_PIPELINE === 'true';
+  const pipeline = useEvaluationPipeline({
+    groupId: selectedGroupId,
+    group: selectedGroup,
+    materia: materia || '',
+    esInterdisciplinaria,
+    materiasSeleccionadas: materiasSeleccionadas as string[],
+    selectedSubtemas,
+    selectedCompetenciasIds,
+    selectedCriteriosLogro,
+    requerimientos,
+    evaluationSourceConfig,
+    evaluationMaterialsConfig,
+    targetDurationMinutes,
+    originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
+    useBetaV2,
+    onToast: toast,
+    debugPanelEnabled: showDebugPanel,
+    onSuccess: {
+      setActiveTab,
+      setIsConfigCollapsed,
+      setAiDesignReport,
+      setEstimatedDurationMinutes,
+      setTimeBreakdown
+    }
+  });
+
+  const {
+    isGenerating,
+    generationError,
+    runGeneration,
+    displayEvaluations,
+    evaluationBundle,
+    evaluationDesignPlan,
+    studentAssignments,
+    teacherReminders,
+    assignmentWarnings,
+    missingTemplateErrors,
+    v2RawResponse,
+    v2SelectedVersion,
+    setV2RawResponse,
+    setV2SelectedVersion,
+    previousV2Response,
+    setPreviousV2Response,
+    hasV2Spec,
+    hasV1,
+    canSave,
+    getEvaluationsToSave,
+    generatedEvaluations,
+    setGeneratedEvaluations,
+    pipelineDebug,
+    setPipelineDebug
+  } = pipeline;
 
   // Handle save evaluation
   const handleSaveEvaluation = async () => {
@@ -536,9 +520,7 @@ const EvaluacionesGrupo = () => {
       return;
     }
 
-    const hasV2Spec = useBetaV2 && v2RawResponse?.evaluationSpec && v2RawResponse.evaluationSpec.sections?.some((s: { items?: unknown[] }) => (s.items?.length ?? 0) > 0);
-    const hasV1 = (displayEvaluations?.length ?? 0) > 0;
-    if (!hasV2Spec && !hasV1) {
+    if (!canSave) {
       toast({
         title: "Error",
         description: "No hay evaluaciones generadas para guardar",
@@ -597,24 +579,7 @@ const EvaluacionesGrupo = () => {
         return '8vo';
       };
       
-      const evaluationsToSave = hasV2Spec && v2RawResponse?.evaluationSpec
-        ? (() => {
-            const spec = v2RawResponse.evaluationSpec as { meta?: { subject?: string }; sections?: unknown[] };
-            const title = spec.meta?.subject ? `Evaluación — ${spec.meta.subject}` : 'Evaluación (V2)';
-            const sectionCount = spec.sections?.length ?? 0;
-            return [{
-              id: 'A',
-              title: 'Versión A (Universal)',
-              content: `<h1>${title}</h1><p>Esta evaluación se almacena como especificación V2 (${sectionCount} sección(es)).</p>`,
-              version: 1,
-              versionKind: 'A' as const,
-              versionLabel: 'Versión A (Universal)',
-              adaptations: [] as string[],
-              assignedStudents: [] as string[],
-              assignedStudentIds: [] as (string | number)[]
-            }];
-          })()
-        : displayEvaluations;
+      const evaluationsToSave = getEvaluationsToSave();
 
       const evaluacionData = {
         user_id: user.id,
@@ -921,732 +886,14 @@ const EvaluacionesGrupo = () => {
   };
 
   const handleGenerateEvaluations = async () => {
-    console.info('[EVAL_PIPELINE] handleGenerateEvaluations called');
-    
-    // PHASE A: Allow generation if ANY of: ANEP content, sessions, OR materials
-    // ENFORCE: Show visible errors instead of silent returns
-    if (!selectedGroup || (!materia && !esInterdisciplinaria)) {
-      console.info('[EVAL_PIPELINE] Early return: missing group or materia');
-      toast({
-        title: "Error de validación",
-        description: "Seleccioná un grupo y una materia antes de generar evaluaciones.",
-        variant: "destructive"
-      });
-      return;
-    }
-    if (esInterdisciplinaria && materiasSeleccionadas.length === 0) {
-      console.info('[EVAL_PIPELINE] Early return: interdisciplinaria without materias');
-      toast({
-        title: "Error de validación",
-        description: "Seleccioná al menos una materia para la evaluación interdisciplinaria.",
-        variant: "destructive"
-      });
-      return;
-    }
-    if (!hasAnepContent && !hasSessions && !hasMaterials) {
-      console.info('[EVAL_PIPELINE] Early return: no content, sessions, or materials');
-      toast({
-        title: "Error de validación",
-        description: "Seleccioná al menos uno: contenidos ANEP, sesiones de clase, o materiales docentes.",
-        variant: "destructive"
-      });
-      return;
-    }
-    
-    console.info('[EVAL_PIPELINE] Starting generation', {
-      hasAnepContent,
-      hasSessions,
-      hasMaterials,
-      groupId: selectedGroup.id
-    });
-    
-    setIsGenerating(true);
-    
-    // Inicializar chat si es la primera vez
     if (chatMessages.length === 0) {
       setChatMessages([
         { role: 'ai', content: `¡Hola! He generado evaluaciones para ${materia} con los contenidos seleccionados. ¿Te gustaría hacer algún ajuste específico?` }
       ]);
     }
-    
-    // PHASE 6: Build session digests if sessions are selected
-    let generationContext = null;
-    if (hasSessions || evaluationMaterialsConfig.directMaterialIds.length > 0) {
-      try {
-        const { buildEvaluationGenerationContext, serializeGenerationContext } = await import('@/services/evaluations');
-        
-        generationContext = await buildEvaluationGenerationContext({
-          sourcePlanificacionId: evaluationSourceConfig.planificacionId,
-          sourceSessionIds: evaluationSourceConfig.sessionIds,
-          evaluationFocus: evaluationSourceConfig.evaluationFocus,
-          directMaterialIds: evaluationMaterialsConfig.directMaterialIds,
-          includeSessionMaterials: evaluationMaterialsConfig.includeSessionMaterials,
-          selectedSubtemas,
-          selectedCompetenciasIds,
-          selectedCriteriosLogro,
-          requerimientos,
-          targetDurationMinutes
-        });
-        
-        console.log('[PHASE 6] Generation context built:', serializeGenerationContext(generationContext));
-      } catch (error) {
-        console.error('[PHASE 6] Error building generation context:', error);
-      }
-    }
-    
-    try {
-      const { supabase } = await import('@/integrations/supabase/client');
-      const { getGroupContextForAI } = await import('@/services/groupContext/provider');
-      const { seedDefaultsForStudent } = await import('@/lib/contemplaciones/seeding');
-      
-      // PROACTIVE SEEDING: Ensure evaluation contemplaciones exist for ALL students
-      // in the selected group BEFORE loading the group context.
-      // This fixes the issue where reminders were empty because teachers
-      // hadn't opened each student's profile to trigger seeding.
-      // NOTE: seedDefaultsForStudent respects the user_touched flag,
-      // so manual teacher selections are NOT overwritten.
-      if (selectedGroup?.students) {
-        const isDev = import.meta.env.DEV;
-        if (isDev) {
-          console.log('[EVAL_PIPELINE] Proactive seeding: ensuring contemplaciones exist for all students');
-        }
-        for (const student of selectedGroup.students) {
-          seedDefaultsForStudent(student.id, student.name, false); // Suppress verbose logs
-        }
-        if (isDev) {
-          console.log(`[EVAL_PIPELINE] Proactive seeding complete for ${selectedGroup.students.length} students`);
-        }
-      }
-      
-      // Load unified group context for AI generation
-      const groupContextData = await getGroupContextForAI(selectedGroup.id, { purpose: 'evaluation' });
-      
-      // Build evaluation-specific group context (combines group data with evaluation-specific fields)
-      const groupContext = {
-        subject: esInterdisciplinaria ? materiasSeleccionadas.join(', ') : materia,
-        subjects: esInterdisciplinaria ? materiasSeleccionadas : [materia],
-        content: selectedSubtemas,
-        competencies: selectedCompetenciasIds,
-        criteriosLogro: selectedCriteriosLogro,
-        isInterdisciplinary: esInterdisciplinaria,
-        groupName: groupContextData.groupName,
-        // Use anonymized students from unified provider
-        students: groupContextData.anonymizedStudentsForPrompt,
-        // Include dominant profile if available
-        ...(groupContextData.dominantLearningStyle && {
-          dominantProfile: groupContextData.dominantLearningStyle
-        })
-      };
-
-      const { buildEvaluationDesignPlan } = await import('@/services/evaluations');
-      const { getEvaluationDesignRuleTemplate } = await import('@/lib/contemplaciones/enforcement');
-      const plan = buildEvaluationDesignPlan({
-        groupContext: groupContextData,
-        teacherRequirementsText: requerimientos
-      });
-
-      const instrumentDesignRules = plan.instrumentDesignContemplacionIds
-        .map(id => getEvaluationDesignRuleTemplate(id))
-        .filter((rule): rule is string => Boolean(rule));
-
-      // UNIFIED PIPELINE: Siempre usar el plan completo (sin overrides)
-      const effectivePlan = plan;
-
-      // Construir modification con contexto de sesiones/materiales si existe
-      // STRICT LIMITS: máximo 5 sesiones, 5 materiales, 500 chars de extractedText por material
-      let modificationText = requerimientos || 'Genera una evaluación escrita universal basada en los contenidos seleccionados.';
-      
-      if (generationContext) {
-        const { serializeGenerationContext } = await import('@/services/evaluations');
-        const serialized = serializeGenerationContext(generationContext);
-        
-        // Construir texto legible del contexto con límites estrictos
-        const contextSections: string[] = [];
-        
-        // Límite: máximo 5 sesiones
-        const sessionsToInclude = (serialized.sessions || []).slice(0, 5);
-        if (sessionsToInclude.length > 0) {
-          contextSections.push('SESIONES DE CLASE A EVALUAR:');
-          sessionsToInclude.forEach((s: any, idx: number) => {
-            contextSections.push(`\nSesión ${s.order}: ${s.title || `Sesión ${s.order}`}`);
-            if (s.anepContent?.length) contextSections.push(`- Contenidos ANEP: ${s.anepContent.join(', ')}`);
-            if (s.competencies?.length) contextSections.push(`- Competencias: ${s.competencies.join(', ')}`);
-            if (s.objectives) contextSections.push(`- Objetivos: ${s.objectives}`);
-            if (s.activitiesSummary) contextSections.push(`- Resumen de actividades: ${s.activitiesSummary}`);
-            if (s.resources?.length) contextSections.push(`- Recursos: ${s.resources.join(', ')}`);
-            if (s.attachedMaterials?.length) {
-              contextSections.push(`- Materiales adjuntos: ${s.attachedMaterials.map((m: any) => m.title).join(', ')}`);
-            }
-            if (idx < sessionsToInclude.length - 1) contextSections.push('\n---');
-          });
-          if ((serialized.sessions || []).length > 5) {
-            contextSections.push(`\n(Nota: Se incluyeron las primeras 5 de ${serialized.sessions.length} sesiones seleccionadas)`);
-          }
-        }
-        
-        // Límite: máximo 5 materiales, 500 caracteres de extractedText por material
-        const materialsToInclude = (serialized.materials || []).slice(0, 5);
-        if (materialsToInclude.length > 0) {
-          contextSections.push('\n\nMATERIALES DOCENTES ADJUNTOS:');
-          materialsToInclude.forEach((m: any, idx: number) => {
-            contextSections.push(`\n${idx + 1}. ${m.title} (${m.mimeType})`);
-            if (m.focusText) contextSections.push(`   Enfoque: ${m.focusText}`);
-            if (m.extractedText) {
-              // Límite estricto: máximo 500 caracteres de extractedText
-              const textSnippet = m.extractedText.substring(0, 500);
-              contextSections.push(`   Contenido extraído del PDF:\n   ${textSnippet}${m.extractedText.length > 500 ? '...' : ''}`);
-            }
-            if (idx < materialsToInclude.length - 1) contextSections.push('\n---');
-          });
-          if ((serialized.materials || []).length > 5) {
-            contextSections.push(`\n(Nota: Se incluyeron los primeros 5 de ${serialized.materials.length} materiales seleccionados)`);
-          }
-        }
-        
-        if (serialized.evaluationFocus) {
-          contextSections.push(`\n\nENFOQUE DE EVALUACIÓN (ESPECIFICADO POR EL DOCENTE):\n${serialized.evaluationFocus}`);
-        }
-        
-        if (serialized.timeBudget) {
-          contextSections.push(`\n\nPRESUPUESTO DE TIEMPO:\n- Duración objetivo: ${serialized.timeBudget.targetMinutes} minutos\n- Tolerancia: ${Math.round((serialized.timeBudget.flexibilityThreshold || 0.10) * 100)}%`);
-        }
-        
-        if (contextSections.length > 0) {
-          modificationText = `${modificationText}\n\n${contextSections.join('\n')}`;
-        }
-      }
-
-      // UNIFIED PIPELINE: Siempre usar generation_mode: 'universal'
-      const requestBody: any = {
-        originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
-        modification: modificationText,
-        groupContext,
-        type: 'modification',
-        generation_mode: 'universal',
-        evaluation_design_plan: {
-          instrumentDesignRules,
-          responseOptions: effectivePlan.responseOptions,
-          triggers: effectivePlan.triggers,
-          assignmentByStudentId: effectivePlan.assignmentByStudentId,
-          perStudentReminders: effectivePlan.perStudentReminders,
-          varkDistribution: effectivePlan.varkDistribution,
-          highStructureNeed: effectivePlan.highStructureNeed,
-          designComplexityCount: effectivePlan.designComplexityCount,
-          bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds
-        }
-      };
-
-      // R1: Log request payload with full details
-      const assignmentsByVersion = {
-        A: Object.values(effectivePlan.assignmentByStudentId).filter(v => v === 'A').length,
-        B: Object.values(effectivePlan.assignmentByStudentId).filter(v => v === 'B').length,
-        C: Object.values(effectivePlan.assignmentByStudentId).filter(v => v === 'C').length
-      };
-      
-      console.info('[EVAL_PIPELINE] payload', {
-        generation_mode: requestBody.generation_mode,
-        triggers: effectivePlan.triggers,
-        responseOptions: {
-          include: effectivePlan.responseOptions.include,
-          optionCount: effectivePlan.responseOptions.optionCount
-        },
-        assignmentsByVersion
-      });
-      
-      // DEBUG: Log request payload summary
-      const requestSummary = {
-        generationMode: requestBody.generation_mode,
-        hasEvaluationDesignPlan: !!requestBody.evaluation_design_plan,
-        hasGenerationContext: !!requestBody.generation_context,
-        triggers: effectivePlan.triggers,
-        responseOptionsInclude: effectivePlan.responseOptions.include,
-        assignmentsCount: Object.keys(effectivePlan.assignmentByStudentId).length
-      };
-      console.info('[EVAL_PIPELINE] Request payload summary:', requestSummary);
-      
-      if (showDebugPanel) {
-        setPipelineDebug(prev => ({
-          ...prev,
-          lastRequest: requestSummary
-        }));
-      }
-
-      // ENFORCE: Clear any previous errors
-      setGenerationError(null);
-      
-      // Clear previous v2 response
-      setV2RawResponse(null);
-      
-      // =======================================================================
-      // V2 MODE: Call modify-evaluation-v2 if beta toggle is enabled
-      // =======================================================================
-      let data: any = null;
-      let error: any = null;
-      let usedV2Endpoint = false;
-      
-      if (useBetaV2) {
-        console.info('[EVAL_PIPELINE] V2 Beta enabled, invoking modify-evaluation-v2 edge function');
-        
-        const v2RequestBody = {
-          modification: modificationText,
-          groupContext,
-          evaluation_design_plan: {
-            instrumentDesignRules,
-            responseOptions: effectivePlan.responseOptions,
-            triggers: effectivePlan.triggers,
-            assignmentByStudentId: effectivePlan.assignmentByStudentId,
-            perStudentReminders: effectivePlan.perStudentReminders,
-            varkDistribution: effectivePlan.varkDistribution,
-            highStructureNeed: effectivePlan.highStructureNeed,
-            designComplexityCount: effectivePlan.designComplexityCount,
-            bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds,
-            targetDurationMinutes
-          }
-        };
-        
-        const v2Result = await invokeEdgeFunctionAuthed('modify-evaluation-v2', {
-          body: v2RequestBody
-        });
-        
-        if (v2Result.error) {
-          console.warn('[EVAL_PIPELINE] V2 endpoint error, falling back to V1:', v2Result.error.message);
-          // Fallback to V1 below
-        } else if (!v2Result.data) {
-          console.warn('[EVAL_PIPELINE] V2 returned no data, falling back to V1');
-          // Fallback to V1 below
-        } else if (!v2Result.data.success) {
-          // DETAILED DEBUG: Log full failure info from V2
-          console.warn('[EVAL_PIPELINE] ══════════════════════════════════════════════════════════');
-          console.warn('[EVAL_PIPELINE] V2 returned success=false, falling back to V1');
-          console.warn('[EVAL_PIPELINE] ══════════════════════════════════════════════════════════');
-          console.warn('[EVAL_PIPELINE] warnings:', JSON.stringify(v2Result.data.warnings, null, 2));
-          console.warn('[EVAL_PIPELINE] debug:', JSON.stringify(v2Result.data.debug, null, 2));
-          console.warn('[EVAL_PIPELINE] requestedVersions:', v2Result.data.requestedVersions);
-          console.warn('[EVAL_PIPELINE] hasEvaluationSpec:', !!v2Result.data.evaluationSpec);
-          // Fallback to V1 below
-        } else {
-          // V2 succeeded! Store raw response for V2 renderer
-          console.info('[EVAL_PIPELINE] V2 response received successfully');
-          const v2Response = v2Result.data as V2Response;
-          
-          // DEBUG: Log full V2 response structure
-          console.log('[EVAL_PIPELINE] V2 Response structure:', {
-            success: v2Response.success,
-            hasEvaluationSpec: !!v2Response.evaluationSpec,
-            evaluationSpecVersion: v2Response.evaluationSpec?.version,
-            sectionsCount: v2Response.evaluationSpec?.sections?.length,
-            firstSectionTitle: v2Response.evaluationSpec?.sections?.[0]?.title,
-            firstSectionItemsCount: v2Response.evaluationSpec?.sections?.[0]?.items?.length,
-            requestedVersions: v2Response.requestedVersions,
-            hasAiReport: !!v2Response.aiReport,
-            teacherRemindersCount: v2Response.teacherRemindersByStudent?.length,
-            warningsCount: v2Response.warnings?.length
-          });
-          
-          setV2RawResponse(v2Response);
-          usedV2Endpoint = true;
-          
-          // Auto-collapse configuration panel after successful V2 generation
-          setIsConfigCollapsed(true);
-          
-          // Convert V2 to V1-compatible format for state management
-          // (evaluationBundle, studentAssignments, etc. are still used by other parts)
-          data = {
-            evaluationBundle: {
-              versions: { A: '', B: null, C: null }, // V2 renders directly from JSON
-              baseHtml: '',
-              versionBHtml: null,
-              versionCHtml: null,
-              responseOptionsIncluded: v2Response.aiReport?.responseOptions?.included ?? false,
-              responseOptionCount: v2Response.aiReport?.responseOptions?.count ?? 2
-            },
-            aiReport: v2Response.aiReport,
-            studentAssignments: {}, // V2 manages this internally
-            teacherRemindersByStudent: v2Response.teacherRemindersByStudent,
-            warnings: v2Response.warnings?.map(w => w.message) || [],
-            _v2Mode: true // Flag to skip v1 validation
-          };
-        }
-      }
-      
-      // =======================================================================
-      // V1 MODE: Call modify-evaluation (default or fallback)
-      // =======================================================================
-      if (!usedV2Endpoint) {
-        console.info('[EVAL_PIPELINE] Invoking modify-evaluation edge function (V1)');
-        const v1Result = await invokeEdgeFunctionAuthed('modify-evaluation', {
-          body: requestBody
-        });
-        data = v1Result.data;
-        error = v1Result.error;
-      }
-
-      if (error) {
-        console.error('[EVAL_PIPELINE] Edge function error:', error);
-        // ENFORCE: Set visible error state before throwing
-        const errorMessage = error.message || 'Error desconocido al llamar al servidor';
-        const errorStatus = (error as any).status || '';
-        setGenerationError({
-          message: 'No se pudo generar la evaluación',
-          details: `${errorMessage}${errorStatus ? ` (Código: ${errorStatus})` : ''}`,
-          show: true
-        });
-        throw error;
-      }
-      
-      // ENFORCE: Verify that edge function was actually called and returned data
-      if (!data) {
-        console.error('[EVAL_PIPELINE] Edge function returned no data');
-        setGenerationError({
-          message: 'Error en la respuesta del servidor',
-          details: 'El servidor no retornó datos. Por favor, intentá nuevamente.',
-          show: true
-        });
-        throw new Error('Edge function returned no data');
-      }
-
-      // R4: Response integrity log
-      console.info('[EVAL_PIPELINE] Edge function response received', {
-        hasAiReport: !!data?.aiReport,
-        hasEvaluationBundle: !!data?.evaluationBundle,
-        hasVersions: {
-          A: !!data?.evaluationBundle?.versions?.A,
-          B: !!data?.evaluationBundle?.versions?.B,
-          C: !!data?.evaluationBundle?.versions?.C
-        },
-        studentAssignmentsCount: Object.keys(data?.studentAssignments || {}).length
-      });
-      
-      // R4: Detailed integrity log
-      console.info('[EVAL_PIPELINE] Response integrity check', {
-        responseKeys: Object.keys(data || {}),
-        hasAiReport: !!data?.aiReport,
-        aiReportKeys: data?.aiReport ? Object.keys(data.aiReport) : [],
-        evaluationBundleKeys: data?.evaluationBundle ? Object.keys(data.evaluationBundle) : [],
-        versionsKeys: data?.evaluationBundle?.versions ? Object.keys(data.evaluationBundle.versions) : [],
-        versionALength: data?.evaluationBundle?.versions?.A?.length || 0,
-        versionBLength: data?.evaluationBundle?.versions?.B?.length || 0,
-        versionCLength: data?.evaluationBundle?.versions?.C?.length || 0,
-        studentAssignmentsKeys: data?.studentAssignments ? Object.keys(data.studentAssignments) : []
-      });
-
-      // DEBUG: Log response summary
-      const versionsGenerated: string[] = [];
-      if (data?.evaluationBundle?.versions?.A) versionsGenerated.push('A');
-      if (data?.evaluationBundle?.versions?.B) versionsGenerated.push('B');
-      if (data?.evaluationBundle?.versions?.C) versionsGenerated.push('C');
-      
-      const responseSummary = {
-        hasAiReport: !!data?.aiReport,
-        hasEvaluationBundle: !!data?.evaluationBundle,
-        versionsGenerated,
-        warningsCount: Array.isArray(data?.warnings) ? data.warnings.length : 0,
-        endpoint: 'modify-evaluation'
-      };
-      
-      if (showDebugPanel) {
-        setPipelineDebug(prev => ({
-          ...prev,
-          lastResponse: responseSummary
-        }));
-      }
-
-      // R0: Normalizar studentAssignments del edge response
-      // FIX: In V2 mode, edge function returns empty {}, so we must check for actual keys
-      // Priority: 1) Edge response if has assignments, 2) effectivePlan.assignmentByStudentId
-      const edgeAssignments = data?.studentAssignments as Record<string, 'A' | 'B' | 'C'> | undefined;
-      const hasEdgeAssignments = edgeAssignments && Object.keys(edgeAssignments).length > 0;
-      const rawAssignments = hasEdgeAssignments 
-        ? edgeAssignments 
-        : (effectivePlan.assignmentByStudentId || {});
-      
-      // DEBUG: Log assignment source decision
-      console.info('[EVAL_PIPELINE] Assignment source:', {
-        hasEdgeAssignments,
-        edgeAssignmentsCount: Object.keys(edgeAssignments || {}).length,
-        effectivePlanAssignmentsCount: Object.keys(effectivePlan.assignmentByStudentId || {}).length,
-        usingSource: hasEdgeAssignments ? 'edge' : 'effectivePlan',
-        rawAssignmentsCount: Object.keys(rawAssignments).length,
-        rawAssignmentsSample: Object.entries(rawAssignments).slice(0, 3)
-      });
-      
-      const normalizeAssignments = (
-        assignments: Record<string, 'A' | 'B' | 'C'>,
-        bundle: EvaluationBundle | null,
-        isV2: boolean
-      ) => {
-        // In V2 mode, versions are determined by effectivePlan.triggers, not HTML content
-        const available = isV2 
-          ? {
-              A: true,
-              B: effectivePlan.triggers.versionB,
-              C: effectivePlan.triggers.versionC
-            }
-          : {
-              A: true,
-              B: Boolean(bundle?.versionBHtml || bundle?.versions?.B),
-              C: Boolean(bundle?.versionCHtml || bundle?.versions?.C)
-            };
-        
-        // R0: Normalizar todas las keys a strings
-        const normalized: Record<string, 'A' | 'B' | 'C'> = {};
-        Object.entries(assignments).forEach(([key, value]) => {
-          normalized[String(key)] = value;
-        });
-        const warnings: string[] = [];
-        Object.entries(normalized).forEach(([studentId, version]) => {
-          if (!available[version]) {
-            normalized[studentId] = 'A';
-            warnings.push(`Se reasignó ${studentId} a Versión A porque ${version} no fue generada.`);
-          }
-        });
-        return { normalized, warnings };
-      };
-
-      setEvaluationDesignPlan(effectivePlan);
-
-      // R3: Build generatedEvaluations from evaluationBundle.versions (A, B, C)
-      // R5: Remove silent fallback - if critical fields missing, show error
-      // V2 MODE: Skip version A check - V2 uses JSON rendering, not HTML
-      const isV2Mode = data?._v2Mode === true;
-      const hasVersionA = isV2Mode || Boolean(
-        data?.evaluationBundle?.versions?.A || 
-        data?.evaluationBundle?.baseHtml
-      );
-      
-      if (!hasVersionA) {
-        console.error('[EVAL_PIPELINE] Response missing Version A (critical field)');
-        setGenerationError({
-          message: 'Error en la respuesta del servidor',
-          details: 'La respuesta no contiene la versión A de la evaluación. Por favor, intentá nuevamente.',
-          show: true
-        });
-        toast({
-          title: "Error crítico",
-          description: "La respuesta del servidor no contiene la versión A de la evaluación.",
-          variant: "destructive"
-        });
-        setIsGenerating(false);
-        return;
-      }
-
-      // Backend guarantees HTML strings that start with "<"
-      // No parsing, no transformation, no validation needed
-      
-      // STEP 3: Frontend DUMB - accept versions.* as strings from backend (no parsing)
-      const versionA = data.evaluationBundle?.versions?.A || data.evaluationBundle?.baseHtml || '';
-      const versionB = data.evaluationBundle?.versions?.B ?? data.evaluationBundle?.versionBHtml ?? null;
-      const versionC = data.evaluationBundle?.versions?.C ?? data.evaluationBundle?.versionCHtml ?? null;
-      
-      // STEP 3: Type validation - if not string, log CRITICAL error
-      if (versionA && typeof versionA !== 'string') {
-        console.error('[EVAL_PIPELINE] CRITICAL: versionA from backend is not string!', typeof versionA, versionA);
-      }
-      if (versionB && typeof versionB !== 'string') {
-        console.error('[EVAL_PIPELINE] CRITICAL: versionB from backend is not string!', typeof versionB, versionB);
-      }
-      if (versionC && typeof versionC !== 'string') {
-        console.error('[EVAL_PIPELINE] CRITICAL: versionC from backend is not string!', typeof versionC, versionC);
-      }
-      
-      const evaluationBundleToSet: EvaluationBundle = {
-        baseHtml: typeof versionA === 'string' ? versionA : '',
-        versionBHtml: typeof versionB === 'string' ? versionB : null,
-        versionCHtml: typeof versionC === 'string' ? versionC : null,
-        versions: {
-          A: typeof versionA === 'string' ? versionA : '',
-          B: typeof versionB === 'string' ? versionB : null,
-          C: typeof versionC === 'string' ? versionC : null
-        },
-        responseOptionsIncluded: data.evaluationBundle?.responseOptionsIncluded ?? false,
-        responseOptionCount: data.evaluationBundle?.responseOptionCount ?? 2,
-        finalAssignmentCounts: data.finalAssignmentCounts // STEP 2: Store finalAssignmentCounts from backend
-      };
-      
-      setEvaluationBundle(evaluationBundleToSet);
-      setGeneratedEvaluations([]); // R3: Use displayEvaluations computed from evaluationBundle
-      
-      const normalizedResult = normalizeAssignments(rawAssignments, evaluationBundleToSet, isV2Mode);
-      setStudentAssignments(normalizedResult.normalized);
-      
-      // DEBUG: Log final assignment result
-      console.info('[EVAL_PIPELINE] Final assignments:', {
-        isV2Mode,
-        assignmentsCount: Object.keys(normalizedResult.normalized).length,
-        byVersion: {
-          A: Object.values(normalizedResult.normalized).filter(v => v === 'A').length,
-          B: Object.values(normalizedResult.normalized).filter(v => v === 'B').length,
-          C: Object.values(normalizedResult.normalized).filter(v => v === 'C').length
-        },
-        warningsCount: normalizedResult.warnings.length
-      });
-      
-      const edgeWarnings = Array.isArray(data?.warnings) ? data.warnings : [];
-      setAssignmentWarnings([...edgeWarnings, ...normalizedResult.warnings]);
-
-      // STEP 4: Teacher reminders must come from backend teacherRemindersByStudent ONLY
-      // If not available, show empty state (NOT fallback to perStudentReminders which is for students)
-      const reminders = Array.isArray(data?.teacherRemindersByStudent) && data.teacherRemindersByStudent.length > 0
-        ? data.teacherRemindersByStudent
-        : [];
-      setTeacherReminders(reminders);
-      
-      // STEP 4b: Check for missing template errors from design plan validation
-      const validationResult = effectivePlan._reminderValidation;
-      if (validationResult?.missingTemplates && validationResult.missingTemplates.length > 0) {
-        console.error('[EVAL_PIPELINE] Missing reminder templates detected:', validationResult.missingTemplates);
-        setMissingTemplateErrors(validationResult.missingTemplates);
-      } else {
-        setMissingTemplateErrors([]);
-      }
-      
-      if (!Array.isArray(data?.teacherRemindersByStudent) || data.teacherRemindersByStudent.length === 0) {
-        console.warn('[EVAL_PIPELINE] No teacher reminders available from backend, showing empty state');
-      }
-
-      if (data?.estimatedTotalMinutes) {
-        setEstimatedDurationMinutes(data.estimatedTotalMinutes);
-      } else {
-        setEstimatedDurationMinutes(null);
-      }
-
-      if (data?.timeBreakdown) {
-        setTimeBreakdown({
-          sections: data.timeBreakdown,
-          heuristicAssumptions: 'Estimación generada por IA basada en el tipo y cantidad de items'
-        });
-      } else {
-        setTimeBreakdown(null);
-      }
-
-      // PATCH 6: Leer data.aiReport primero, luego legacy aiDesignReport
-      if (data?.aiReport) {
-        console.info('[EVAL_PIPELINE] Using aiReport from response');
-        setAiDesignReport(JSON.stringify(data.aiReport));
-      } else if (data?.aiDesignReport) {
-        console.warn('[EVAL_PIPELINE] Falling back to aiDesignReport (legacy)');
-        setAiDesignReport(JSON.stringify(data.aiDesignReport));
-      } else {
-        console.warn('[EVAL_PIPELINE] No aiReport or aiDesignReport in response');
-        setAiDesignReport(null);
-      }
-      
-      console.info('[EVAL_PIPELINE] Generation completed successfully');
-      
-      // R2: Verify that edge function returned aiReport and evaluationBundle.versions
-      // V2 MODE: Skip evaluationBundle check - V2 uses JSON rendering
-      if (!isV2Mode && !data?.evaluationBundle) {
-        console.error('[EVAL_PIPELINE] Response missing evaluationBundle');
-        setGenerationError({
-          message: 'Error en la respuesta del servidor',
-          details: 'La respuesta no contiene evaluationBundle. El servidor puede no haber procesado la solicitud correctamente.',
-          show: true
-        });
-        toast({
-          title: "Error en la respuesta",
-          description: "La respuesta del servidor no contiene evaluationBundle. Por favor, intentá nuevamente.",
-          variant: "destructive"
-        });
-        setIsGenerating(false);
-        return;
-      }
-      
-      // R2: Verify aiReport is present (should always be non-null from universal path)
-      // V2 MODE: aiReport is guaranteed by v2Response, so skip strict check
-      if (!isV2Mode && !data?.aiReport) {
-        console.error('[EVAL_PIPELINE] Response missing aiReport (critical field)');
-        setGenerationError({
-          message: 'Error en la respuesta del servidor',
-          details: 'La respuesta no contiene aiReport. La evaluación no se puede guardar correctamente.',
-          show: true
-        });
-        toast({
-          title: "Error crítico",
-          description: "La respuesta del servidor no contiene aiReport. Por favor, intentá nuevamente.",
-          variant: "destructive"
-        });
-        setIsGenerating(false);
-        return;
-      }
-      
-      // ENFORCE: Clear error state on success
-      setGenerationError(null);
-      
-      // Auto-collapse configuration panel after successful generation (V1)
-      setIsConfigCollapsed(true);
-      
-      setActiveTab('results');
-    } catch (error: any) {
-      console.error('[EVAL_PIPELINE] Error generating evaluations:', error);
-      
-      // ENFORCE: Show visible error instead of silent fallback
-      let errorMessage = "No se pudo generar la evaluación. Por favor, intentá nuevamente.";
-      let errorDetails = "";
-      
-      if (error?.message) {
-        if (error.message.includes('network') || error.message.includes('fetch') || error.message.includes('Failed to fetch')) {
-          errorMessage = "Error de conexión";
-          errorDetails = "No se pudo conectar con el servidor. Verificá tu conexión a internet e intentá nuevamente.";
-        } else if (error.message.includes('auth') || error.message.includes('401') || error.message.includes('403')) {
-          errorMessage = "Error de autenticación";
-          errorDetails = "Tu sesión expiró o no tenés permisos. Por favor, iniciá sesión nuevamente.";
-        } else if (error.message.includes('timeout') || error.message.includes('504')) {
-          errorMessage = "Tiempo de espera agotado";
-          errorDetails = "El servidor tardó demasiado en responder. Intentá nuevamente.";
-        } else {
-          errorDetails = error.message;
-        }
-      }
-      
-      if (error?.status) {
-        errorDetails = `${errorDetails} (Código: ${error.status})`;
-      }
-      
-      toast({
-        title: errorMessage,
-        description: errorDetails || "Ocurrió un error inesperado al generar la evaluación.",
-        variant: "destructive",
-        duration: 10000
-      });
-      
-      // ENFORCE: Do NOT use silent fallback - clear state instead
-      setGeneratedEvaluations([]);
-      setEvaluationBundle(null);
-      setEvaluationDesignPlan(null);
-      setStudentAssignments({});
-      setTeacherReminders([]);
-      setMissingTemplateErrors([]);
-      setAssignmentWarnings([]);
-      setAiDesignReport(null);
-      setV2RawResponse(null); // Clear V2 response on error
-      
-      // ENFORCE: Set visible error state (already set above, but ensure it's visible)
-      if (!generationError) {
-        setGenerationError({
-          message: errorMessage,
-          details: errorDetails,
-          show: true
-        });
-      }
-      
-      // Update debug panel if enabled
-      if (showDebugPanel) {
-        setPipelineDebug(prev => ({
-          ...prev,
-          lastResponse: {
-            hasAiReport: false,
-            hasEvaluationBundle: false,
-            versionsGenerated: [],
-            warningsCount: 0,
-            endpoint: 'modify-evaluation',
-            error: errorMessage + (errorDetails ? `: ${errorDetails}` : '')
-          }
-        }));
-      }
-    } finally {
-      setIsGenerating(false);
-    }
+    await runGeneration();
   };
+
 
   // Funciones para feedback y chat usando IA real
   const handleFeedback = async (evaluationId: string) => {
@@ -1872,222 +1119,7 @@ const EvaluacionesGrupo = () => {
     }
   };
 
-  // R0: Helper para normalizar IDs de estudiantes en todos lados
-  const sid = (s: any): string => String(s?.studentId ?? s?.id ?? s?.student_id ?? '');
-
-  /**
-   * Simple HTML guard for evaluation versions.
-   * Frontend should trust evaluationBundle.versions.* (backend guarantee).
-   */
-  const isHtmlString = (value: any): value is string =>
-    typeof value === 'string' && value.trim().startsWith('<');
-
-  const displayEvaluations = useMemo(() => {
-    if (!evaluationBundle?.baseHtml && !evaluationBundle?.versions?.A) {
-      return generatedEvaluations;
-    }
-
-    // R0: Normalizar assignmentByStudentId keys
-    const rawAssignments = Object.keys(studentAssignments).length > 0
-      ? studentAssignments
-      : (evaluationDesignPlan?.assignmentByStudentId || {});
-    
-    // Normalizar todas las keys a strings consistentes
-    const assignmentByStudentId: Record<string, 'A' | 'B' | 'C'> = {};
-    Object.entries(rawAssignments).forEach(([key, value]) => {
-      assignmentByStudentId[String(key)] = value;
-    });
-
-    const students = selectedGroup?.students || [];
-    
-    // R0: Usar sid() helper para normalizar IDs en todas las comparaciones
-    const getAssigned = (kind: 'A' | 'B' | 'C') => {
-      const assigned = students.filter(student => {
-        const normalizedId = sid(student);
-        return assignmentByStudentId[normalizedId] === kind;
-      });
-      return {
-        ids: assigned.map(student => sid(student)),
-        names: assigned.map(student => student.name || `Estudiante ${sid(student)}`)
-      };
-    };
-
-    // STEP 2: Use finalAssignmentCounts from backend (after B may have been dropped)
-    // If not available, calculate from assignments (legacy/fallback)
-    const backendFinalCounts = evaluationBundle?.finalAssignmentCounts;
-    const assignmentCounts = backendFinalCounts ?? {
-      A: Object.values(assignmentByStudentId).filter(v => v === 'A').length,
-      B: Object.values(assignmentByStudentId).filter(v => v === 'B').length,
-      C: Object.values(assignmentByStudentId).filter(v => v === 'C').length
-    };
-    
-    // STEP 3: Log assignment counts for debugging
-    console.log('[UI_ASSIGNMENT_COUNTS]', {
-      backendFinalCounts,
-      calculated: {
-        A: Object.values(assignmentByStudentId).filter(v => v === 'A').length,
-        B: Object.values(assignmentByStudentId).filter(v => v === 'B').length,
-        C: Object.values(assignmentByStudentId).filter(v => v === 'C').length
-      },
-      final: assignmentCounts
-    });
-
-    // STEP 4: Frontend - remove any parsing, only accept string HTML
-    const versions = evaluationBundle?.versions ?? null;
-    const legacyA = !versions
-      ? (evaluationBundle?.baseHtml || evaluationBundle?.base_html || evaluationBundle?.content || evaluationBundle?.html || null)
-      : null;
-    
-    // STEP 4: Cards must use ONLY versions.<key> (no multi-layer extraction)
-    let rawA = versions ? (versions.A ?? null) : legacyA;
-    let rawB = versions ? (versions.B ?? null) : null;
-    let rawC = versions ? (versions.C ?? null) : null;
-
-    // STEP 4: If typeof rawA/B/C !== 'string' → error block (and log)
-    if (rawA && typeof rawA !== 'string') {
-      console.error('[EVAL_UI] CRITICAL: rawA is not a string, it is:', typeof rawA, rawA);
-      rawA = null; // Will trigger error block below
-    }
-    if (rawB && typeof rawB !== 'string') {
-      console.error('[EVAL_UI] CRITICAL: rawB is not a string, it is:', typeof rawB, rawB);
-      rawB = null;
-    }
-    if (rawC && typeof rawC !== 'string') {
-      console.error('[EVAL_UI] CRITICAL: rawC is not a string, it is:', typeof rawC, rawC);
-      rawC = null;
-    }
-    
-    // Backend guarantees HTML strings that start with "<"
-    // No wrapper detection, no JSON parsing, no transformation
-    // If it starts with "{", show error HTML (defensive - backend should never send this)
-    // If it starts with "<", it's HTML final and use it as-is
-    const getSafeHtml = (value: unknown, key: string): string | null => {
-      if (!value || typeof value !== 'string') return null;
-      const trimmed = value.trim();
-      // Defensive: if starts with "{", show error HTML (NO JSON.parse attempt)
-      if (trimmed.startsWith('{')) {
-        console.error(`[EVAL_UI] Backend returned JSON wrapper in Version ${key} - showing error HTML`);
-        return `<div class="evaluation"><p><strong>Error:</strong> El backend devolvió un wrapper JSON inválido en versión ${key}.</p></div>`;
-      }
-      // If starts with "<", it's HTML final
-      if (trimmed.startsWith('<')) {
-        return trimmed;
-      }
-      return null;
-    };
-
-    const htmlA = getSafeHtml(rawA, 'A');
-    const htmlB = getSafeHtml(rawB, 'B');
-    const htmlC = getSafeHtml(rawC, 'C');
-    
-    // STEP 4: Console logs for debugging (informative only, no defensive checks)
-    console.log('[UI_VERSIONS_RAW]', {
-      A: { 
-        type: typeof rawA, 
-        isString: typeof rawA === 'string',
-        startsWithHtml: typeof rawA === 'string' && rawA.trim().startsWith('<'),
-        start: typeof rawA === 'string' ? rawA.slice(0, 40) : '(not string)', 
-        len: typeof rawA === 'string' ? rawA.length : 0
-      },
-      B: { 
-        type: typeof rawB, 
-        isString: typeof rawB === 'string',
-        startsWithHtml: typeof rawB === 'string' && rawB.trim().startsWith('<'),
-        start: typeof rawB === 'string' ? rawB.slice(0, 40) : '(not string)', 
-        len: typeof rawB === 'string' ? rawB.length : 0
-      },
-      C: { 
-        type: typeof rawC, 
-        isString: typeof rawC === 'string',
-        startsWithHtml: typeof rawC === 'string' && rawC.trim().startsWith('<'),
-        start: typeof rawC === 'string' ? rawC.slice(0, 40) : '(not string)', 
-        len: typeof rawC === 'string' ? rawC.length : 0
-      },
-      assignmentCounts
-    });
-    
-    // PHASE 2B: Build cards with hard assertions (no mutation, no reuse)
-    const evaluations: GeneratedEvaluation[] = [];
-    
-    // STEP 3: B card must be hidden if finalAssignmentCounts.B === 0 (even if triggers.versionB was initially true)
-    // Backend may have dropped B if no students were assigned to it after reassignment
-    const shouldShowB = assignmentCounts.B > 0;
-
-    // PHASE 2: Card A - always shown
-    const baseAssigned = getAssigned('A');
-    const contentA = htmlA || '<div class="p-4 bg-red-50 border-2 border-red-400 rounded"><strong>Error:</strong> Version A missing. No se pudo extraer el contenido de la versión A.</div>';
-    
-    if (!htmlA) {
-      console.error('[EVAL_UI] Version A missing after extraction', {
-        rawA: String(rawA || '').slice(0, 50),
-        hasEvaluationBundle: !!evaluationBundle
-      });
-    }
-    
-    evaluations.push({
-      id: 'A',
-      title: 'Versión A (Universal)',
-      content: contentA,
-      version: 1,
-      versionKind: 'A',
-      versionLabel: 'Versión A (Universal)',
-      adaptations: [],
-      assignedStudents: baseAssigned.names,
-      assignedStudentIds: baseAssigned.ids
-    });
-
-    // PHASE 2: Card B - only if assigned or forced
-    if (shouldShowB) {
-      const assigned = getAssigned('B');
-      const contentB = htmlB || '<div class="p-4 bg-red-50 border-2 border-red-400 rounded"><strong>Error:</strong> Version B required but missing. No se pudo extraer el contenido de la versión B.</div>';
-      
-      evaluations.push({
-        id: 'B',
-        title: 'Versión B (Equivalente)',
-        content: contentB,
-        version: 2,
-        versionKind: 'B',
-        versionLabel: 'Versión B (Equivalente)',
-        adaptations: [],
-        assignedStudents: assigned.names,
-        assignedStudentIds: assigned.ids
-      });
-    }
-
-    // PHASE 2: Card C - only if C is assigned
-    if (assignmentCounts.C > 0) {
-      const assigned = getAssigned('C');
-      const contentC = htmlC || '<div class="p-4 bg-red-50 border-2 border-red-400 rounded"><strong>Error:</strong> Version C required but missing. No se pudo extraer el contenido de la versión C.</div>';
-      
-      if (!htmlC) {
-        console.error('[EVAL_UI] Version C required but missing after extraction', {
-          rawC: String(rawC || '').slice(0, 50),
-          hasEvaluationBundle: !!evaluationBundle
-        });
-      }
-      
-      evaluations.push({
-        id: 'C',
-        title: 'Versión C (Adecuación de contenido)',
-        content: contentC,
-        version: 3,
-        versionKind: 'C',
-        versionLabel: 'Versión C (Adecuación de contenido)',
-        adaptations: [],
-        assignedStudents: assigned.names,
-        assignedStudentIds: assigned.ids
-      });
-    }
-
-    // PHASE 1: Log card content for debugging (after build)
-    console.log('[UI_CARDS_BUILT]', evaluations.map(e => ({
-      id: e.id,
-      contentStart: e.content.slice(0, 40),
-      contentLen: e.content.length
-    })));
-
-    return evaluations;
-  }, [evaluationBundle, evaluationDesignPlan, generatedEvaluations, selectedGroup, studentAssignments]);
+  // displayEvaluations, getSafeHtml and assignment logic live in useEvaluationPipeline
 
   // PHASE 1A: UI Version Integrity Panel (dev/flag only)
   const debugRawAssignments = Object.keys(studentAssignments).length > 0
@@ -2727,318 +1759,100 @@ const EvaluacionesGrupo = () => {
 
         {/* Show results section if we have V1 evaluations OR V2 response */}
         {(displayEvaluations.length > 0 || (useBetaV2 && v2RawResponse)) && (
-          <div className="space-y-6">
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="grid w-full grid-cols-1">
-                <TabsTrigger value="results">Evaluaciones Generadas</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="results" className="space-y-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-2xl font-bold text-gray-800">
-                    Evaluaciones generadas para {selectedGroup?.name}
-                  </h2>
-                  <Button
-                    onClick={() => {
-                      // Prefill with a sensible default name
-                      const defaultName = `Evaluación ${esInterdisciplinaria ? materiasSeleccionadas.join(' + ') : materia} - ${selectedGroup?.name}`;
-                      setNombreEvaluacion(defaultName);
-                      setSaveDialogOpen(true);
-                    }}
-                    variant="default"
-                    className="gap-2"
-                  >
-                    <Save className="w-4 h-4" />
-                    Guardar evaluación
-                  </Button>
-                </div>
-
-                {/* PHASE 1A: Version Integrity Panel (only visible when VITE_DEBUG_EVAL_PIPELINE=true) */}
-                {showDebugPanel && (
-                  <Card className="mb-6 border-2 border-purple-300 bg-purple-50 dark:bg-purple-950/20">
-                    <CardHeader>
-                      <CardTitle className="text-sm text-purple-800 dark:text-purple-200">
-                        [UI_VERSION_DEBUG] - Forensic Panel
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-xs font-mono space-y-3">
-                      <div className="font-bold text-purple-900">RAW API BUNDLE FIELDS:</div>
-                      <div className={typeof debugA !== 'string' && debugA !== null ? 'text-red-600 font-bold' : ''}>
-                        A: type={typeof debugA} {typeof debugA === 'object' && debugA !== null ? `keys=[${Object.keys(debugA).join(',')}]` : ''} start="{String(debugA ?? '').slice(0, 40)}" len={String(debugA ?? '').length}
-                      </div>
-                      <div className={typeof debugB !== 'string' && debugB !== null ? 'text-red-600 font-bold' : ''}>
-                        B: type={typeof debugB} {typeof debugB === 'object' && debugB !== null ? `keys=[${Object.keys(debugB).join(',')}]` : ''} start="{String(debugB ?? '').slice(0, 40)}" len={String(debugB ?? '').length}
-                      </div>
-                      <div className={typeof debugC !== 'string' && debugC !== null ? 'text-red-600 font-bold' : ''}>
-                        C: type={typeof debugC} {typeof debugC === 'object' && debugC !== null ? `keys=[${Object.keys(debugC).join(',')}]` : ''} start="{String(debugC ?? '').slice(0, 40)}" len={String(debugC ?? '').length}
-                      </div>
-                      <div>assignmentCounts: A={debugAssignmentCounts.A}, B={debugAssignmentCounts.B}, C={debugAssignmentCounts.C}</div>
-                      <div>renderSource: A={debugVersions ? 'versions.A' : 'legacy'}, B={debugVersions ? 'versions.B' : 'null'}, C={debugVersions ? 'versions.C' : 'null'}</div>
-                      
-                      {(typeof debugA === 'object' && debugA !== null) || (typeof debugB === 'object' && debugB !== null) || (typeof debugC === 'object' && debugC !== null) && (
-                        <div className="mt-2 p-2 bg-red-100 border-2 border-red-500 rounded text-red-800 font-bold text-xs">
-                          ⚠️ BACKEND BUG: versions.* contains OBJECTS instead of strings!
-                        </div>
-                      )}
-                      
-                      <div className="font-bold text-purple-900 mt-4 pt-4 border-t border-purple-200">CARD CONTENT (FINAL):</div>
-                      {cardA && (
-                        <div>cardA.content: start="{cardA.content.slice(0, 40)}" len={cardA.content.length}</div>
-                      )}
-                      {cardB && (
-                        <div>cardB.content: start="{cardB.content.slice(0, 40)}" len={cardB.content.length}</div>
-                      )}
-                      {cardC && (
-                        <div>cardC.content: start="{cardC.content.slice(0, 40)}" len={cardC.content.length}</div>
-                      )}
-                      
-                      <div className="font-bold text-purple-900 mt-4 pt-4 border-t border-purple-200">DIFF-STYLE CHECK:</div>
-                      <div className={diffCheckA === false ? 'text-red-600 font-bold' : ''}>
-                        cardA.content === versions.A: {diffCheckA === null ? 'N/A' : (diffCheckA ? '✅ TRUE' : '❌ FALSE')}
-                      </div>
-                      {cardB && (
-                        <div className={diffCheckB === false ? 'text-red-600 font-bold' : ''}>
-                          cardB.content === versions.B: {diffCheckB === null ? 'N/A' : (diffCheckB ? '✅ TRUE' : '❌ FALSE')}
-                        </div>
-                      )}
-                      {cardC && (
-                        <div className={diffCheckC === false ? 'text-red-600 font-bold' : ''}>
-                          cardC.content === versions.C: {diffCheckC === null ? 'N/A' : (diffCheckC ? '✅ TRUE' : '❌ FALSE')}
-                        </div>
-                      )}
-                      
-                      {(diffCheckA === false || diffCheckB === false || diffCheckC === false) && (
-                        <div className="mt-4 p-3 bg-red-100 border-2 border-red-500 rounded text-red-800 font-bold">
-                          🚨 BIG RED FLAG: CARD CONTENT DOES NOT MATCH VERSIONS SOURCE
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* ============================================================ */}
-                {/* V2 MODE: Use V2InfoPanels + EvaluationRendererV2             */}
-                {/* ============================================================ */}
-                {useBetaV2 && v2RawResponse ? (
-                  <>
-                    {/* V2 Info Panels - consumes V2Response data directly */}
-                    <V2InfoPanels 
-                      v2Response={v2RawResponse}
-                      selectedVersion={v2SelectedVersion}
-                      students={selectedGroup?.students || []}
-                      studentAssignments={studentAssignments}
-                      onV2ResponseChange={setV2RawResponse}
-                    />
-                    
-                    {/* V2 Evaluation Content Renderer */}
-                    <EvaluationRendererV2
-                      v2Response={v2RawResponse}
-                      selectedVersion={v2SelectedVersion}
-                      onVersionChange={setV2SelectedVersion}
-                      isLoading={isGenerating}
-                      showDebug={showDebugPanel}
-                      teacherName={user?.name}
-                      onV2ResponseChange={setV2RawResponse}
-                      onPointsWarning={(message) =>
-                        toast({ title: 'Puntos', description: message, variant: 'default' })
-                      }
-                      onRenderError={(reason) => {
-                        console.warn('[EVAL_PIPELINE] V2 render error, using V1 fallback:', reason);
-                        setV2RawResponse(null);
-                        toast({
-                          title: "Usando formato estándar",
-                          description: "El formato beta no está disponible, mostrando versión estándar.",
-                          duration: 3000
-                        });
-                      }}
-                    />
-                    
-                    {/* V2 Adjustments Panel - request refinements to generated content */}
-                    <EvaluationAdjustmentsPanel
-                      v2Response={v2RawResponse}
-                      onAdjustmentApplied={(newResponse, previousResponse) => {
-                        setPreviousV2Response(previousResponse);
-                        setV2RawResponse(newResponse);
-                      }}
-                      previousResponse={previousV2Response}
-                      onUndo={() => {
-                        if (previousV2Response) {
-                          setV2RawResponse(previousV2Response);
-                          setPreviousV2Response(null);
-                        }
-                      }}
-                      groupContext={{
-                        subject: materia || (esInterdisciplinaria ? materiasSeleccionadas.join(', ') : undefined),
-                        groupName: selectedGroup?.name,
-                        content: selectedSubtemas,
-                        competencies: selectedCompetenciasIds,
-                        criteriosLogro: selectedCriteriosLogro,
-                        students: selectedGroup?.students?.map(s => ({ studentId: s.id, displayName: s.name })),
-                      }}
-                      evaluationDesignPlan={evaluationDesignPlan as unknown as Record<string, unknown> | undefined}
-                      isLoading={isGenerating}
-                    />
-                  </>
-                ) : (
-                  /* ============================================================ */
-                  /* V1 MODE: Use v1 panels + EvaluacionVisualRenderer            */
-                  /* ============================================================ */
-                  <>
-                    {/* V1: Assignment Warnings */}
-                    {assignmentWarnings.length > 0 && (
-                      <Card className="border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
-                        <CardHeader>
-                          <CardTitle className="text-sm text-amber-800 dark:text-amber-200 flex items-center gap-2">
-                            <AlertTriangle className="h-4 w-4" />
-                            Ajustes automáticos de versiones
-                          </CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <ul className="list-disc pl-5 text-sm text-amber-700 dark:text-amber-300">
-                            {assignmentWarnings.map((warning, idx) => (
-                              <li key={idx}>{warning}</li>
-                            ))}
-                          </ul>
-                        </CardContent>
-                      </Card>
-                    )}
-
-                    {/* V1: Student Assignments Panel */}
-                    {Object.keys(studentAssignments).length > 0 && (
-                      <EvaluationAssignmentsPanel
-                        assignments={studentAssignments}
-                        students={selectedGroup?.students || []}
-                      />
-                    )}
-                    
-                    {/* V1: Teacher Reminders Panel */}
-                    {(teacherReminders.length > 0 || missingTemplateErrors.length > 0) && (
-                      <TeacherRemindersPanel 
-                        reminders={teacherReminders} 
-                        students={selectedGroup?.students || []}
-                        missingTemplateErrors={missingTemplateErrors}
-                      />
-                    )}
-                    
-                    {/* V1: Evaluation Content Renderer (HTML-based) */}
-                    {displayEvaluations.map((evaluation) => (
-                      <EvaluacionVisualRenderer
-                        key={evaluation.id}
-                        evaluation={evaluation}
-                        subject={esInterdisciplinaria 
-                          ? materiasSeleccionadas.map(m => m).join(', ') 
-                          : materia || ''
-                        }
-                        selectedContent={selectedSubtemas.map(id => {
-                          const subtema = getSubtemaPorId(id);
-                          return { nombre: subtema?.contenido || id };
-                        })}
-                        duration="90 minutos"
-                        requirements={requerimientos}
-                        students={selectedGroup?.students}
-                        criteriosLogro={selectedCriteriosLogro}
-                        onFeedback={(evaluationId, feedback) => {
-                          setCurrentFeedback(prev => ({
-                            ...prev,
-                            [evaluationId]: { 
-                              liked: '',
-                              disliked: '',
-                              suggestions: feedback
-                            }
-                          }));
-                          handleFeedback(evaluationId);
-                        }}
-                        onRegenerate={(evaluationId) => handleRegenerate(evaluationId)}
-                      />
-                    ))}
-                    
-                    {/* V1: AI Design Report */}
-                    {aiDesignReport ? (
-                      <AIDesignReport 
-                        reportData={JSON.parse(aiDesignReport) as AIDesignReportData} 
-                        className="mt-6"
-                      />
-                    ) : (
-                      <Card className="mt-6 border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/20">
-                        <CardHeader>
-                          <CardTitle className="text-sm text-amber-800 dark:text-amber-200">
-                            Reporte de IA
-                          </CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <p className="text-sm text-amber-700 dark:text-amber-300">
-                            El reporte de IA no está disponible para esta evaluación (legacy o generación previa).
-                          </p>
-                        </CardContent>
-                      </Card>
-                    )}
-                    
-                    {/* V1: Criterios de Logro */}
-                    {selectedCriteriosLogro.length > 0 && (
-                      <Card className="border-2 border-green-300">
-                        <CardHeader>
-                          <CardTitle className="text-green-700">Criterios de logro seleccionados para evaluar</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          {criteriosLogroBox(selectedCompetenciasIds, esInterdisciplinaria ? materiasSeleccionadas : [materia as Materia])}
-                        </CardContent>
-                      </Card>
-                    )}
-                  </>
-                )}
-              </TabsContent>
-            </Tabs>
-          </div>
+          <EvaluationResultsSection
+            groupName={selectedGroup?.name}
+            activeTab={activeTab}
+            onActiveTabChange={setActiveTab}
+            saveButton={
+              <SaveEvaluationSection
+                saveDialogOpen={saveDialogOpen}
+                onSaveDialogOpenChange={setSaveDialogOpen}
+                nombreEvaluacion={nombreEvaluacion}
+                onNombreEvaluacionChange={setNombreEvaluacion}
+                isSaving={isSaving}
+                onSaveRequest={handleSaveEvaluation}
+                onOpenSaveDialog={() => {
+                  const defaultName = `Evaluación ${esInterdisciplinaria ? materiasSeleccionadas.join(' + ') : materia} - ${selectedGroup?.name}`;
+                  setNombreEvaluacion(defaultName);
+                  setSaveDialogOpen(true);
+                }}
+              />
+            }
+            showDebugPanel={showDebugPanel}
+            debugA={debugA}
+            debugB={debugB}
+            debugC={debugC}
+            debugAssignmentCounts={debugAssignmentCounts}
+            debugVersions={debugVersions}
+            cardA={cardA}
+            cardB={cardB}
+            cardC={cardC}
+            diffCheckA={diffCheckA}
+            diffCheckB={diffCheckB}
+            diffCheckC={diffCheckC}
+            useBetaV2={useBetaV2}
+            v2RawResponse={v2RawResponse}
+            v2SelectedVersion={v2SelectedVersion}
+            onV2VersionChange={setV2SelectedVersion}
+            onV2ResponseChange={setV2RawResponse}
+            isGenerating={isGenerating}
+            teacherName={user?.name ?? null}
+            onPointsWarning={(message) => toast({ title: 'Puntos', description: message, variant: 'default' })}
+            onRenderError={(reason) => {
+              console.warn('[EVAL_PIPELINE] V2 render error, using V1 fallback:', reason);
+              setV2RawResponse(null);
+              toast({
+                title: "Usando formato estándar",
+                description: "El formato beta no está disponible, mostrando versión estándar.",
+                duration: 3000
+              });
+            }}
+            previousV2Response={previousV2Response}
+            onAdjustmentApplied={(newResponse, previousResponse) => {
+              setPreviousV2Response(previousResponse);
+              setV2RawResponse(newResponse);
+            }}
+            onUndo={() => {
+              if (previousV2Response) {
+                setV2RawResponse(previousV2Response);
+                setPreviousV2Response(null);
+              }
+            }}
+            groupContext={{
+              subject: materia || (esInterdisciplinaria ? materiasSeleccionadas.join(', ') : undefined),
+              groupName: selectedGroup?.name,
+              content: selectedSubtemas,
+              competencies: selectedCompetenciasIds,
+              criteriosLogro: selectedCriteriosLogro,
+              students: selectedGroup?.students?.map(s => ({ studentId: s.id, displayName: s.name })) ?? [],
+            }}
+            evaluationDesignPlan={evaluationDesignPlan}
+            assignmentWarnings={assignmentWarnings}
+            studentAssignments={studentAssignments}
+            students={selectedGroup?.students}
+            teacherReminders={teacherReminders}
+            missingTemplateErrors={missingTemplateErrors}
+            displayEvaluations={displayEvaluations}
+            subjectDisplay={esInterdisciplinaria ? materiasSeleccionadas.map(m => m).join(', ') : materia || ''}
+            selectedContent={selectedSubtemas.map(id => {
+              const subtema = getSubtemaPorId(id);
+              return { nombre: subtema?.contenido || id };
+            })}
+            duration="90 minutos"
+            requirements={requerimientos}
+            selectedCriteriosLogro={selectedCriteriosLogro}
+            onFeedbackRequest={(evaluationId, feedback) => {
+              setCurrentFeedback(prev => ({
+                ...prev,
+                [evaluationId]: { liked: '', disliked: '', suggestions: feedback }
+              }));
+              handleFeedback(evaluationId);
+            }}
+            onRegenerateRequest={(evaluationId) => handleRegenerate(evaluationId)}
+            aiDesignReport={aiDesignReport}
+            criteriosLogroContent={criteriosLogroBox(selectedCompetenciasIds, esInterdisciplinaria ? materiasSeleccionadas : [materia as Materia])}
+          />
         )}
-
-        {/* Save Evaluation Dialog */}
-        <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Guardar Evaluación</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="nombre">Nombre de la evaluación</Label>
-                <Input
-                  id="nombre"
-                  value={nombreEvaluacion}
-                  onChange={(e) => setNombreEvaluacion(e.target.value)}
-                  placeholder="Ej: Evaluación Historia - 9no 1"
-                  className="mt-2"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Este nombre aparecerá en "Mis Evaluaciones"
-                </p>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 mt-4">
-              <Button
-                variant="outline"
-                onClick={() => setSaveDialogOpen(false)}
-                disabled={isSaving}
-              >
-                Cancelar
-              </Button>
-              <Button
-                onClick={handleSaveEvaluation}
-                disabled={isSaving || !nombreEvaluacion.trim()}
-              >
-                {isSaving ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                    Guardando...
-                  </>
-                ) : (
-                  <>
-                    <Save className="w-4 h-4 mr-2" />
-                    Guardar
-                  </>
-                )}
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
         </div>
       </div>
     </ErrorBoundary>
