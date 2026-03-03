@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
+import { NotificationsPanel } from "@/components/dashboard/NotificationsPanel";
 
 const motivationalQuotes = [
   "Un maestro afecta la eternidad; no puede decir dónde termina su influencia. - Henry Adams",
@@ -34,43 +35,6 @@ const motivationalQuotes = [
   "Educaar la mente sin educar el corazón no es educar en absoluto. - Aristóteles",
   "El maestro que intenta enseñar sin inspirar en el alumno el deseo de aprender está tratando de forjar un hierro frío. - Horace Mann",
   "La educación es el movimiento de la oscuridad a la luz. - Allan Bloom"
-];
-
-const notifications = [
-  {
-    id: 1,
-    type: "info",
-    title: "Comunicación de la psicopedagoga",
-    message: "Se actualizó el informe de Santiago Pérez. Ver informe actualizado y sugerencias en el perfil del alumno",
-    time: "hace 30 min",
-    icon: User,
-    link: "/teacher-groups"
-  },
-  {
-    id: 2,
-    type: "urgent",
-    title: "Comunicación del equipo directivo",
-    message: "Ana Rodríguez será sometida a cirugía de vegetaciones que incide en su audición actual. Ubicarla en la primera fila",
-    time: "hace 2 horas",
-    icon: AlertTriangle
-  },
-  {
-    id: 3,
-    type: "info",
-    title: "Mensaje del equipo directivo",
-    message: "Carlos Martínez viajará representando a Uruguay a Brasil entre el 15-22 de diciembre. No marcar inasistencias ni evaluaciones en ese período",
-    time: "hace 4 horas",
-    icon: Calendar
-  },
-  {
-    id: 4,
-    type: "info",
-    title: "Comunicación de la psicopedagoga",
-    message: "Se actualizaron las contemplaciones sugeridas para Lucía Torres. Revisar ajustes en su perfil",
-    time: "hace 1 día",
-    icon: User,
-    link: "/teacher-groups"
-  }
 ];
 
 const quickStats = [
@@ -162,44 +126,7 @@ const TeacherDashboard = () => {
           transition={{ duration: 0.6, delay: 0.2 }}
           className="lg:col-span-2"
         >
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center">
-                <Bell className="w-5 h-5 mr-2 text-primary" />
-                Notificaciones Importantes
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {notifications.map((notification) => (
-                <div
-                  key={notification.id}
-                  className="flex items-start space-x-3 p-3 rounded-lg border border-border hover:bg-card-hover transition-colors cursor-pointer"
-                  onClick={() => notification.link && navigate(notification.link)}
-                >
-                  <div className={`p-2 rounded-full ${
-                    notification.type === 'urgent' ? 'bg-warning-100 text-warning' :
-                    notification.type === 'success' ? 'bg-secondary-100 text-secondary' :
-                    'bg-primary-100 text-primary'
-                  }`}>
-                    <notification.icon className="w-4 h-4" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <h4 className="text-sm font-medium">{notification.title}</h4>
-                      <Badge variant={
-                        notification.type === 'urgent' ? 'destructive' :
-                        notification.type === 'success' ? 'secondary' : 'default'
-                      }>
-                        {notification.type === 'urgent' ? 'Urgente' : 'Info'}
-                      </Badge>
-                    </div>
-                    <p className="text-sm text-foreground-subtle">{notification.message}</p>
-                    <p className="text-xs text-foreground-subtle mt-1">{notification.time}</p>
-                  </div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+          <NotificationsPanel />
         </motion.div>
 
         {/* Motivational Quote & Quick Actions */}

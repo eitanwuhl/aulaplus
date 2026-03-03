@@ -2,12 +2,12 @@ import { ReactNode } from "react"
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { AppSidebar } from "./AppSidebar"
 import { Breadcrumbs } from "./Breadcrumbs"
-import { Search, LogOut } from "lucide-react"
+import { LogOut } from "lucide-react"
 import { Button } from "./ui/button"
-import { Input } from "./ui/input"
 import { useAuth } from "@/contexts/AuthContext"
 import { useToast } from "@/hooks/use-toast"
 import { FloatingCommunicationButton } from "./FloatingCommunicationButton"
+import { GlobalSearch } from "@/components/dashboard/GlobalSearch"
 
 interface AppLayoutProps {
   children: ReactNode
@@ -40,13 +40,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                 <Breadcrumbs />
                 
                   <div className="flex items-center gap-2">
-                    <div className="relative max-w-sm">
-                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input 
-                        placeholder="Buscar estudiantes, grupos..."
-                        className="pl-9 h-8 w-64"
-                      />
-                    </div>
+                    <GlobalSearch />
                     
                     <span className="text-sm text-foreground-subtle hidden md:block">
                       {user?.name}

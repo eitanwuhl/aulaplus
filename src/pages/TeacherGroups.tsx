@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,7 +15,7 @@ import {
   TrendingDown,
   Minus
 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { mockGroups } from "@/data/mockData";
 import type { Group as MockGroup, Student as MockStudent } from "@/data/mockData";
 import GroupProfile from "@/components/GroupProfile";
@@ -24,6 +24,7 @@ import StudentProfile from "@/components/StudentProfile";
 const TeacherGroups = () => {
   console.log("[DEBUG] TeacherGroups component starting to render");
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedGroup, setSelectedGroup] = useState<MockGroup | null>(null);
   const [selectedStudent, setSelectedStudent] = useState<MockStudent | null>(null);
@@ -57,6 +58,33 @@ const TeacherGroups = () => {
     setViewingStudentProfile(false);
     setSelectedStudent(null);
   };
+
+  useEffect(() => {
+    const state = location.state as { studentId?: number; groupId?: string } | null;
+    if (!state) return;
+
+    if (typeof state.studentId === "number") {
+      const groupWithStudent = mockGroups.find((group) =>
+        group.students.some((student) => student.id === state.studentId)
+      );
+      if (!groupWithStudent) return;
+      const student = groupWithStudent.students.find((s) => s.id === state.studentId);
+      if (!student) return;
+      setSelectedGroup(groupWithStudent);
+      setSelectedStudent(student);
+      setViewingGroupProfile(true);
+      setViewingStudentProfile(true);
+      return;
+    }
+
+    if (state.groupId) {
+      const group = mockGroups.find((g) => g.id === state.groupId);
+      if (!group) return;
+      setSelectedGroup(group);
+      setViewingGroupProfile(true);
+      setViewingStudentProfile(false);
+    }
+  }, [location.state]);
 
   // Helper function to check if a student requires adjustments (explicit flags only)
   const studentRequiresAdjustments = (student: MockStudent): boolean => {
