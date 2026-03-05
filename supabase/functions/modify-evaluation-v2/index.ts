@@ -303,7 +303,9 @@ interface V2Response {
   warnings: WarningV2[];
   debug?: {
     build?: string;
+    mode?: 'new' | 'legacy';
     model: string;
+    llmCallCount?: number;
     promptTokensEstimate: number;
     completionTokensEstimate: number;
     attempt: number;
@@ -341,7 +343,30 @@ interface V2Response {
     passagesSelectedCount?: number;
     materialsCharsSent?: number;
     passagesRejectedCount?: Record<PassageRejectReason, number>;
+    keptBlocksCount?: number;
+    usableBlocksCount?: number;
+    finalK?: number;
+    finalChars?: number;
+    bundleShortfallReason?: string;
+    materialsPromptPath?: 'bundle' | 'legacy';
+    materialQuality?: {
+      usableBlocksCount?: number;
+      rejectedByReason?: Record<PassageRejectReason, number>;
+      selectedPassagesCount?: number;
+      selectedChars?: number;
+      shortfallReason?: string;
+    };
+    metrics?: {
+      promptChars?: number;
+      selectionMs?: number;
+      postProcessMs?: number;
+      openaiMs?: number | null;
+      totalMs?: number;
+      skippedNonEssentialDebug?: boolean;
+    };
     topKeywordsUsedForSelection?: string[];
+    excerptStats?: ExcerptDebugStat[];
+    invalidItemCountsByType?: Record<string, number>;
     contingency?: boolean;
     contingencyReason?: string;
     contingencyFingerprint?: string;
@@ -3523,15 +3548,16 @@ type MaterialsPromptBundle = {
   finalK?: number;
   finalChars?: number;
   bundleShortfallReason?: string;
+  usableBlocksCount?: number;
 };
 
 const MATERIAL_SELECTION_TOP_K = 10;
 const MATERIAL_SELECTION_MIN_K = 6;
 const MATERIAL_SELECTION_CHAR_BUDGET = 28000; // 20k–30k target; use ~28k as default
 const MATERIAL_SELECTION_CHAR_BUDGET_MIN = 20000;
-const MIN_PARAGRAPH_LEN = 45; // lower to produce more candidates before quality filtering
-const LONG_BLOCK_CHUNK_SIZE = 520; // split blocks more aggressively for better coverage
-const LONG_BLOCK_CHUNK_SIZE_AGGRESSIVE = 360;
+const MIN_PARAGRAPH_LEN = 60; // paragraph floor for coherent evidence blocks
+const LONG_BLOCK_CHUNK_SIZE = 700; // ~700-char windows for long blocks
+const LONG_BLOCK_CHUNK_SIZE_AGGRESSIVE = 620;
 const MATERIAL_LONG_TEXT_THRESHOLD = 20000;
 
 function summarizePassageForIndex(passage: string, maxLen = 220): string {
@@ -3611,10 +3637,11 @@ function buildMaterialWindows(
   materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
   keywords: string[],
   options?: { aggressiveChunking?: boolean }
-): { windows: MaterialWindow[]; rejectedByReason: Record<PassageRejectReason, number>; keptBlocksCount: number } {
+): { windows: MaterialWindow[]; rejectedByReason: Record<PassageRejectReason, number>; keptBlocksCount: number; usableBlocksCount: number } {
   const windows: MaterialWindow[] = [];
   const aggregatedRejected: Record<PassageRejectReason, number> = { toc: 0, biblio: 0, prologue: 0, metadata: 0 };
   let totalKeptBlocks = 0;
+  let totalUsableBlocks = 0;
   const chunkSize = options?.aggressiveChunking ? LONG_BLOCK_CHUNK_SIZE_AGGRESSIVE : LONG_BLOCK_CHUNK_SIZE;
   const maxWindowChars = options?.aggressiveChunking ? 5200 : 4200;
   for (let mIdx = 0; mIdx < materials.length; mIdx++) {
@@ -3639,6 +3666,7 @@ function buildMaterialWindows(
       aggregatedRejected[r] = (aggregatedRejected[r] || 0) + (rejectedByReason[r] || 0);
     });
     let paragraphs = paragraphsStrict;
+    totalUsableBlocks += paragraphsStrict.length;
     if (paragraphs.length < MATERIAL_SELECTION_MIN_K && rejected.length > 0) {
       const relaxed: string[] = [];
       for (const block of rejected) {
@@ -3675,7 +3703,7 @@ function buildMaterialWindows(
     }
   }
   windows.sort((a, b) => b.score - a.score || b.passage.length - a.passage.length);
-  return { windows, rejectedByReason: aggregatedRejected, keptBlocksCount: totalKeptBlocks };
+  return { windows, rejectedByReason: aggregatedRejected, keptBlocksCount: totalKeptBlocks, usableBlocksCount: totalUsableBlocks };
 }
 
 /** Build lightweight index + curated relevant passages for the main prompt. */
@@ -3694,14 +3722,15 @@ function buildMaterialsPromptBundle(
       keptBlocksCount: 0,
       finalK: 0,
       finalChars: 0,
-      bundleShortfallReason: 'no_materials'
+      bundleShortfallReason: 'NO_MATERIALS',
+      usableBlocksCount: 0
     };
   }
 
   const keywords = tokenizeKeywords(selectionContext, 30);
   const totalExtractedChars = materials.reduce((acc, m) => acc + ((m.extractedText || '').trim().length), 0);
   const hasLongMaterial = totalExtractedChars >= MATERIAL_LONG_TEXT_THRESHOLD;
-  let { windows: ranked, rejectedByReason, keptBlocksCount } = buildMaterialWindows(materials, keywords);
+  let { windows: ranked, rejectedByReason, keptBlocksCount, usableBlocksCount } = buildMaterialWindows(materials, keywords);
   const selected: MaterialWindow[] = [];
   let charBudgetUsed = 0;
   const budgetMax = MATERIAL_SELECTION_CHAR_BUDGET;
@@ -3714,6 +3743,7 @@ function buildMaterialsPromptBundle(
     if (dup) continue;
     selected.push(window);
     charBudgetUsed += extra;
+    if (selected.length >= MATERIAL_SELECTION_MIN_K && charBudgetUsed >= MATERIAL_SELECTION_CHAR_BUDGET_MIN) break;
   }
   for (let i = selected.length; i < ranked.length && selected.length < MATERIAL_SELECTION_MIN_K; i++) {
     const next = ranked[i];
@@ -3749,6 +3779,7 @@ function buildMaterialsPromptBundle(
     const aggressive = buildMaterialWindows(materials, keywords, { aggressiveChunking: true });
     ranked = aggressive.windows;
     keptBlocksCount = Math.max(keptBlocksCount, aggressive.keptBlocksCount);
+    usableBlocksCount = Math.max(usableBlocksCount, aggressive.usableBlocksCount);
     (['toc', 'biblio', 'prologue', 'metadata'] as const).forEach((r) => {
       rejectedByReason[r] = Math.max(rejectedByReason[r] || 0, aggressive.rejectedByReason[r] || 0);
     });
@@ -3762,12 +3793,12 @@ function buildMaterialsPromptBundle(
       if (finalChars >= MATERIAL_SELECTION_CHAR_BUDGET_MIN && selected.length >= MATERIAL_SELECTION_MIN_K) break;
     }
     if (finalChars < MATERIAL_SELECTION_CHAR_BUDGET_MIN) {
-      bundleShortfallReason = keptBlocksCount <= 0
-        ? 'no_clean_blocks_after_filters'
-        : 'insufficient_clean_passages_for_min_budget';
+      bundleShortfallReason = usableBlocksCount <= 0
+        ? 'INSUFFICIENT_USABLE_TEXT'
+        : 'MIN_CHARS_NOT_REACHED_AFTER_TOPUP';
     }
   } else if (!hasLongMaterial && finalChars < MATERIAL_SELECTION_CHAR_BUDGET_MIN) {
-    bundleShortfallReason = 'source_material_too_short_for_min_budget';
+    bundleShortfallReason = 'INSUFFICIENT_USABLE_TEXT';
   }
 
   const indexLines = [
@@ -3805,6 +3836,7 @@ function buildMaterialsPromptBundle(
     topKeywordsUsedForSelection: keywords.slice(0, 12),
     passagesRejectedCount: rejectedByReason,
     keptBlocksCount,
+    usableBlocksCount,
     finalK: selected.length,
     finalChars,
     bundleShortfallReason: bundleShortfallReason || undefined
@@ -4412,7 +4444,7 @@ async function runRubricAndPromptBRepair(
 const DELTA_FILLER_SECTION_ID = 'duration-filler-section';
 const DELTA_FILLER_SECTION_TITLE = 'Complemento de duración';
 const DELTA_FILLER_ITEM_ID_PREFIX = 'filler-';
-const MAX_DELTA_FILLER_ITEMS_TOTAL = 6; // hard cap: avoid low-quality item spam
+const MAX_DELTA_FILLER_ITEMS_TOTAL = 4; // hard cap: avoid low-quality item spam
 
 /**
  * Collect all existing item and section IDs in the spec (to generate unique new IDs).
@@ -4489,19 +4521,43 @@ export function applyDeltaFiller(
 
   const newItems: EvaluationItemV2[] = [];
   let itemIndex = 0;
+  const normalizedExistingStems = new Set<string>();
+  for (const section of spec.sections || []) {
+    for (const item of section.items || []) {
+      const stem = (item.prompt || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+      if (stem) normalizedExistingStems.add(stem);
+    }
+  }
   const minutesPerMC = DURATION_MINUTES_BY_ITEM_TYPE['multiple_choice'] ?? 2;
   const minutesPerShort = DURATION_MINUTES_BY_ITEM_TYPE['short_answer'] ?? 4;
   const minutesPerParagraph = DURATION_MINUTES_BY_ITEM_TYPE['paragraph'] ?? 9;
   const minutesPerEssay = DURATION_MINUTES_BY_ITEM_TYPE['essay'] ?? 14;
   const hasHighQualityExcerpt = usableExcerpt.length >= MIN_EXCERPT_LENGTH_CHARS;
 
-  const fillerTerms = expandDeterministicTerms([subject], subject);
+  const passageKeywords = hasHighQualityExcerpt ? tokenizeKeywords(usableExcerpt, 10) : [];
+  const fillerTerms = expandDeterministicTerms(passageKeywords.length > 0 ? passageKeywords : [subject], subject);
+  const isDuplicateStem = (prompt: string): boolean => {
+    const stem = prompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+    if (!stem) return true;
+    if (normalizedExistingStems.has(stem)) return true;
+    const stemTokens = new Set(stem.split(' ').filter((t) => t.length >= 4));
+    for (const existing of normalizedExistingStems) {
+      const existingTokens = existing.split(' ').filter((t) => t.length >= 4);
+      const shared = existingTokens.filter((t) => stemTokens.has(t)).length;
+      if (shared >= 5) return true;
+    }
+    return false;
+  };
   while (remainingDelta > 0 && newItems.length < MAX_DELTA_FILLER_ITEMS_TOTAL) {
     if (remainingDelta >= minutesPerEssay) {
       const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
       itemIds.add(id);
       itemIndex++;
       const prompt = `Desarrolle una respuesta argumentada sobre ${subject}, incorporando conceptos clave y evidencia trabajada en clase.`;
+      if (isDuplicateStem(prompt)) {
+        remainingDelta -= 1;
+        continue;
+      }
       newItems.push({
         id,
         type: 'essay',
@@ -4510,11 +4566,16 @@ export function applyDeltaFiller(
         rubric: buildFallbackRubric(prompt, 4)
       } as EvaluationItemV2);
       remainingDelta -= minutesPerEssay;
+      normalizedExistingStems.add(prompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
     } else if (remainingDelta >= minutesPerParagraph) {
       const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
       itemIds.add(id);
       itemIndex++;
       const prompt = `Elabore un párrafo explicativo sobre ${subject} destacando una relación causa-consecuencia o evidencia concreta.`;
+      if (isDuplicateStem(prompt)) {
+        remainingDelta -= 1;
+        continue;
+      }
       newItems.push({
         id,
         type: 'paragraph',
@@ -4523,6 +4584,7 @@ export function applyDeltaFiller(
         rubric: buildFallbackRubric(prompt, 3)
       } as EvaluationItemV2);
       remainingDelta -= minutesPerParagraph;
+      normalizedExistingStems.add(prompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
     } else if (hasHighQualityExcerpt && remainingDelta >= minutesPerMC) {
       const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
       itemIds.add(id);
@@ -4531,10 +4593,15 @@ export function applyDeltaFiller(
         ...opt,
         id: `${id}-opt-${idx + 1}`
       }));
+      const mcPrompt = 'A partir del fragmento adjunto, seleccione la opción que mejor responde.';
+      if (isDuplicateStem(mcPrompt)) {
+        remainingDelta -= 1;
+        continue;
+      }
       newItems.push({
         id,
         type: 'multiple_choice',
-        prompt: 'A partir del fragmento adjunto, seleccione la opción que mejor responde.',
+        prompt: mcPrompt,
         points: 1,
         options,
         source: {
@@ -4544,11 +4611,16 @@ export function applyDeltaFiller(
         }
       } as EvaluationItemV2);
       remainingDelta -= minutesPerMC;
+      normalizedExistingStems.add(mcPrompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
     } else if (remainingDelta >= minutesPerShort) {
       const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
       itemIds.add(id);
       itemIndex++;
       const prompt = `Indique brevemente un aspecto relevante sobre ${subject}.`;
+      if (isDuplicateStem(prompt)) {
+        remainingDelta -= 1;
+        continue;
+      }
       newItems.push({
         id,
         type: 'short_answer',
@@ -4557,21 +4629,28 @@ export function applyDeltaFiller(
         rubric: buildFallbackRubric(prompt, 2)
       } as EvaluationItemV2);
       remainingDelta -= minutesPerShort;
+      normalizedExistingStems.add(prompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
     } else if (hasHighQualityExcerpt && remainingDelta >= minutesPerMC) {
       // last resort small step only when excerpt exists and remains high-quality
       const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
       itemIds.add(id);
       itemIndex++;
       const options = buildDeterministicMcOptions(fillerTerms, subject).map((opt, idx) => ({ ...opt, id: `${id}-opt-${idx + 1}` }));
+      const mcPrompt = 'A partir del fragmento adjunto, seleccione la opción que mejor responde.';
+      if (isDuplicateStem(mcPrompt)) {
+        remainingDelta -= 1;
+        continue;
+      }
       newItems.push({
         id,
         type: 'multiple_choice',
-        prompt: 'A partir del fragmento adjunto, seleccione la opción que mejor responde.',
+        prompt: mcPrompt,
         points: 1,
         options,
         source: { type: 'text', content: usableExcerpt, caption: materialsWithExcerpt[0]?.title || 'Fragmento' }
       } as EvaluationItemV2);
       remainingDelta -= minutesPerMC;
+      normalizedExistingStems.add(mcPrompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
     } else {
       break;
     }
@@ -4579,25 +4658,29 @@ export function applyDeltaFiller(
 
   if (newItems.length === 0) return { spec, itemsAdded: 0 };
 
-  const sectionId = sectionIds.has(DELTA_FILLER_SECTION_ID)
-    ? `${DELTA_FILLER_SECTION_ID}-${Date.now()}`
-    : DELTA_FILLER_SECTION_ID;
-  const fillerSection: EvaluationSectionV2 = {
-    id: sectionId,
-    title: DELTA_FILLER_SECTION_TITLE,
-    items: newItems
-  };
-  const newSections = [...(spec.sections || []), fillerSection];
-  const newSpec: EvaluationSpecV2 = {
-    ...spec,
-    sections: newSections
-  };
+  const targetSection = (spec.sections || []).find((s) => Array.isArray(s.items)) || (spec.sections || [])[0];
+  if (targetSection) {
+    targetSection.items = [...(targetSection.items || []), ...newItems];
+  } else {
+    const sectionId = sectionIds.has(DELTA_FILLER_SECTION_ID)
+      ? `${DELTA_FILLER_SECTION_ID}-${Date.now()}`
+      : DELTA_FILLER_SECTION_ID;
+    spec.sections = [...(spec.sections || []), { id: sectionId, title: DELTA_FILLER_SECTION_TITLE, items: newItems }];
+  }
+  const newSpec: EvaluationSpecV2 = { ...spec, sections: [...(spec.sections || [])] };
   warnings.push({
     code: 'DURATION_DELTA_FILLER_APPLIED',
     message: `Se añadieron ${newItems.length} ítem(s) de complemento para alcanzar la duración objetivo (estimado anterior ${currentEstimate} min, objetivo ≥${low} min).`,
     severity: 'info',
     context: { itemsAdded: newItems.length, previousEstimate: currentEstimate, targetLow: low, usedHighQualityExcerpt: hasHighQualityExcerpt, maxItemsCap: MAX_DELTA_FILLER_ITEMS_TOTAL }
   });
+  if (remainingDelta > 0) {
+    warnings.push({
+      code: 'DURATION_REALISM_CAP_REACHED',
+      message: `Se detuvo el complemento de duración para preservar realismo pedagógico (delta pendiente aprox. ${remainingDelta} min).`,
+      severity: 'warning'
+    });
+  }
   return { spec: newSpec, itemsAdded: newItems.length };
 }
 
@@ -4803,9 +4886,10 @@ function buildDeterministicMcOptions(terms: string[], subject?: string): Array<{
   const t1 = terms[1] || 'evidencia textual';
   const t2 = terms[2] || 'contexto histórico';
   const t3 = terms[3] || 'impacto social';
+  const nearMiss = terms[4] || t2;
   return [
     { id: 'opt-a', text: `Identifica y relaciona ${t0} con ${t1} dentro de ${topic}.`, isCorrect: true },
-    { id: 'opt-b', text: `Describe solo ${t2} sin conectar causas ni consecuencias.` },
+    { id: 'opt-b', text: `Confunde ${t0} con ${nearMiss} y presenta esa relación como si fueran equivalentes.` },
     { id: 'opt-c', text: `Enumera datos aislados sin justificar con ${t1}.` },
     { id: 'opt-d', text: `Se enfoca en ${t3} pero omite el proceso principal.` }
   ];
@@ -4900,6 +4984,85 @@ function enforceFinalItemInvariants(
       severity: 'info'
     });
   }
+}
+
+function ensureComprehensionBundleDeterministically(
+  spec: EvaluationSpecV2,
+  materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
+  baseKeywords: string[],
+  subject: string | undefined,
+  warnings: WarningV2[]
+): void {
+  if (hasSectionWithComprehensionBundle(spec)) return;
+  const terms = expandDeterministicTerms(baseKeywords, subject);
+  const materialsWithText = (materials || []).filter((m) => (m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS);
+  if (!materialsWithText.length) return;
+  const excerpt = selectDeterministicSourcePassage(materialsWithText, `comprensión de ${subject || 'la temática'}`, terms, subject);
+  const targetSection = spec.sections?.[0];
+  if (!targetSection) return;
+  if (hasHighQualityExcerptContent(excerpt)) {
+    const existingIds = new Set((targetSection.items || []).map((i) => i.id));
+    const sourceId = nextFillerItemId(existingIds, 'cmp-source-', 1);
+    targetSection.items = targetSection.items || [];
+    targetSection.items.push({
+      id: sourceId,
+      type: 'source_analysis',
+      prompt: `Analice el fragmento y explique dos ideas centrales vinculadas con ${subject || 'la temática trabajada'}.`,
+      points: 3,
+      source: { type: 'text', content: excerpt, caption: materialsWithText[0]?.title || 'Fragmento de referencia' }
+    } as EvaluationItemV2);
+    for (let i = 0; i < 4; i++) {
+      const id = nextFillerItemId(existingIds, 'cmp-mc-', i + 1);
+      const mcTerms = expandDeterministicTerms([terms[i % Math.max(1, terms.length)] || subject || 'tema'], subject);
+      targetSection.items.push({
+        id,
+        type: 'multiple_choice',
+        prompt: 'A partir del fragmento adjunto, seleccione la opción más adecuada.',
+        points: 1,
+        options: buildDeterministicMcOptions(mcTerms, subject).map((opt, idx) => ({ ...opt, id: `${id}-opt-${idx + 1}` })),
+        source: { type: 'text', content: excerpt, caption: materialsWithText[0]?.title || 'Fragmento de referencia' }
+      } as EvaluationItemV2);
+    }
+    const shortId = nextFillerItemId(existingIds, 'cmp-sa-', 1);
+    targetSection.items.push({
+      id: shortId,
+      type: 'short_answer',
+      prompt: 'Cite o parafrasee una evidencia del fragmento para justificar su respuesta.',
+      points: 2,
+      source: { type: 'text', content: excerpt, caption: materialsWithText[0]?.title || 'Fragmento de referencia' },
+      rubric: buildFallbackRubric('Cite o parafrasee una evidencia del fragmento para justificar su respuesta.', 2)
+    } as EvaluationItemV2);
+    warnings.push({
+      code: 'COMPREHENSION_BUNDLE_ADDED',
+      message: 'Se añadió un bloque de comprensión lectora determinista con excerpt de calidad.',
+      severity: 'info'
+    });
+    return;
+  }
+
+  // No usable excerpt -> fallback to open-ended grounded items without excerpt dependency.
+  targetSection.items = targetSection.items || [];
+  const existingIds = new Set(targetSection.items.map((i) => i.id));
+  const openPrompt = `Explique un aspecto clave de ${subject || 'la temática trabajada'} utilizando vocabulario disciplinar pertinente.`;
+  targetSection.items.push({
+    id: nextFillerItemId(existingIds, 'cmp-open-', 1),
+    type: 'paragraph',
+    prompt: openPrompt,
+    points: 3,
+    rubric: buildFallbackRubric(openPrompt, 3)
+  } as EvaluationItemV2);
+  targetSection.items.push({
+    id: nextFillerItemId(existingIds, 'cmp-open-', 2),
+    type: 'short_answer',
+    prompt: `Mencione una evidencia o ejemplo concreto relacionado con ${subject || 'la temática trabajada'}.`,
+    points: 2,
+    rubric: buildFallbackRubric(`Mencione una evidencia o ejemplo concreto relacionado con ${subject || 'la temática trabajada'}.`, 2)
+  } as EvaluationItemV2);
+  warnings.push({
+    code: 'COMPREHENSION_BUNDLE_FALLBACK_OPEN_ITEMS',
+    message: 'No se encontró excerpt de calidad para comprensión; se usaron ítems abiertos coherentes sin dependencia de fragmento.',
+    severity: 'warning'
+  });
 }
 
 function selectDeterministicSourcePassage(
@@ -5488,6 +5651,8 @@ serve(async (req) => {
       userPrompt = `${userPrompt}\n\n${adjustSection}`;
       timer.log(`Adjustment mode: spec appended to prompt (teacherText=${(modification || '').length}chars)`);
     }
+    const selectionStartMs = Date.now();
+    let selectionMs = 0;
     let materialsPromptPath: 'bundle' | 'legacy' = 'legacy';
     let materialsPromptStats: {
       materialsIndexCount: number;
@@ -5496,6 +5661,7 @@ serve(async (req) => {
       passagesRejectedCount?: Record<PassageRejectReason, number>;
       topKeywordsUsedForSelection: string[];
       keptBlocksCount: number;
+      usableBlocksCount: number;
       finalK: number;
       finalChars: number;
       bundleShortfallReason?: string;
@@ -5505,6 +5671,7 @@ serve(async (req) => {
       materialsCharsSent: 0,
       topKeywordsUsedForSelection: [],
       keptBlocksCount: 0,
+      usableBlocksCount: 0,
       finalK: 0,
       finalChars: 0,
       bundleShortfallReason: undefined,
@@ -5534,12 +5701,14 @@ serve(async (req) => {
         passagesRejectedCount: materialsBundle.passagesRejectedCount,
         topKeywordsUsedForSelection: materialsBundle.topKeywordsUsedForSelection,
         keptBlocksCount: materialsBundle.keptBlocksCount ?? 0,
+        usableBlocksCount: materialsBundle.usableBlocksCount ?? 0,
         finalK: materialsBundle.finalK ?? 0,
         finalChars: materialsBundle.finalChars ?? 0,
         bundleShortfallReason: materialsBundle.bundleShortfallReason,
       };
-      timer.log(`[PROMPT] materialsPromptPath=${materialsPromptPath} index=${materialsPromptStats.materialsIndexCount} passages=${materialsPromptStats.passagesSelectedCount} chars=${materialsPromptStats.materialsCharsSent} keptBlocks=${materialsPromptStats.keptBlocksCount} finalK=${materialsPromptStats.finalK} finalChars=${materialsPromptStats.finalChars} shortfall=${materialsPromptStats.bundleShortfallReason || 'none'} rejected=${JSON.stringify(materialsPromptStats.passagesRejectedCount || {})}`);
+      timer.log(`[PROMPT] materialsPromptPath=${materialsPromptPath} index=${materialsPromptStats.materialsIndexCount} passages=${materialsPromptStats.passagesSelectedCount} chars=${materialsPromptStats.materialsCharsSent} usableBlocks=${materialsPromptStats.usableBlocksCount} keptBlocks=${materialsPromptStats.keptBlocksCount} finalK=${materialsPromptStats.finalK} finalChars=${materialsPromptStats.finalChars} shortfall=${materialsPromptStats.bundleShortfallReason || 'none'} rejected=${JSON.stringify(materialsPromptStats.passagesRejectedCount || {})}`);
     }
+    selectionMs = Date.now() - selectionStartMs;
 
     timer.mark('prompts_built');
     timer.log(`Prompts built: system=${systemPrompt.length}chars, user=${userPrompt.length}chars`);
@@ -5559,6 +5728,8 @@ serve(async (req) => {
     
     // Build response
     if (result.spec) {
+      const postProcessStartMs = Date.now();
+      let nonEssentialDebugSkipped = false;
       let excerptStatsForDebug: ExcerptDebugStat[] = [];
       let invalidItemCountsForDebug: Record<string, number> = {};
       // Synchronize requestedVersions with actual versionVariants (e.g. fast fallback generated only A)
@@ -5719,13 +5890,15 @@ serve(async (req) => {
         (m) => (m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS
       );
       if (materialsWithUsableForCleaning.length > 0) {
+        const canCollectExcerptDebug = (Date.now() - postProcessStartMs) <= 200;
         const { excerptStats } = applyExcerptCleaningToSpec(
           result.spec,
           materialsForExcerpt,
           result.warnings,
-          { collectDebugStats: true }
+          { collectDebugStats: canCollectExcerptDebug }
         );
-        excerptStatsForDebug = excerptStats;
+        if (canCollectExcerptDebug) excerptStatsForDebug = excerptStats;
+        else nonEssentialDebugSkipped = true;
       }
 
       // Auto-trim: if estimate >120% of target, one attempt to reduce (only when USE_DURATION_AUTO_EXTEND=true).
@@ -5754,32 +5927,7 @@ serve(async (req) => {
         }
       }
 
-      // Delta filler: if still below 95% of target, add items deterministically (no OpenAI) until >= low
-      if (targetDurationMinutes !== null && estimatedMinutes < Math.round(targetDurationMinutes * 0.95)) {
-        const low = Math.round(targetDurationMinutes * 0.95);
-        const { spec: specAfterFiller, itemsAdded } = applyDeltaFiller(
-          result.spec,
-          targetDurationMinutes,
-          materialsForExcerpt,
-          result.warnings,
-          groupContext?.subject
-        );
-        if (itemsAdded > 0) {
-          result.spec = specAfterFiller;
-          estimatedMinutes = estimateDurationFromSpec(specAfterFiller);
-          timer.log(`[DURATION_DELTA_FILLER] added ${itemsAdded} items, new_estimated=${estimatedMinutes} targetLow=${low}`);
-          console.log(`[DURATION_DELTA_FILLER] added ${itemsAdded} items, new_estimated=${estimatedMinutes}`);
-        }
-      }
-
-      // Deterministic renderability completion for complex item types (no extra LLM calls).
-      fillMissingItemDataDeterministically(
-        result.spec,
-        materialsForExcerpt,
-        materialsPromptStats.topKeywordsUsedForSelection,
-        groupContext?.subject,
-        result.warnings
-      );
+      // Single deterministic post-processing pass is executed at the end of NEW path.
 
       // Rubric + Version B completion: one LLM repair pass when USE_LLM_REPAIRS (else quality-by-construction only)
       if (USE_LLM_REPAIRS) {
@@ -5878,9 +6026,28 @@ serve(async (req) => {
         groupContext?.subject,
         result.warnings
       );
+      if (materialsPromptStats.finalChars >= MIN_EXCERPT_LENGTH_CHARS) {
+        ensureComprehensionBundleDeterministically(
+          result.spec,
+          materialsForExcerpt,
+          materialsPromptStats.topKeywordsUsedForSelection,
+          groupContext?.subject,
+          result.warnings
+        );
+      }
       enforceFinalItemInvariants(result.spec, result.warnings, groupContext?.subject);
       }
-      } // end !useLegacyPath (NEW behavior: extend, excerpt, trim, delta filler, rubric+promptB repair, item validity)
+      } else {
+        // Rollback path: single-call + minimal deterministic invariants only.
+        fillMissingItemDataDeterministically(
+          result.spec,
+          materialsForExcerpt,
+          materialsPromptStats.topKeywordsUsedForSelection,
+          groupContext?.subject,
+          result.warnings
+        );
+        enforceFinalItemInvariants(result.spec, result.warnings, groupContext?.subject);
+      } // end behavior path (NEW vs LEGACY)
 
       // Structure validation: warning only (no metadata-only scaling).
       if (targetDurationMinutes !== null) {
@@ -5906,6 +6073,12 @@ serve(async (req) => {
       result.spec.meta.duration.breakdown = timeBreakdown;
       if (targetDurationMinutes !== null) {
         result.spec.meta.duration.targetMinutes = targetDurationMinutes;
+      }
+
+      const postProcessMs = Date.now() - postProcessStartMs;
+      if (postProcessMs > 200 && excerptStatsForDebug.length > 0) {
+        excerptStatsForDebug = [];
+        nonEssentialDebugSkipped = true;
       }
 
       // Success - build base aiReport first (use effectiveRequestedVersions for coherence)
@@ -6197,6 +6370,7 @@ serve(async (req) => {
           ...(narrativeWarning ? [narrativeWarning] : [])
         ]),
         debug: {
+          mode: useLegacyPath ? 'legacy' : 'new',
           build: currentBuildMarker,
           model: result.attempts?.[result.attempts.length - 1]?.model ?? OPENAI_MODEL_PRIMARY,
           llmCallCount: metrics.llmCallCount,
@@ -6233,6 +6407,21 @@ serve(async (req) => {
           finalK: materialsPromptStats.finalK,
           finalChars: materialsPromptStats.finalChars,
           bundleShortfallReason: materialsPromptStats.bundleShortfallReason,
+          materialQuality: {
+            usableBlocksCount: materialsPromptStats.usableBlocksCount,
+            rejectedByReason: materialsPromptStats.passagesRejectedCount,
+            selectedPassagesCount: materialsPromptStats.finalK,
+            selectedChars: materialsPromptStats.finalChars,
+            shortfallReason: materialsPromptStats.bundleShortfallReason
+          },
+          metrics: {
+            promptChars: systemPrompt.length + userPrompt.length,
+            selectionMs,
+            postProcessMs,
+            openaiMs: result.debug.openaiDurationMs ?? null,
+            totalMs: timer.elapsed(),
+            skippedNonEssentialDebug: nonEssentialDebugSkipped
+          },
           topKeywordsUsedForSelection: materialsPromptStats.topKeywordsUsedForSelection,
           ...(excerptStatsForDebug?.length ? { excerptStats: excerptStatsForDebug } : {}),
           ...(invalidItemCountsForDebug && Object.keys(invalidItemCountsForDebug).length ? { invalidItemCountsByType: invalidItemCountsForDebug } : {})
@@ -6320,6 +6509,7 @@ serve(async (req) => {
           aiReport: contingencyAiReport,
           warnings: emergencyWarnings,
           debug: {
+            mode: useLegacyPath ? 'legacy' : 'new',
             build: currentBuildMarker,
             model: 'emergency_template',
             llmCallCount: metrics.llmCallCount,
@@ -6364,6 +6554,7 @@ serve(async (req) => {
         
         // Add debug info with attempts (excerptStats only when present)
         (response as V2Response & { debug?: unknown }).debug = {
+          mode: useLegacyPath ? 'legacy' : 'new',
           build: currentBuildMarker,
           model: 'gpt-4.1-2025-04-14',
           llmCallCount: metrics.llmCallCount,
@@ -6378,9 +6569,7 @@ serve(async (req) => {
           timeoutUsedMs: result.debug.timeoutUsedMs,
           retryReason: result.debug.retryReason,
           promptSizeKB: (result.debug.promptLength / 1024).toFixed(1),
-          attempts: result.attempts || [],
-          ...(excerptStatsForDebug?.length ? { excerptStats: excerptStatsForDebug } : {}),
-          ...(invalidItemCountsForDebug && Object.keys(invalidItemCountsForDebug).length ? { invalidItemCountsByType: invalidItemCountsForDebug } : {})
+          attempts: result.attempts || []
         };
         
         return new Response(JSON.stringify(response), {
@@ -6417,6 +6606,7 @@ serve(async (req) => {
         severity: 'error'
       }],
       debug: {
+        mode: useLegacyPath ? 'legacy' : 'new',
         build: currentBuildMarker,
         model: 'gpt-4.1-2025-04-14',
         llmCallCount: metrics.llmCallCount,
