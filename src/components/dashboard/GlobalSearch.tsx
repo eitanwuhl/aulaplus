@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Search, Users, User } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -77,9 +77,7 @@ export function GlobalSearch() {
   };
 
   const handleGroupSelect = (groupId: string) => {
-    navigate(`/evaluaciones/nuevo?grupo=${encodeURIComponent(groupId)}`, {
-      state: { from: "/teacher-dashboard" },
-    });
+    navigate("/teacher-groups", { state: { groupId } });
     setOpen(false);
     setQuery("");
   };

@@ -34,6 +34,8 @@ export interface EvaluationBundle {
 export interface GenerationErrorState {
   message: string;
   details?: string;
+  code?: string;
+  requestId?: string;
   show: boolean;
 }
 

@@ -17,6 +17,41 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { mockGroups } from '@/data/mockData';
 import { useAuth } from '@/contexts/AuthContext';
 
+// Presentational only — no hooks. Keeps parent hook order stable.
+function LoadingState(): React.ReactElement {
+  return (
+    <div className="container mx-auto py-6">
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <Loader2 className="h-12 w-12 animate-spin mx-auto mb-4 text-primary" />
+          <p className="text-muted-foreground">Cargando evaluación...</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Presentational only — no hooks.
+function ErrorState({ message, onBack }: { message: string; onBack: () => void }): React.ReactElement {
+  return (
+    <div className="container mx-auto py-6">
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center max-w-md">
+          <AlertTriangle className="w-16 h-16 mx-auto mb-4 text-destructive" />
+          <h3 className="text-lg font-semibold mb-2">{message}</h3>
+          <p className="text-muted-foreground mb-6">
+            La evaluación que buscas no existe o fue eliminada.
+          </p>
+          <Button onClick={onBack}>
+            <ArrowLeft className="h-4 w-4 mr-2" />
+            Volver a Mis Evaluaciones
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface Evaluacion {
   id: string;
   user_id: string;
@@ -164,59 +199,12 @@ const EvaluacionDetalle: React.FC = () => {
     cargarEvaluacion();
   }, [id, toast]);
 
-  // Render loading state
-  if (isLoading) {
-    return (
-      <ErrorBoundary>
-        <div className="container mx-auto py-6">
-          <div className="flex items-center justify-center min-h-[400px]">
-            <div className="text-center">
-              <Loader2 className="h-12 w-12 animate-spin mx-auto mb-4 text-primary" />
-              <p className="text-muted-foreground">Cargando evaluación...</p>
-            </div>
-          </div>
-        </div>
-      </ErrorBoundary>
-    );
-  }
-
-  // Render error state
-  if (error || !evaluacion) {
-    return (
-      <ErrorBoundary>
-        <div className="container mx-auto py-6">
-          <div className="flex items-center justify-center min-h-[400px]">
-            <div className="text-center max-w-md">
-              <AlertTriangle className="w-16 h-16 mx-auto mb-4 text-destructive" />
-              <h3 className="text-lg font-semibold mb-2">
-                {error || 'Evaluación no encontrada'}
-              </h3>
-              <p className="text-muted-foreground mb-6">
-                La evaluación que buscas no existe o fue eliminada.
-              </p>
-              <Button onClick={() => navigate('/mis-evaluaciones')}>
-                <ArrowLeft className="h-4 w-4 mr-2" />
-                Volver a Mis Evaluaciones
-              </Button>
-            </div>
-          </div>
-        </div>
-      </ErrorBoundary>
-    );
-  }
-
-  // Get contenidos (subtemas) for display
-  const selectedContent = evaluacion.contenidos?.map(id => {
-    const subtema = getSubtemaPorId(id);
-    return { nombre: subtema?.contenido || id };
-  }).filter(Boolean) || [];
-
-  const evaluationBundle = evaluacion.evaluacion_generada?.evaluation_bundle;
-  const evaluationDesignPlan = evaluacion.evaluacion_generada?.evaluation_design_plan;
-  const rawAssignments = evaluacion.evaluacion_generada?.student_assignments || evaluationDesignPlan?.assignmentByStudentId || {};
-  const teacherReminders = evaluacion.evaluacion_generada?.teacher_reminders_by_student || evaluationDesignPlan?.perStudentReminders || [];
-  // PATCH: Leer ai_report primero desde evaluacion_generada, luego desde ai_design_report
-  const aiReportPayload = evaluacion.evaluacion_generada?.ai_report || evaluacion.ai_design_report || null;
+  // Derived data: safe when evaluacion is null (all hooks must run unconditionally below)
+  const evaluationBundle = evaluacion?.evaluacion_generada?.evaluation_bundle;
+  const evaluationDesignPlan = evaluacion?.evaluacion_generada?.evaluation_design_plan;
+  const rawAssignments = evaluacion?.evaluacion_generada?.student_assignments || evaluationDesignPlan?.assignmentByStudentId || {};
+  const teacherReminders = evaluacion?.evaluacion_generada?.teacher_reminders_by_student || evaluationDesignPlan?.perStudentReminders || [];
+  const aiReportPayload = evaluacion?.evaluacion_generada?.ai_report ?? evaluacion?.ai_design_report ?? null;
 
   const { normalizedAssignments, assignmentWarnings } = useMemo(() => {
     const available = {
@@ -224,7 +212,7 @@ const EvaluacionDetalle: React.FC = () => {
       B: Boolean(evaluationBundle?.versionBHtml),
       C: Boolean(evaluationBundle?.versionCHtml)
     };
-    const normalized: Record<string, 'A' | 'B' | 'C'> = { ...rawAssignments };
+    const normalized: Record<string, 'A' | 'B' | 'C'> = { ...(rawAssignments as Record<string, 'A' | 'B' | 'C'>) };
     const warnings: string[] = [];
     Object.entries(normalized).forEach(([studentId, version]) => {
       if (!available[version]) {
@@ -235,9 +223,8 @@ const EvaluacionDetalle: React.FC = () => {
     return { normalizedAssignments: normalized, assignmentWarnings: warnings };
   }, [evaluationBundle, rawAssignments]);
 
-  // Build synthetic V2 response when evaluation_spec is persisted (Block 3)
   const v2ResponseForDetail = useMemo((): V2Response | null => {
-    const spec = evaluacion.evaluacion_generada?.evaluation_spec;
+    const spec = evaluacion?.evaluacion_generada?.evaluation_spec;
     if (!spec || typeof spec !== 'object') return null;
     const response: V2Response = {
       success: true,
@@ -254,7 +241,7 @@ const EvaluacionDetalle: React.FC = () => {
       warnings: []
     };
     return response;
-  }, [evaluacion.evaluacion_generada?.evaluation_spec, aiReportPayload, teacherReminders, students]);
+  }, [evaluacion?.evaluacion_generada?.evaluation_spec, aiReportPayload, teacherReminders, students]);
 
   const useV2Renderer = useMemo(
     () => (v2ResponseForDetail ? canRenderV2(v2ResponseForDetail) : false),
@@ -272,10 +259,10 @@ const EvaluacionDetalle: React.FC = () => {
   );
 
   const displayEvaluations = useMemo(() => {
+    if (!evaluacion) return [];
     if (!evaluationBundle?.baseHtml && !evaluationBundle?.versions?.A) {
       return evaluacion.evaluacion_generada?.evaluaciones || [];
     }
-
     const assignmentByStudentId = normalizedAssignments || {};
     const getAssigned = (kind: 'A' | 'B' | 'C') => {
       const assigned = students.filter(student => assignmentByStudentId[String(student.id)] === kind);
@@ -284,9 +271,8 @@ const EvaluacionDetalle: React.FC = () => {
         names: assigned.map(student => student.name || `Estudiante ${student.id}`)
       };
     };
-
     const baseAssigned = getAssigned('A');
-    const baseHtml = evaluationBundle.baseHtml || evaluationBundle.versions?.A || '';
+    const baseHtml = evaluationBundle?.baseHtml || evaluationBundle?.versions?.A || '';
     const base = {
       id: 'A',
       title: 'Versión A (Universal)',
@@ -298,10 +284,8 @@ const EvaluacionDetalle: React.FC = () => {
       assignedStudents: baseAssigned.names,
       assignedStudentIds: baseAssigned.ids
     };
-
     const evaluations = [base];
-
-    const versionBHtml = evaluationBundle.versionBHtml || evaluationBundle.versions?.B || null;
+    const versionBHtml = evaluationBundle?.versionBHtml || evaluationBundle?.versions?.B || null;
     if (versionBHtml) {
       const assigned = getAssigned('B');
       evaluations.push({
@@ -316,8 +300,7 @@ const EvaluacionDetalle: React.FC = () => {
         assignedStudentIds: assigned.ids
       });
     }
-
-    const versionCHtml = evaluationBundle.versionCHtml || evaluationBundle.versions?.C || null;
+    const versionCHtml = evaluationBundle?.versionCHtml || evaluationBundle?.versions?.C || null;
     if (versionCHtml) {
       const assigned = getAssigned('C');
       evaluations.push({
@@ -332,12 +315,26 @@ const EvaluacionDetalle: React.FC = () => {
         assignedStudentIds: assigned.ids
       });
     }
-
     return evaluations;
-  }, [evaluationBundle, evaluationDesignPlan, evaluacion, students]);
+  }, [evaluationBundle, evaluationDesignPlan, evaluacion, students, normalizedAssignments]);
 
-  return (
-    <ErrorBoundary>
+  const selectedContent = useMemo(() => {
+    if (!evaluacion?.contenidos) return [];
+    return evaluacion.contenidos.map(id => {
+      const subtema = getSubtemaPorId(id);
+      return { nombre: subtema?.contenido || id };
+    }).filter(Boolean) || [];
+  }, [evaluacion?.contenidos]);
+
+  // ——— No returns above this line. All hooks must be declared above. ———
+  // Single return: choose content by state so hook order is never affected.
+  let content: React.ReactNode;
+  if (isLoading) {
+    content = <LoadingState />;
+  } else if (error || !evaluacion) {
+    content = <ErrorState message={error || 'Evaluación no encontrada'} onBack={() => navigate('/mis-evaluaciones')} />;
+  } else {
+    content = (
       <div className="container mx-auto py-6 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
@@ -510,8 +507,10 @@ const EvaluacionDetalle: React.FC = () => {
           </Card>
         )}
       </div>
-    </ErrorBoundary>
-  );
+    );
+  }
+
+  return <ErrorBoundary>{content}</ErrorBoundary>;
 };
 
 export default EvaluacionDetalle;

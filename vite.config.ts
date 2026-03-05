@@ -8,6 +8,7 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    strictPort: false, // Si 8080 está ocupado, usar el siguiente libre; la consola muestra la URL con el puerto real
     allowedHosts: ['aulaplus.onrender.com'],
   },
   plugins: [

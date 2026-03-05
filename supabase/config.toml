@@ -5,3 +5,7 @@ verify_jwt = false
 
 [functions.generate-plan-completo]
 verify_jwt = false
+
+# Gateway validates JWT (default). No manual JWT secret needed in the function.
+[functions.modify-evaluation-v2]
+verify_jwt = true

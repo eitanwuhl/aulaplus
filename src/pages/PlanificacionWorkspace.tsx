@@ -23,12 +23,22 @@ import { resolveMockGroup } from '@/utils/resolveMockGroup';
 import { PlanningAIDesignReport } from '@/components/planificacion/PlanningAIDesignReport';
 import type { PlanningAIDesignReportData } from '@/components/planificacion/PlanningAIDesignReport';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
+import { buildUnitContextForSession } from '@/services/planning/sessionUnitContext';
 
 export default function PlanificacionWorkspace() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
+  const backTo = ((location.state as { from?: string } | null)?.from) || '/planificacion';
+  const backToState = useMemo(
+    () => (backTo === '/planificacion/nuevo'
+      ? { fromWorkspace: true, returnToWizardStep: 3 }
+      : undefined),
+    [backTo]
+  );
+  const WORKSPACE_DEBUG = import.meta.env.DEV && (window as any).__PLAN_WS_DEBUG__ === true;
   
   const [planificacion, setPlanificacion] = useState<Planificacion | null>(null);
   const [isLoadingPlan, setIsLoadingPlan] = useState(true);
@@ -36,6 +46,9 @@ export default function PlanificacionWorkspace() {
   const [isEnsuringPlans, setIsEnsuringPlans] = useState(false);
   const [planGenerationProgress, setPlanGenerationProgress] = useState({ done: 0, total: 0 });
   const [planGenerationError, setPlanGenerationError] = useState<string | null>(null);
+  const attemptedMissingSignaturesRef = useRef<Set<string>>(new Set());
+  const ensureInFlightRef = useRef(false);
+  const planLoadInFlightRef = useRef(false);
   
   // State for save dialog
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
@@ -109,18 +122,52 @@ export default function PlanificacionWorkspace() {
     return null;
   }, [selectedSessionForReport]);
 
+  const fetchPlanificacionWithRetry = useCallback(async (planId: string) => {
+    const maxAttempts = 3;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (WORKSPACE_DEBUG) {
+          console.log('[PlanWorkspace][fetchPlanificacion] start', { planId, attempt, maxAttempts });
+        }
+        const { data, error } = await supabase
+          .from('planificaciones')
+          .select('*')
+          .eq('id', planId)
+          .maybeSingle();
+        if (error) throw error;
+        return data;
+      } catch (error) {
+        lastError = error;
+        const maybeMsg = error instanceof Error ? error.message : String(error);
+        const isConnectionClosed = maybeMsg.includes('ERR_CONNECTION_CLOSED');
+        const isNetwork = maybeMsg.includes('Failed to fetch') || maybeMsg.includes('NetworkError') || isConnectionClosed;
+        if (WORKSPACE_DEBUG) {
+          console.warn('[PlanWorkspace][fetchPlanificacion] failed', {
+            planId,
+            attempt,
+            isNetwork,
+            message: maybeMsg.slice(0, 180)
+          });
+        }
+        if (attempt >= maxAttempts) break;
+        const waitMs = isNetwork ? attempt * 1200 : attempt * 700;
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('No se pudo cargar la planificación tras reintentos');
+  }, [WORKSPACE_DEBUG]);
+
   // FIX: Function to reload planificacion (including ai_design_report)
   const recargarPlanificacion = useCallback(async () => {
     if (!id) return;
+    if (planLoadInFlightRef.current) return;
+    planLoadInFlightRef.current = true;
     
     try {
-      const { data, error } = await supabase
-        .from('planificaciones')
-        .select('*')
-        .eq('id', id)
-        .maybeSingle();
-      
-      if (error) throw error;
+      const data = await fetchPlanificacionWithRetry(id);
       if (!data) return;
       
       // Update planificacion state with fresh data (including ai_design_report)
@@ -140,31 +187,27 @@ export default function PlanificacionWorkspace() {
         console.log('[FIX] Planificación recargada con ai_design_report');
       }
     } catch (error) {
-      console.error('[FIX] Error recargando planificación:', error);
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[PlanWorkspace] Error recargando planificación', { planId: id, message });
+      setPlanGenerationError(`No se pudo recargar la planificación (${id}). Detalle: ${message}`);
+    } finally {
+      planLoadInFlightRef.current = false;
     }
-  }, [id]);
+  }, [id, fetchPlanificacionWithRetry]);
 
   // Cargar planificaci?n
   useEffect(() => {
     const cargarPlanificacion = async () => {
       if (!id) {
-        console.log('No hay ID de planificaci?n');
+        if (WORKSPACE_DEBUG) console.log('[PlanWorkspace] No hay ID de planificación');
         return;
       }
-      
-      console.log('Cargando planificaci?n con ID:', id);
+      if (planLoadInFlightRef.current) return;
+      planLoadInFlightRef.current = true;
+      if (WORKSPACE_DEBUG) console.log('[PlanWorkspace] Cargando planificación', { planId: id });
       setIsLoadingPlan(true);
       try {
-        const { data, error } = await supabase
-          .from('planificaciones')
-          .select('*')
-          .eq('id', id)
-          .maybeSingle();
-
-        console.log('Datos de planificaci?n:', data);
-        console.log('Error de planificaci?n:', error);
-
-        if (error) throw error;
+        const data = await fetchPlanificacionWithRetry(id);
         
         if (!data) {
           toast({
@@ -172,7 +215,7 @@ export default function PlanificacionWorkspace() {
             description: "No se encontr? la planificaci?n solicitada",
             variant: "destructive"
           });
-          navigate('/planificacion');
+          navigate(backTo, backToState ? { state: backToState } : undefined);
           return;
         }
         
@@ -214,20 +257,22 @@ export default function PlanificacionWorkspace() {
         
         setPlanificacion(planificacionConverted as unknown as Planificacion);
       } catch (error) {
-        console.error('Error cargando planificaci?n:', error);
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[PlanWorkspace] Error cargando planificación', { planId: id, message });
         toast({
           title: "Error",
-          description: "No se pudo cargar la planificaci?n",
+          description: `No se pudo cargar la planificación (${id}).`,
           variant: "destructive"
         });
-        navigate('/planificacion');
+        navigate(backTo, backToState ? { state: backToState } : undefined);
       } finally {
         setIsLoadingPlan(false);
+        planLoadInFlightRef.current = false;
       }
     };
 
     cargarPlanificacion();
-  }, [id, navigate, toast]);
+  }, [id, navigate, toast, backTo, backToState, fetchPlanificacionWithRetry, WORKSPACE_DEBUG]);
 
   // Recargar sesiones cada 5 segundos si no hay planes generados
   useEffect(() => {
@@ -334,6 +379,14 @@ export default function PlanificacionWorkspace() {
         materialsContext = formatMaterialsForAI(attachedMaterials);
       }
 
+      const unitContext = buildUnitContextForSession({
+        unidades: planificacion.unidades_didacticas || [],
+        orden: sesion.orden,
+        totalSlots: sesiones.length,
+      });
+      const groupContext = await loadGroupContext(planificacion.grupo_id);
+      const sessionBrief = sesion.session_brief?.trim();
+
       const payload = {
         modo: 'generar_plan_html',
         sesionId: sesion.id,
@@ -344,14 +397,23 @@ export default function PlanificacionWorkspace() {
         contenidos: contenidos, // FIX: Empty array if no content
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
-        instruccionesDocente: undefined,
+        instruccionesDocente: planificacion.requerimientos_docente || undefined,
+        unitContext,
+        ...(sessionBrief && { sessionBrief }),
+        ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
+        ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes }),
         // FIX: Include materials context if materials exist
         ...(attachedMaterials.length > 0 && { materialsContext })
       };
 
-      const { data, error } = await supabase.functions.invoke('generate-plan-completo', {
+      const timeoutMs = 120000;
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Timeout generando plan de sesión (${timeoutMs / 1000}s)`)), timeoutMs)
+      );
+      const invokePromise = supabase.functions.invoke('generate-plan-completo', {
         body: payload
       });
+      const { data, error } = await Promise.race([invokePromise, timeoutPromise]) as Awaited<typeof invokePromise>;
 
       if (error) {
         console.error('[GEN_PLAN_FRONTEND] Function error:', error);
@@ -408,8 +470,9 @@ export default function PlanificacionWorkspace() {
       };
       
       // FIX: Persist ai_design_report to session if available
-      if (data.ai_design_report) {
-        updatePayload.ai_design_report = data.ai_design_report;
+      const safeAiReport = sanitizePlanningAiDesignReport(data.ai_design_report);
+      if (safeAiReport) {
+        updatePayload.ai_design_report = safeAiReport;
       }
 
       const { error: updateError } = await supabase
@@ -422,10 +485,10 @@ export default function PlanificacionWorkspace() {
       }
       
       // FIX: Also persist ai_design_report to planificacion if available
-      if (data.ai_design_report) {
+      if (safeAiReport) {
         const { error: planUpdateError } = await supabase
           .from('planificaciones')
-          .update({ ai_design_report: data.ai_design_report })
+          .update({ ai_design_report: safeAiReport })
           .eq('id', planificacion.id);
         
         if (planUpdateError) {
@@ -436,7 +499,7 @@ export default function PlanificacionWorkspace() {
         }
       }
     },
-    [planificacion, recargarPlanificacion]
+    [planificacion, recargarPlanificacion, sesiones]
   );
 
   // Memoize unassigned sessions for floating tray
@@ -455,6 +518,11 @@ export default function PlanificacionWorkspace() {
     [sesiones]
   );
 
+  useEffect(() => {
+    attemptedMissingSignaturesRef.current.clear();
+    ensureInFlightRef.current = false;
+  }, [id]);
+
   // Auto-generate plans for sessions that don't have one
   // This effect runs once when the workspace loads and identifies sessions missing plan content.
   // For each missing session, it calls generatePlanForSession (which uses the AI + parser flow).
@@ -467,6 +535,16 @@ export default function PlanificacionWorkspace() {
 
     const faltantes = sesiones.filter(s => !s.plan_desarrollo?.html_completo);
     if (faltantes.length === 0) return;
+    const missingSignature = faltantes.map((s) => s.id).sort().join('|');
+    if (attemptedMissingSignaturesRef.current.has(missingSignature)) {
+      setPlanGenerationError(
+        'No se pudo completar la generación automática de algunas sesiones. Usa "Reintentar generación" para volver a intentarlo.'
+      );
+      return;
+    }
+    if (ensureInFlightRef.current) return;
+    attemptedMissingSignaturesRef.current.add(missingSignature);
+    ensureInFlightRef.current = true;
 
     let cancelled = false;
 
@@ -510,9 +588,9 @@ export default function PlanificacionWorkspace() {
         await cargarSesiones();
       }
 
-      if (!cancelled) {
-        setIsEnsuringPlans(false);
-      }
+      // Always release flags; otherwise cancelled runs can leave infinite spinner.
+      setIsEnsuringPlans(false);
+      ensureInFlightRef.current = false;
     };
 
     ensurePlans();
@@ -525,6 +603,8 @@ export default function PlanificacionWorkspace() {
   const handleRetryGeneration = async () => {
     setPlanGenerationError(null);
     setPlanGenerationProgress({ done: 0, total: 0 });
+    attemptedMissingSignaturesRef.current.clear();
+    ensureInFlightRef.current = false;
     await cargarSesiones();
   };
 
@@ -648,11 +728,11 @@ export default function PlanificacionWorkspace() {
   const shouldBlockExit = planificacion && planificacion.is_saved === false;
 
   // Handle navigation attempts (internal navigation)
-  const handleNavigate = useCallback((targetPath: string) => {
+  const handleNavigate = useCallback((targetPath: string, targetState?: unknown) => {
     if (shouldBlockExit && !isNavigatingRef.current) {
       setPendingNavigation(() => () => {
         isNavigatingRef.current = true;
-        navigate(targetPath);
+        navigate(targetPath, targetState ? { state: targetState } : undefined);
       });
       setExitConfirmOpen(true);
       return false;
@@ -760,16 +840,14 @@ export default function PlanificacionWorkspace() {
   };
 
   const handleSesionSelect = (sesion: SesionClase) => {
-    console.log('=== SESI?N SELECCIONADA EN WORKSPACE ===');
-    console.log('Sesi?n recibida:', sesion);
-    console.log('ID de sesi?n:', sesion.id);
-    console.log('Fecha de sesi?n:', sesion.fecha);
-    console.log('Estado de sesi?n:', sesion.estado);
-    console.log('Plan desarrollo:', sesion.plan_desarrollo);
-    console.log('HTML completo:', sesion.plan_desarrollo?.html_completo);
-    console.log('Argumento competencias:', sesion.argumento_competencias);
-    console.log('Recursos:', sesion.recursos);
-    console.log('========================================');
+    if (WORKSPACE_DEBUG) {
+      console.log('[PlanWorkspace] sesión seleccionada', {
+        id: sesion.id,
+        orden: sesion.orden,
+        estado: sesion.estado,
+        hasHtml: !!sesion.plan_desarrollo?.html_completo
+      });
+    }
     setSesionSeleccionada(sesion);
   };
 
@@ -804,9 +882,9 @@ export default function PlanificacionWorkspace() {
               </Button>
               <Button variant="outline" onClick={() => {
                 if (shouldBlockExit) {
-                  handleNavigate('/planificacion');
+                  handleNavigate(backTo, backToState);
                 } else {
-                  navigate('/planificacion');
+                  navigate(backTo, backToState ? { state: backToState } : undefined);
                 }
               }}>
                 Volver a planificaciones
@@ -848,9 +926,9 @@ export default function PlanificacionWorkspace() {
             <p className="text-muted-foreground mb-4">No se pudo cargar la planificaci?n</p>
             <Button onClick={() => {
             if (shouldBlockExit) {
-              handleNavigate('/planificacion');
+              handleNavigate(backTo, backToState);
             } else {
-              navigate('/planificacion');
+              navigate(backTo, backToState ? { state: backToState } : undefined);
             }
           }}>
             Volver a Planificaciones
@@ -897,9 +975,9 @@ export default function PlanificacionWorkspace() {
                 size="sm"
                 onClick={() => {
                   if (shouldBlockExit) {
-                    handleNavigate('/planificacion');
+                    handleNavigate(backTo, backToState);
                   } else {
-                    navigate('/planificacion');
+                    navigate(backTo, backToState ? { state: backToState } : undefined);
                   }
                 }}
               >

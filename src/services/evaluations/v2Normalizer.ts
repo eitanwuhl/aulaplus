@@ -38,6 +38,7 @@ const ITEM_TYPE_LABELS: Record<ItemType, string> = {
 };
 
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz'.split('');
+const DEBUG_V2_NORMALIZER = typeof window !== 'undefined' && (window as any).__V2_NORMALIZER_DEBUG__ === true;
 
 // ============================================================================
 // VALIDATION HELPERS
@@ -73,6 +74,25 @@ function safeNumber(value: unknown, fallback: number = 0): number {
 
 function safeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function displayText(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (value && typeof value === 'object') {
+    const rec = value as Record<string, unknown>;
+    const txt = typeof rec.text === 'string' ? rec.text : '';
+    const header = typeof rec.header === 'string' ? rec.header : '';
+    return (txt || header).trim();
+  }
+  return '';
+}
+
+function firstArray(obj: Record<string, unknown>, keys: string[]): unknown[] {
+  for (const key of keys) {
+    const value = obj[key];
+    if (Array.isArray(value)) return value;
+  }
+  return [];
 }
 
 function normalizeRubric(raw: unknown): ItemRubricV2 | undefined {
@@ -257,29 +277,34 @@ function normalizeItem(
       }
       break;
 
-    case 'matching':
-      if (Array.isArray(item.leftColumn)) {
-        normalized.leftColumn = item.leftColumn.map((text: unknown, i: number) => ({
+    case 'matching': {
+      const leftRaw = firstArray(item, ['leftColumn', 'leftItems', 'left', 'columnLeft']);
+      const rightRaw = firstArray(item, ['rightColumn', 'rightItems', 'right', 'columnRight']);
+      if (leftRaw.length > 0) {
+        normalized.leftColumn = leftRaw.map((value: unknown, i: number) => ({
           id: `left-${i}`,
-          text: safeString(text),
+          text: displayText(value),
         })).filter(x => x.text);
       }
-      if (Array.isArray(item.rightColumn)) {
-        normalized.rightColumn = item.rightColumn.map((text: unknown, i: number) => ({
+      if (rightRaw.length > 0) {
+        normalized.rightColumn = rightRaw.map((value: unknown, i: number) => ({
           id: `right-${i}`,
-          text: safeString(text),
+          text: displayText(value),
         })).filter(x => x.text);
       }
       break;
+    }
 
-    case 'ordering':
-      if (Array.isArray(item.itemsToOrder)) {
-        normalized.itemsToOrder = item.itemsToOrder.map((text: unknown, i: number) => ({
+    case 'ordering': {
+      const orderingRaw = firstArray(item, ['itemsToOrder', 'orderingItems', 'sequence', 'orderedItems']);
+      if (orderingRaw.length > 0) {
+        normalized.itemsToOrder = orderingRaw.map((value: unknown, i: number) => ({
           id: `order-${i}`,
-          text: safeString(text),
+          text: displayText(value),
         })).filter(x => x.text);
       }
       break;
+    }
 
     case 'table_completion':
       // Process table structure: columns (headers) and rows (cells)
@@ -287,7 +312,7 @@ function normalizeItem(
       // Alternative spec: item.headers + item.rows directly
       if (item.table && typeof item.table === 'object') {
         const tableObj = item.table as Record<string, unknown>;
-        const columns = Array.isArray(tableObj.columns) ? tableObj.columns : [];
+        const columns = firstArray(tableObj, ['columns', 'headers']);
         const rows = Array.isArray(tableObj.rows) ? tableObj.rows : [];
         
         normalized.table = {
@@ -309,10 +334,15 @@ function normalizeItem(
           }),
           cellType: tableObj.cellType === 'numeric' ? 'numeric' : 'text',
         };
-      } else if (Array.isArray(item.headers) || Array.isArray(item.columns)) {
+      } else if (Array.isArray(item.headers) || Array.isArray(item.columns) || (item.tableData && typeof item.tableData === 'object')) {
+        const tableDataObj = (item.tableData && typeof item.tableData === 'object') ? item.tableData as Record<string, unknown> : null;
         // Alternative format: headers/columns at top level
-        const headers = (item.headers || item.columns) as unknown[];
-        const rows = Array.isArray(item.rows) ? item.rows : [];
+        const headers = tableDataObj
+          ? firstArray(tableDataObj, ['columns', 'headers'])
+          : ((item.headers || item.columns) as unknown[]);
+        const rows = tableDataObj
+          ? (Array.isArray(tableDataObj.rows) ? tableDataObj.rows : [])
+          : (Array.isArray(item.rows) ? item.rows : []);
         
         normalized.table = {
           columns: headers.map((h: unknown, i: number) => {
@@ -654,14 +684,16 @@ export function normalizeV2Response(
  * DEBUG: Enhanced logging for blank screen diagnosis
  */
 export function canRenderV2(response: unknown): response is V2Response {
-  console.log('[V2_NORMALIZER] canRenderV2 called with:', {
-    responseType: typeof response,
-    isNull: response === null,
-    isUndefined: response === undefined
-  });
+  if (DEBUG_V2_NORMALIZER) {
+    console.log('[V2_NORMALIZER] canRenderV2 called with:', {
+      responseType: typeof response,
+      isNull: response === null,
+      isUndefined: response === undefined
+    });
+  }
 
   if (!response || typeof response !== 'object') {
-    console.warn('[V2_NORMALIZER] canRenderV2 FAIL: response is not an object');
+    if (DEBUG_V2_NORMALIZER) console.warn('[V2_NORMALIZER] canRenderV2 FAIL: response is not an object');
     return false;
   }
   
@@ -669,13 +701,13 @@ export function canRenderV2(response: unknown): response is V2Response {
   
   // Must have success: true
   if (r.success !== true) {
-    console.warn('[V2_NORMALIZER] canRenderV2 FAIL: success is not true', { success: r.success });
+    if (DEBUG_V2_NORMALIZER) console.warn('[V2_NORMALIZER] canRenderV2 FAIL: success is not true', { success: r.success });
     return false;
   }
   
   // Must have evaluationSpec
   if (!r.evaluationSpec || typeof r.evaluationSpec !== 'object') {
-    console.warn('[V2_NORMALIZER] canRenderV2 FAIL: no evaluationSpec', { evaluationSpec: r.evaluationSpec });
+    if (DEBUG_V2_NORMALIZER) console.warn('[V2_NORMALIZER] canRenderV2 FAIL: no evaluationSpec', { evaluationSpec: r.evaluationSpec });
     return false;
   }
   
@@ -683,12 +715,12 @@ export function canRenderV2(response: unknown): response is V2Response {
   
   // Must have sections array with at least one section
   if (!Array.isArray(spec.sections)) {
-    console.warn('[V2_NORMALIZER] canRenderV2 FAIL: sections is not an array', { sections: spec.sections });
+    if (DEBUG_V2_NORMALIZER) console.warn('[V2_NORMALIZER] canRenderV2 FAIL: sections is not an array', { sections: spec.sections });
     return false;
   }
   
   if (spec.sections.length === 0) {
-    console.warn('[V2_NORMALIZER] canRenderV2 FAIL: sections is empty');
+    if (DEBUG_V2_NORMALIZER) console.warn('[V2_NORMALIZER] canRenderV2 FAIL: sections is empty');
     return false;
   }
   
@@ -700,16 +732,18 @@ export function canRenderV2(response: unknown): response is V2Response {
   });
   
   if (!hasItems) {
-    console.warn('[V2_NORMALIZER] canRenderV2 FAIL: no section has items', {
-      sections: spec.sections.map((s: any) => ({
-        title: s?.title,
-        itemsCount: Array.isArray(s?.items) ? s.items.length : 'not array'
-      }))
-    });
+    if (DEBUG_V2_NORMALIZER) {
+      console.warn('[V2_NORMALIZER] canRenderV2 FAIL: no section has items', {
+        sections: spec.sections.map((s: any) => ({
+          title: s?.title,
+          itemsCount: Array.isArray(s?.items) ? s.items.length : 'not array'
+        }))
+      });
+    }
     return false;
   }
   
-  console.log('[V2_NORMALIZER] canRenderV2 PASS ✓');
+  if (DEBUG_V2_NORMALIZER) console.log('[V2_NORMALIZER] canRenderV2 PASS ✓');
   return true;
 }
 

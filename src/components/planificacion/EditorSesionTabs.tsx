@@ -18,12 +18,24 @@ import { getCompetenciaById } from '@/data/competencias';
 import { getCompetenciaCiudadaniaById } from '@/data/competenciasCiudadania';
 import { getCompetenciaLiteraturaById } from '@/data/competenciasLiteratura';
 import { PDFGenerator } from '@/components/PDFGenerator';
+import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
+import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/services/groupContext/provider';
+import { buildUnitContextForSession } from '@/services/planning/sessionUnitContext';
 
 interface EditorSesionTabsProps {
   sesion: SesionClase | null;
   onActualizar: (updates: Partial<SesionClase>) => void;
   competenciasDelPeriodo?: string[];
   planificacionId?: string;
+}
+
+interface PlanificacionContextLite {
+  grupo_id?: string;
+  unidades_didacticas?: unknown;
+  cantidad_sesiones?: number | null;
+  requerimientos_docente?: string | null;
+  materia?: string | null;
+  nivel?: string | null;
 }
 
 export const EditorSesionTabs: React.FC<EditorSesionTabsProps> = ({
@@ -40,6 +52,7 @@ export const EditorSesionTabs: React.FC<EditorSesionTabsProps> = ({
   const [instruccionesIA, setInstruccionesIA] = useState('');
   const [isModificando, setIsModificando] = useState(false);
   const [instruccionesModificacion, setInstruccionesModificacion] = useState('');
+  const [planificacionContext, setPlanificacionContext] = useState<PlanificacionContextLite | null>(null);
 
   const findCompetenciaById = (id: string) => {
     return (
@@ -58,6 +71,31 @@ export const EditorSesionTabs: React.FC<EditorSesionTabsProps> = ({
       }
     }
   }, [sesion]);
+
+  useEffect(() => {
+    const loadPlanificacionContext = async () => {
+      if (!planificacionId) {
+        setPlanificacionContext(null);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('planificaciones')
+        .select('grupo_id, unidades_didacticas, cantidad_sesiones, requerimientos_docente, materia, nivel')
+        .eq('id', planificacionId)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[EditorSesionTabs] Error loading plan context:', error);
+        setPlanificacionContext(null);
+        return;
+      }
+
+      setPlanificacionContext(data as PlanificacionContextLite);
+    };
+
+    loadPlanificacionContext();
+  }, [planificacionId]);
 
   // Detecta si un string ya contiene HTML
   const isProbablyHtml = (content: string) => /<[^>]+>/.test(content);
@@ -350,18 +388,34 @@ REQUISITOS OBLIGATORIOS:
       const contenidos = Array.isArray(sesion.contenidos_anep) 
         ? sesion.contenidos_anep.filter(c => c && c.trim())
         : (sesion.contenidos_anep?.trim() ? [sesion.contenidos_anep.trim()] : []);
+      const fallbackGrupoId = await getGrupoIdFromPlanificacion(planificacionId);
+      const grupoId = planificacionContext?.grupo_id || fallbackGrupoId;
+      const groupContext = await loadGroupContext(grupoId);
+      const unitContext = buildUnitContextForSession({
+        unidades: (Array.isArray(planificacionContext?.unidades_didacticas)
+          ? planificacionContext?.unidades_didacticas
+          : []) as any,
+        orden: sesion.orden,
+        // Fallback explícito cuando no podemos reconstruir total de sesiones.
+        totalSlots: planificacionContext?.cantidad_sesiones ?? 1,
+      });
+      const sessionBrief = sesion.session_brief?.trim();
 
       const payload = {
         modo: 'regenerar',
         sesionId: sesion.id,
         orden: sesion.orden,
         duracionMin: sesion.duracion_minutos,
-        materia: 'Historia', // Por defecto, se puede mejorar
-        nivel: '9º Año', // Por defecto, se puede mejorar
+        materia: planificacionContext?.materia || 'Historia',
+        nivel: planificacionContext?.nivel || '9º Año',
         contenidos: contenidos, // FIX: Empty array if no content
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
-        instruccionesDocente: instruccionesModificacion,
+        instruccionesDocente: instruccionesModificacion || planificacionContext?.requerimientos_docente || undefined,
+        unitContext,
+        ...(sessionBrief && { sessionBrief }),
+        ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
+        ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes }),
         planActual: fullHtmlPlan,
         // FIX: Include materials context if materials exist
         ...(attachedMaterials.length > 0 && { materialsContext })
@@ -396,17 +450,18 @@ REQUISITOS OBLIGATORIOS:
       };
       
       // FIX: Persist ai_design_report to session if available
-      if (data.ai_design_report) {
-        updatePayload.ai_design_report = data.ai_design_report;
+      const safeAiReport = sanitizePlanningAiDesignReport(data.ai_design_report);
+      if (safeAiReport) {
+        updatePayload.ai_design_report = safeAiReport;
       }
       
       await onActualizar(updatePayload);
       
       // FIX: Also persist ai_design_report to planificacion if available
-      if (data.ai_design_report && planificacionId) {
+      if (safeAiReport && planificacionId) {
         const { error: planUpdateError } = await supabase
           .from('planificaciones')
-          .update({ ai_design_report: data.ai_design_report })
+          .update({ ai_design_report: safeAiReport })
           .eq('id', planificacionId);
         
         if (planUpdateError) {
@@ -450,17 +505,33 @@ REQUISITOS OBLIGATORIOS:
     });
 
     try {
+      const fallbackGrupoId = await getGrupoIdFromPlanificacion(planificacionId);
+      const grupoId = planificacionContext?.grupo_id || fallbackGrupoId;
+      const groupContext = await loadGroupContext(grupoId);
+      const unitContext = buildUnitContextForSession({
+        unidades: (Array.isArray(planificacionContext?.unidades_didacticas)
+          ? planificacionContext?.unidades_didacticas
+          : []) as any,
+        orden: sesion.orden,
+        totalSlots: planificacionContext?.cantidad_sesiones ?? 1,
+      });
+      const sessionBrief = sesion.session_brief?.trim();
+
       const payload = {
         modo: 'generar_plan_html',
         sesionId: sesion.id,
         orden: sesion.orden,
         duracionMin: sesion.duracion_minutos,
-        materia: 'Historia', // Por defecto, se puede mejorar
-        nivel: '9º Año', // Por defecto, se puede mejorar
+        materia: planificacionContext?.materia || 'Historia',
+        nivel: planificacionContext?.nivel || '9º Año',
         contenidos: sesion.contenidos_anep || [],
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
-        instruccionesDocente: instruccionesIA || undefined
+        instruccionesDocente: instruccionesIA || planificacionContext?.requerimientos_docente || undefined,
+        unitContext,
+        ...(sessionBrief && { sessionBrief }),
+        ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
+        ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes })
       };
 
       console.log('Generando plan inicial con payload:', payload);

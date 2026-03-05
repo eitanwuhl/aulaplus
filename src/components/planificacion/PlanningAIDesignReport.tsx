@@ -74,10 +74,22 @@ export function PlanningAIDesignReport({
   sessionTitle
 }: PlanningAIDesignReportProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
-  // report_technical is for debug/admin only; never shown to teachers unless explicitly enabled
-  const SHOW_RAW_TECHNICAL = typeof window !== 'undefined' && (window as any).__PLAN_REPORT_DEBUG__ === true;
   
   if (!reportData) return null;
+
+  // Hardening: render only teacher-safe fields even if legacy rows include raw/technical fields.
+  const safeReport = useMemo(() => ({
+    narrative: reportData.narrative,
+    report_narrative: reportData.report_narrative,
+    inputsUsed: reportData.inputsUsed,
+    decisions: reportData.decisions,
+    contentCoverage: reportData.contentCoverage,
+    competencyDevelopment: reportData.competencyDevelopment,
+    teacherRequirementsApplied: reportData.teacherRequirementsApplied,
+    standardsCoverage: reportData.standardsCoverage,
+    competenciesOperationalization: reportData.competenciesOperationalization,
+    sessionsGenerated: (reportData as any).sessionsGenerated
+  }), [reportData]);
 
   const stripHtmlToText = (input: string): string =>
     input
@@ -88,9 +100,9 @@ export function PlanningAIDesignReport({
       .trim();
   
   const narrativeText = useMemo(() => {
-    const directNarrative = typeof reportData.report_narrative === 'string'
-      ? reportData.report_narrative.trim()
-      : (typeof reportData.narrative === 'string' ? reportData.narrative.trim() : '');
+    const directNarrative = typeof safeReport.report_narrative === 'string'
+      ? safeReport.report_narrative.trim()
+      : (typeof safeReport.narrative === 'string' ? safeReport.narrative.trim() : '');
     if (directNarrative.length > 0) return stripHtmlToText(directNarrative);
 
     // Fallback amigable para docentes cuando falta narrative
@@ -100,16 +112,16 @@ export function PlanningAIDesignReport({
       : 'No hay competencias específicas registradas para esta clase.';
 
     const contentFocus =
-      reportData.contentCoverage?.[0]?.coveredPart ||
-      reportData.decisions?.structure ||
+      safeReport.contentCoverage?.[0]?.coveredPart ||
+      safeReport.decisions?.structure ||
       'se trabajó el contenido planificado para la sesión seleccionada';
 
     const howWorked =
-      reportData.contentCoverage?.[0]?.howItIsWorked ||
-      reportData.decisions?.timeAllocation ||
+      safeReport.contentCoverage?.[0]?.howItIsWorked ||
+      safeReport.decisions?.timeAllocation ||
       'mediante una secuencia de inicio, desarrollo y cierre adaptada al grupo';
 
-    const requirementApplied = reportData.teacherRequirementsApplied?.[0]?.howItWasSatisfied;
+    const requirementApplied = safeReport.teacherRequirementsApplied?.[0]?.howItWasSatisfied;
 
     return [
       `${sessionTitle ? `En ${sessionTitle}` : 'En esta sesión'}, ${contentFocus}.`,
@@ -119,16 +131,16 @@ export function PlanningAIDesignReport({
         ? `Además, se atendieron los requerimientos docentes de la sesión: ${requirementApplied}.`
         : 'No se registraron requerimientos docentes adicionales para esta sesión.'
     ].join('\n\n');
-  }, [reportData, sessionCompetencies, sessionTitle]);
+  }, [safeReport, sessionCompetencies, sessionTitle]);
 
   const teacherNarrativeText = useMemo(() => {
     const sections: string[] = [narrativeText];
-    const coverage = reportData.contentCoverage?.[0];
-    const competency = reportData.competencyDevelopment?.[0];
-    const adaptation = reportData.teacherRequirementsApplied?.[0];
-    const sourceNote = reportData.inputsUsed?.materials
+    const coverage = safeReport.contentCoverage?.[0];
+    const competency = safeReport.competencyDevelopment?.[0];
+    const adaptation = safeReport.teacherRequirementsApplied?.[0];
+    const sourceNote = safeReport.inputsUsed?.materials
       ? 'Se utilizaron materiales aportados por el docente como base de trabajo.'
-      : (reportData.inputsUsed?.anepContent ? 'Se priorizó alineación con contenidos ANEP de la sesión.' : '');
+      : (safeReport.inputsUsed?.anepContent ? 'Se priorizó alineación con contenidos ANEP de la sesión.' : '');
 
     if (coverage?.coveredPart) sections.push(`**Propósito y foco**\n${coverage.coveredPart}`);
     if (coverage?.whyThisPartInThisClass) sections.push(`**Secuencia didáctica**\n${coverage.whyThisPartInThisClass}`);
@@ -140,23 +152,21 @@ export function PlanningAIDesignReport({
     if (sourceNote) sections.push(`**Materiales y fuentes**\n${sourceNote}`);
 
     return sections.filter((s) => s && s.trim().length > 0).join('\n\n');
-  }, [narrativeText, reportData]);
+  }, [narrativeText, safeReport]);
 
   // Narrative remains available, but is shown only inside pedagogical details (not as top block).
   const hasNarrative = narrativeText.length > 0;
   
   // Check if there are structured details to show
   const hasStructuredDetails =
-    !!reportData.report_technical ||
-    reportData.decisions?.structure || 
-    reportData.decisions?.timeAllocation ||
-    reportData.inputsUsed ||
-    (reportData.assumptions && reportData.assumptions.length > 0) ||
-    (reportData.contentCoverage && reportData.contentCoverage.length > 0) ||
-    (reportData.competencyDevelopment && reportData.competencyDevelopment.length > 0) ||
-    (reportData.teacherRequirementsApplied && reportData.teacherRequirementsApplied.length > 0) ||
-    (reportData.standardsCoverage && reportData.standardsCoverage.length > 0) ||
-    (reportData.competenciesOperationalization && reportData.competenciesOperationalization.length > 0);
+    safeReport.decisions?.structure || 
+    safeReport.decisions?.timeAllocation ||
+    safeReport.inputsUsed ||
+    (safeReport.contentCoverage && safeReport.contentCoverage.length > 0) ||
+    (safeReport.competencyDevelopment && safeReport.competencyDevelopment.length > 0) ||
+    (safeReport.teacherRequirementsApplied && safeReport.teacherRequirementsApplied.length > 0) ||
+    (safeReport.standardsCoverage && safeReport.standardsCoverage.length > 0) ||
+    (safeReport.competenciesOperationalization && safeReport.competenciesOperationalization.length > 0);
   
   return (
     <Card className={`border-l-4 border-blue-500 bg-blue-50 dark:bg-blue-950/20 ${className}`}>
@@ -208,22 +218,11 @@ export function PlanningAIDesignReport({
                   </div>
                 )}
 
-                {SHOW_RAW_TECHNICAL && reportData.report_technical && (
-                  <div className="space-y-2">
-                    <h4 className="font-semibold text-sm">Detalle técnico (raw)</h4>
-                    <pre className="text-xs rounded bg-muted p-3 overflow-auto whitespace-pre-wrap">
-                      {typeof reportData.report_technical === 'string'
-                        ? reportData.report_technical
-                        : JSON.stringify(reportData.report_technical, null, 2)}
-                    </pre>
-                  </div>
-                )}
-
                 {/* Content Coverage */}
-                {reportData.contentCoverage && reportData.contentCoverage.length > 0 && (
+                {safeReport.contentCoverage && safeReport.contentCoverage.length > 0 && (
                   <div className="space-y-3">
                     <h4 className="font-semibold text-sm">Cobertura de Contenidos</h4>
-                    {reportData.contentCoverage.map((coverage, idx) => (
+                    {safeReport.contentCoverage.map((coverage, idx) => (
                       <div key={idx} className="pl-4 border-l-2 border-blue-200 dark:border-blue-800 space-y-2">
                         <div className="flex items-center gap-2">
                           <Badge variant="outline" className="text-xs">
@@ -256,10 +255,10 @@ export function PlanningAIDesignReport({
                 )}
                 
                 {/* Competency Development */}
-                {reportData.competencyDevelopment && reportData.competencyDevelopment.length > 0 && (
+                {safeReport.competencyDevelopment && safeReport.competencyDevelopment.length > 0 && (
                   <div className="space-y-3">
                     <h4 className="font-semibold text-sm">Desarrollo de Competencias</h4>
-                    {reportData.competencyDevelopment.map((dev, idx) => (
+                    {safeReport.competencyDevelopment.map((dev, idx) => (
                       <div key={idx} className="pl-4 border-l-2 border-green-200 dark:border-green-800 space-y-2">
                         <p className="font-medium text-sm">{dev.competency}</p>
                         <p className="text-xs text-gray-600 dark:text-gray-400">{dev.howDevelopedInThisClass}</p>
@@ -274,10 +273,10 @@ export function PlanningAIDesignReport({
                 )}
                 
                 {/* Teacher Requirements Applied */}
-                {reportData.teacherRequirementsApplied && reportData.teacherRequirementsApplied.length > 0 && (
+                {safeReport.teacherRequirementsApplied && safeReport.teacherRequirementsApplied.length > 0 && (
                   <div className="space-y-3">
                     <h4 className="font-semibold text-sm">Requerimientos del Docente Aplicados</h4>
-                    {reportData.teacherRequirementsApplied.map((req, idx) => (
+                    {safeReport.teacherRequirementsApplied.map((req, idx) => (
                       <div key={idx} className="pl-4 border-l-2 border-purple-200 dark:border-purple-800 space-y-2">
                         <p className="font-medium text-sm">{req.requirement}</p>
                         <p className="text-xs text-gray-600 dark:text-gray-400">{req.howItWasSatisfied}</p>
@@ -287,10 +286,10 @@ export function PlanningAIDesignReport({
                 )}
                 
                 {/* GOAL C: Standards Coverage */}
-                {reportData.standardsCoverage && reportData.standardsCoverage.length > 0 && (
+                {safeReport.standardsCoverage && safeReport.standardsCoverage.length > 0 && (
                   <div className="space-y-3">
                     <h4 className="font-semibold text-sm">Cobertura de Estándares ANEP</h4>
-                    {reportData.standardsCoverage.map((std, idx) => (
+                    {safeReport.standardsCoverage.map((std, idx) => (
                       <div key={idx} className="pl-4 border-l-2 border-orange-200 dark:border-orange-800 space-y-2">
                         <p className="font-medium text-sm">{std.standard}</p>
                         <p className="text-xs text-gray-600 dark:text-gray-400">
@@ -308,10 +307,10 @@ export function PlanningAIDesignReport({
                 )}
                 
                 {/* GOAL C: Competencies Operationalization */}
-                {reportData.competenciesOperationalization && reportData.competenciesOperationalization.length > 0 && (
+                {safeReport.competenciesOperationalization && safeReport.competenciesOperationalization.length > 0 && (
                   <div className="space-y-3">
                     <h4 className="font-semibold text-sm">Operacionalización de Competencias</h4>
-                    {reportData.competenciesOperationalization.map((comp, idx) => (
+                    {safeReport.competenciesOperationalization.map((comp, idx) => (
                       <div key={idx} className="pl-4 border-l-2 border-indigo-200 dark:border-indigo-800 space-y-2">
                         <p className="font-medium text-sm">{comp.competency}</p>
                         <p className="text-xs text-gray-600 dark:text-gray-400">{comp.concreteDevelopment}</p>
@@ -329,45 +328,32 @@ export function PlanningAIDesignReport({
                 )}
                 
                 {/* Legacy structured sections */}
-                {reportData.decisions?.structure && (
+                {safeReport.decisions?.structure && (
                   <div className="space-y-2 border-t pt-4">
                     <h4 className="font-semibold text-sm">Estructura</h4>
                     <p className="text-sm text-gray-700 dark:text-gray-300">
-                      {reportData.decisions.structure}
+                      {safeReport.decisions.structure}
                     </p>
                   </div>
                 )}
                 
-                {reportData.decisions?.timeAllocation && (
+                {safeReport.decisions?.timeAllocation && (
                   <div className="space-y-2 border-t pt-4">
                     <h4 className="font-semibold text-sm">Distribución de Tiempo</h4>
                     <p className="text-sm text-gray-700 dark:text-gray-300">
-                      {reportData.decisions.timeAllocation}
+                      {safeReport.decisions.timeAllocation}
                     </p>
                   </div>
                 )}
                 
-                {reportData.inputsUsed && (
+                {safeReport.inputsUsed && (
                   <div className="space-y-2 border-t pt-4">
                     <h4 className="font-semibold text-sm">Fuentes Utilizadas</h4>
                     <ul className="list-disc pl-5 text-sm text-gray-700 dark:text-gray-300">
-                      {reportData.inputsUsed.anepContent && <li>Contenidos ANEP</li>}
-                      {reportData.inputsUsed.materials && <li>Materiales del docente</li>}
-                      {reportData.inputsUsed.sessionBrief && <li>Instrucciones específicas de sesión</li>}
-                      {reportData.inputsUsed.unitContext && <li>Contexto de unidad</li>}
-                    </ul>
-                  </div>
-                )}
-                
-                {reportData.assumptions && reportData.assumptions.some((assumption) => !/conocimientos previos/i.test(assumption)) && (
-                  <div className="space-y-2 border-t pt-4">
-                    <h4 className="font-semibold text-sm">Supuestos</h4>
-                    <ul className="list-disc pl-5 text-sm text-gray-700 dark:text-gray-300">
-                      {reportData.assumptions
-                        .filter((assumption) => !/conocimientos previos/i.test(assumption))
-                        .map((assumption, idx) => (
-                        <li key={idx}>{assumption}</li>
-                      ))}
+                      {safeReport.inputsUsed.anepContent && <li>Contenidos ANEP</li>}
+                      {safeReport.inputsUsed.materials && <li>Materiales del docente</li>}
+                      {safeReport.inputsUsed.sessionBrief && <li>Instrucciones específicas de sesión</li>}
+                      {safeReport.inputsUsed.unitContext && <li>Contexto de unidad</li>}
                     </ul>
                   </div>
                 )}

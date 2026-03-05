@@ -19,6 +19,8 @@ import { resolveMockGroup } from '@/utils/resolveMockGroup';
 import { SessionMaterialsPanel } from './SessionMaterialsPanel';
 import { PlanningAIDesignReport } from './PlanningAIDesignReport';
 import type { PlanningAIDesignReportData } from './PlanningAIDesignReport';
+import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
+import { buildUnitContextForSession } from '@/services/planning/sessionUnitContext';
 
 interface EditorSesionNuevoProps {
   sesion: SesionClase | null;
@@ -28,6 +30,13 @@ interface EditorSesionNuevoProps {
   materia?: string;
   nivel?: string;
   showAiReportPanel?: boolean;
+}
+
+interface PlanificacionContextLite {
+  grupo_id?: string;
+  unidades_didacticas?: unknown;
+  cantidad_sesiones?: number | null;
+  requerimientos_docente?: string | null;
 }
 
 // Helper: Check if HTML has actual content
@@ -221,6 +230,7 @@ export function EditorSesionNuevo({
   const [evaluacionDocente, setEvaluacionDocente] = useState('');
   const [isModificando, setIsModificando] = useState(false);
   const [instruccionesModificacion, setInstruccionesModificacion] = useState('');
+  const [planificacionContext, setPlanificacionContext] = useState<PlanificacionContextLite | null>(null);
 
   // PHASE 3: Parse plan for structured rendering
   // NOTE: This parsing is for DISPLAY purposes only in the UI and PDF.
@@ -301,6 +311,31 @@ export function EditorSesionNuevo({
     }
   }, [sesion]);
 
+  useEffect(() => {
+    const loadPlanificacionContext = async () => {
+      if (!planificacionId) {
+        setPlanificacionContext(null);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('planificaciones')
+        .select('grupo_id, unidades_didacticas, cantidad_sesiones, requerimientos_docente')
+        .eq('id', planificacionId)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[EditorSesionNuevo] Error loading plan context:', error);
+        setPlanificacionContext(null);
+        return;
+      }
+
+      setPlanificacionContext(data as PlanificacionContextLite);
+    };
+
+    loadPlanificacionContext();
+  }, [planificacionId]);
+
   // PHASE 4: Separate auto-detected resources from manual resources
   // This effect maintains the distinction between:
   // - Auto-detected: Resources extracted from plan HTML by the parser (shown in Card 1, read-only).
@@ -342,6 +377,18 @@ export function EditorSesionNuevo({
       const contenidos = Array.isArray(sesion.contenidos_anep) 
         ? sesion.contenidos_anep.filter(c => c && c.trim())
         : (sesion.contenidos_anep?.trim() ? [sesion.contenidos_anep.trim()] : []);
+      const fallbackGrupoId = await getGrupoIdFromPlanificacion(planificacionId);
+      const grupoId = planificacionContext?.grupo_id || fallbackGrupoId;
+      const groupContext = await loadGroupContext(grupoId);
+      const unitContext = buildUnitContextForSession({
+        unidades: (Array.isArray(planificacionContext?.unidades_didacticas)
+          ? planificacionContext?.unidades_didacticas
+          : []) as any,
+        orden: sesion.orden,
+        // Si no hay cantidad de sesiones en memoria, usamos 1 como fallback seguro.
+        totalSlots: planificacionContext?.cantidad_sesiones ?? 1,
+      });
+      const sessionBrief = sesion.session_brief?.trim();
 
       const payload = {
         modo: 'regenerar',
@@ -353,7 +400,11 @@ export function EditorSesionNuevo({
         contenidos: contenidos, // FIX: Empty array if no content
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
-        instruccionesDocente: instruccionesModificacion,
+        instruccionesDocente: instruccionesModificacion || planificacionContext?.requerimientos_docente || undefined,
+        unitContext,
+        ...(sessionBrief && { sessionBrief }),
+        ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
+        ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes }),
         planActual: planHtml,
         // FIX: Include materials context if materials exist
         ...(attachedMaterials.length > 0 && { materialsContext })
@@ -383,9 +434,6 @@ export function EditorSesionNuevo({
         ? data.recursos
         : normalizeArrayField(data.recursos);
       
-      // Load grupoId for reminder injection (same as initial generation)
-      const grupoId = await getGrupoIdFromPlanificacion(planificacionId);
-      
       // Use centralized helper for consistent reminder injection across all flows
       const sanitizedHtml = buildSanitizedLessonPlanHtml(
         data.plan_html,
@@ -414,17 +462,18 @@ export function EditorSesionNuevo({
       };
       
       // FIX: Persist ai_design_report to session if available
-      if (data.ai_design_report) {
-        updatePayload.ai_design_report = data.ai_design_report;
+      const safeAiReport = sanitizePlanningAiDesignReport(data.ai_design_report);
+      if (safeAiReport) {
+        updatePayload.ai_design_report = safeAiReport;
       }
       
       await onActualizar(updatePayload);
       
       // FIX: Also persist ai_design_report to planificacion if available
-      if (data.ai_design_report && planificacionId) {
+      if (safeAiReport && planificacionId) {
         const { error: planUpdateError } = await supabase
           .from('planificaciones')
-          .update({ ai_design_report: data.ai_design_report })
+          .update({ ai_design_report: safeAiReport })
           .eq('id', planificacionId);
         
         if (planUpdateError) {
@@ -469,6 +518,15 @@ export function EditorSesionNuevo({
           teacherSugerenciasPresent: !!groupContext.teacherSugerencias
         });
       }
+      const unitContext = buildUnitContextForSession({
+        unidades: (Array.isArray(planificacionContext?.unidades_didacticas)
+          ? planificacionContext?.unidades_didacticas
+          : []) as any,
+        orden: sesion.orden,
+        // Si no logramos recuperar el total real, mantenemos fallback 1/1.
+        totalSlots: planificacionContext?.cantidad_sesiones ?? 1,
+      });
+      const sessionBrief = sesion.session_brief?.trim();
       
       const payload = {
         modo: 'generar_plan_html',
@@ -480,7 +538,9 @@ export function EditorSesionNuevo({
         contenidos: sesion.contenidos_anep || [],
         competencias: sesion.competencias_anep || [],
         criterios: sesion.criterios_logro_anep || [],
-        instruccionesDocente: undefined,
+        instruccionesDocente: planificacionContext?.requerimientos_docente || undefined,
+        unitContext,
+        ...(sessionBrief && { sessionBrief }),
         // Include group profile and student adjustments from unified provider
         ...(groupContext.groupProfile && { 
           perfilGrupo: {

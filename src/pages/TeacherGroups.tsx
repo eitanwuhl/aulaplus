@@ -20,6 +20,7 @@ import { mockGroups } from "@/data/mockData";
 import type { Group as MockGroup, Student as MockStudent } from "@/data/mockData";
 import GroupProfile from "@/components/GroupProfile";
 import StudentProfile from "@/components/StudentProfile";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 const TeacherGroups = () => {
   console.log("[DEBUG] TeacherGroups component starting to render");
@@ -30,6 +31,7 @@ const TeacherGroups = () => {
   const [selectedStudent, setSelectedStudent] = useState<MockStudent | null>(null);
   const [viewingGroupProfile, setViewingGroupProfile] = useState(false);
   const [viewingStudentProfile, setViewingStudentProfile] = useState(false);
+  const [invalidDeepLinkGroupId, setInvalidDeepLinkGroupId] = useState<string | null>(null);
 
   const filteredGroups = mockGroups.filter(group =>
     group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -79,11 +81,17 @@ const TeacherGroups = () => {
 
     if (state.groupId) {
       const group = mockGroups.find((g) => g.id === state.groupId);
-      if (!group) return;
-      setSelectedGroup(group);
-      setViewingGroupProfile(true);
-      setViewingStudentProfile(false);
+      if (group) {
+        setInvalidDeepLinkGroupId(null);
+        setSelectedGroup(group);
+        setViewingGroupProfile(true);
+        setViewingStudentProfile(false);
+      } else {
+        setInvalidDeepLinkGroupId(state.groupId);
+      }
+      return;
     }
+    setInvalidDeepLinkGroupId(null);
   }, [location.state]);
 
   // Helper function to check if a student requires adjustments (explicit flags only)
@@ -215,6 +223,19 @@ const TeacherGroups = () => {
 
   return (
     <div className="space-y-6">
+      {invalidDeepLinkGroupId && (
+        <Alert variant="destructive" className="flex items-center justify-between gap-4">
+          <div>
+            <AlertTitle>Grupo no encontrado</AlertTitle>
+            <AlertDescription>
+              El grupo solicitado no existe o ya no está disponible. Mostrando la lista de grupos.
+            </AlertDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setInvalidDeepLinkGroupId(null)}>
+            Cerrar
+          </Button>
+        </Alert>
+      )}
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}

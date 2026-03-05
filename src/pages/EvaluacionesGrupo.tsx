@@ -1799,11 +1799,11 @@ const EvaluacionesGrupo = () => {
             teacherName={user?.name ?? null}
             onPointsWarning={(message) => toast({ title: 'Puntos', description: message, variant: 'default' })}
             onRenderError={(reason) => {
-              console.warn('[EVAL_PIPELINE] V2 render error, using V1 fallback:', reason);
+              console.warn('[EVAL_PIPELINE] V2 render fallback activated:', reason);
               setV2RawResponse(null);
               toast({
-                title: "Usando formato estándar",
-                description: "El formato beta no está disponible, mostrando versión estándar.",
+                title: "Render fallback activado",
+                description: "Se generó V2 pero falló el renderizado. Mostrando formato estándar (V1 visual) con traza en logs.",
                 duration: 3000
               });
             }}

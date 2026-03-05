@@ -5,6 +5,7 @@ import {
   looksLikeMetadata,
   cleanMaterialTextForPrompt,
   filterPassagesByQuality,
+  filterPassagesByQualityCached,
   filterPassageByQuality,
 } from "../excerptCleaning.ts";
 import { MIN_EXCERPT_LENGTH_CHARS, MAX_EXCERPT_LENGTH_CHARS } from "../excerptValidation.ts";
@@ -148,4 +149,14 @@ Deno.test("filterPassagesByQuality: returns rejectedByReason counts", () => {
   assert(kept[0].includes("sustantivo"));
   assert((rejectedByReason.toc ?? 0) >= 1);
   assert((rejectedByReason.prologue ?? 0) >= 1);
+});
+
+Deno.test("filterPassagesByQualityCached: reuses cache for repeated blocks", () => {
+  const repeated = "Índice\n\nCapítulo 1 ..... 1\nCapítulo 2 ..... 5";
+  const blocks = [repeated, repeated, "Contenido sustantivo y coherente para evaluar comprensión."];
+  const cache = new Map();
+  const first = filterPassagesByQualityCached(blocks, cache);
+  const second = filterPassagesByQualityCached(blocks, cache);
+  assert((first.cacheMisses ?? 0) > 0);
+  assert((second.cacheHits ?? 0) >= blocks.length);
 });

@@ -39,8 +39,9 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import type { V2Response, EvaluationSpecV2 } from '@/services/evaluations/v2Types';
+import type { V2Response } from '@/services/evaluations/v2Types';
 import { invokeEdgeFunctionAuthed } from '@/lib/edgeFunctionAuth';
+import { applyModifyCarryForward, decideRequestedVersionsForModify } from '@/services/evaluations/requestedVersionsPolicy';
 
 // ============================================================================
 // TYPES
@@ -160,7 +161,9 @@ export const EvaluationAdjustmentsPanel: React.FC<EvaluationAdjustmentsPanelProp
     setIsOpen(newState);
     try {
       localStorage.setItem('v2panel:adjustments', String(newState));
-    } catch {}
+    } catch {
+      // Ignore storage errors
+    }
   };
   
   // Reset scope-specific selections when scope changes
@@ -217,6 +220,12 @@ export const EvaluationAdjustmentsPanel: React.FC<EvaluationAdjustmentsPanelProp
       });
       
       // Build request body (reuse existing patterns)
+      const requestedVersions = decideRequestedVersionsForModify({
+        currentRequestedVersions: v2Response.requestedVersions,
+        currentEvaluationSpec: v2Response.evaluationSpec || undefined,
+        evaluationDesignPlan,
+        groupContextStudents: groupContext?.students || []
+      });
       const requestBody = {
         mode: 'adjust', // Signal adjustment mode
         modification: adjustmentInstruction,
@@ -227,10 +236,11 @@ export const EvaluationAdjustmentsPanel: React.FC<EvaluationAdjustmentsPanelProp
           competencies: v2Response.evaluationSpec?.meta?.competencyIds,
           criteriosLogro: v2Response.evaluationSpec?.meta?.criteriosLogro,
         },
+        requestedVersions,
         evaluation_design_plan: evaluationDesignPlan || {
           triggers: {
-            versionB: v2Response.requestedVersions?.B,
-            versionC: v2Response.requestedVersions?.C,
+            versionB: requestedVersions.B,
+            versionC: requestedVersions.C,
           },
         },
         // Pass current spec for reference (LLM can preserve structure)
@@ -254,12 +264,20 @@ export const EvaluationAdjustmentsPanel: React.FC<EvaluationAdjustmentsPanelProp
       }
       
       if (!data || !data.success) {
-        const errorMsg = data?.warnings?.find((w: any) => w.severity === 'error')?.message;
+        const errorData = data as { warnings?: Array<{ severity?: string; message?: string }> };
+        const errorMsg = errorData?.warnings?.find((w) => w.severity === 'error')?.message;
         throw new Error(errorMsg || 'La generación falló');
       }
       
       // Success - call callback with new and previous responses
-      onAdjustmentApplied(data as V2Response, v2Response);
+      const mergedResult = applyModifyCarryForward({
+        previousResponse: v2Response,
+        nextResponse: data as V2Response,
+        requestedVersions,
+        explicitRemoval: { B: false, C: false },
+        requestId: (data as V2Response)?.requestId
+      });
+      onAdjustmentApplied(mergedResult.response, v2Response);
       
       // Clear form
       setAdjustmentText('');

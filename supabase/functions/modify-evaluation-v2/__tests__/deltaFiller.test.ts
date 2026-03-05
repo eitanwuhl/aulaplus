@@ -37,10 +37,14 @@ Deno.test("delta filler: adds items until estimate >= 95% of target (low)", () =
   assert(before < low);
 
   const warnings: Array<{ code: string; message: string; severity: string }> = [];
+  const materials = [{
+    title: "Fuente base",
+    extractedText: "El Batllismo impulsó reformas sociales y económicas en Uruguay durante el siglo XX. ".repeat(20)
+  }];
   const { spec: afterSpec, itemsAdded } = applyDeltaFiller(
     spec,
     target,
-    [], // no materials -> short_answer items
+    materials,
     warnings,
     "Historia"
   );
@@ -68,13 +72,12 @@ Deno.test("delta filler: no items added when estimate already >= low", () => {
   assert(!warnings.some((w) => w.code === "DURATION_DELTA_FILLER_APPLIED"));
 });
 
-Deno.test("delta filler: hard cap <= 6 and no MC without high-quality excerpt", () => {
-  const target = 120; // forces a large delta from minimal spec
+Deno.test("delta filler: with insufficient grounding does not add generic filler", () => {
+  const target = 120;
   const spec = minimalSpec(20);
   const warnings: Array<{ code: string; message: string; severity: string }> = [];
   const { spec: afterSpec, itemsAdded } = applyDeltaFiller(spec, target, [], warnings, "Historia");
-  assert(itemsAdded <= 6, `itemsAdded (${itemsAdded}) debe ser <= 6`);
-  const fillerSection = (afterSpec.sections || []).find((s) => s.title === "Complemento de duración");
-  const fillerItems = fillerSection?.items || [];
-  assert(fillerItems.every((i) => i.type !== "multiple_choice"), "sin excerpt de calidad no debe haber MC filler");
+  assertEquals(itemsAdded, 0);
+  assertEquals(estimateDurationFromSpec(afterSpec), estimateDurationFromSpec(spec));
+  assert(warnings.some((w) => w.code === "GROUNDING_INSUFFICIENT"));
 });

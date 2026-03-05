@@ -10,7 +10,7 @@ import {
   formatHeuristicTableForPrompt
 } from "./durationMath.ts";
 import { validateExcerpts, MIN_EXCERPT_LENGTH_CHARS, MAX_EXCERPT_LENGTH_CHARS } from "./excerptValidation.ts";
-import { cleanAndSelectExcerpt, looksLikeMetadata, cleanMaterialTextForPrompt, filterPassagesByQuality, filterPassageByQuality, looksLikeTOC, type PassageRejectReason } from "./excerptCleaning.ts";
+import { cleanAndSelectExcerpt, looksLikeMetadata, cleanMaterialTextForPrompt, filterPassagesByQualityCached, filterPassageByQuality, looksLikeTOC, type PassageRejectReason } from "./excerptCleaning.ts";
 import {
   validateSpecItems,
   isAnswerLeakingExcerpt,
@@ -53,6 +53,31 @@ const USE_LLM_REPAIRS = (Deno.env.get('MODIFY_EVALUATION_V2_USE_LLM_REPAIRS') ||
 const USE_DURATION_AUTO_EXTEND = (Deno.env.get('MODIFY_EVALUATION_V2_USE_DURATION_AUTO_EXTEND') || 'false').toLowerCase() === 'true';
 /** When false, skip narrative-only and by-version narrative LLM calls. Use deterministic fallbacks only. */
 const USE_NARRATIVE_LLM_CALLS = (Deno.env.get('MODIFY_EVALUATION_V2_USE_NARRATIVE_LLM_CALLS') || 'false').toLowerCase() === 'true';
+const USE_AGGRESSIVE_SELECTION_TOPUP = (Deno.env.get('MODIFY_EVALUATION_V2_USE_AGGRESSIVE_SELECTION_TOPUP') || 'false').toLowerCase() === 'true';
+const ULTRA_LITE_MODE = (Deno.env.get('MODIFY_EVALUATION_V2_ULTRA_LITE_MODE') || 'true').toLowerCase() === 'true';
+const SMART_SELECTION_MODE = (Deno.env.get('MODIFY_EVALUATION_V2_SMART_SELECTION_MODE') || 'false').toLowerCase() === 'true';
+
+function readEnvInt(name: string, fallback: number): number {
+  const raw = Deno.env.get(name);
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+const OPTIONAL_LLM_FEATURES_ENABLED = USE_LLM_REPAIRS || USE_DURATION_AUTO_EXTEND || USE_NARRATIVE_LLM_CALLS;
+const MAX_LLM_CALLS_PER_REQUEST = readEnvInt(
+  'MODIFY_EVALUATION_V2_MAX_LLM_CALLS',
+  OPTIONAL_LLM_FEATURES_ENABLED ? 2 : 1
+);
+const CPU_GUARD_MAX_WALL_MS = readEnvInt('MODIFY_EVALUATION_V2_CPU_GUARD_MAX_WALL_MS', 45000);
+const MATERIAL_SELECTION_TOP_K = readEnvInt('MODIFY_EVALUATION_V2_SELECTION_TOP_K', 6);
+const MATERIAL_SELECTION_MIN_K = readEnvInt('MODIFY_EVALUATION_V2_SELECTION_MIN_K', 4);
+const MATERIAL_SELECTION_CHAR_BUDGET = readEnvInt('MODIFY_EVALUATION_V2_SELECTION_CHAR_BUDGET', 14000);
+const MATERIAL_SELECTION_CHAR_BUDGET_MIN = readEnvInt('MODIFY_EVALUATION_V2_SELECTION_CHAR_BUDGET_MIN', 9000);
+const ULTRA_LITE_MAX_MATERIALS = readEnvInt('MODIFY_EVALUATION_V2_ULTRA_LITE_MAX_MATERIALS', 2);
+const ULTRA_LITE_MAX_CHARS_PER_MATERIAL = readEnvInt('MODIFY_EVALUATION_V2_ULTRA_LITE_MAX_CHARS_PER_MATERIAL', 4000);
+const ULTRA_LITE_TOTAL_BUNDLE_CHARS = readEnvInt('MODIFY_EVALUATION_V2_ULTRA_LITE_TOTAL_BUNDLE_CHARS', 9000);
+const ULTRA_LITE_FORCE_THRESHOLD_CHARS = readEnvInt('MODIFY_EVALUATION_V2_ULTRA_LITE_FORCE_THRESHOLD_CHARS', 50000);
 
 /** Fingerprint for contingency responses (debuggable, non-destructive) */
 const CONTINGENCY_FINGERPRINT = 'v3-contingency-debug-DEPLOY-FP-2026-02-17-04';
@@ -65,7 +90,7 @@ const OPENAI_TIMEOUT_MS = OPENAI_TIMEOUT_GENERATE_MS;
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'apikey, authorization, content-type, x-client-info, x-aulaplus-env',
+  'Access-Control-Allow-Headers': 'apikey, authorization, content-type, x-client-info, x-aulaplus-env, x-request-id',
 };
 
 // ============================================================================
@@ -292,6 +317,7 @@ interface AIReportV2 {
 
 interface V2Response {
   success: boolean;
+  requestId?: string;
   evaluationSpec: EvaluationSpecV2 | null;
   targetDurationMinutes?: number | null;
   estimatedTotalMinutes: number;
@@ -300,6 +326,15 @@ interface V2Response {
   instrumentDesignRulesApplied: string[];
   teacherRemindersByStudent: TeacherReminderV2[];
   aiReport: AIReportV2 | Record<string, unknown> | null; // Normalized to match AIDesignReportData contract
+  outcome?: {
+    code: string;
+    message: string;
+    actionableGuidance?: string[];
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
   warnings: WarningV2[];
   debug?: {
     build?: string;
@@ -370,6 +405,9 @@ interface V2Response {
     contingency?: boolean;
     contingencyReason?: string;
     contingencyFingerprint?: string;
+    modeUsed?: 'ULTRA_LITE' | 'SMART_SELECTION' | 'NONE';
+    totalInputChars?: number;
+    bundleChars?: number;
   };
 }
 
@@ -412,6 +450,33 @@ class Timer {
   summary(): Record<string, number> {
     return Object.fromEntries(this.marks);
   }
+}
+
+function canRunOptionalStep(
+  step: string,
+  timer: Timer,
+  metrics: { llmCallCount: number },
+  warnings: WarningV2[]
+): boolean {
+  if (metrics.llmCallCount >= MAX_LLM_CALLS_PER_REQUEST) {
+    warnings.push({
+      code: 'CPU_BUDGET_GUARD_TRIGGERED',
+      message: `Se omitió ${step} para priorizar estabilidad (límite de llamadas IA alcanzado).`,
+      severity: 'warning',
+      context: { maxLlmCalls: MAX_LLM_CALLS_PER_REQUEST, llmCallCount: metrics.llmCallCount }
+    });
+    return false;
+  }
+  if (timer.elapsed() >= CPU_GUARD_MAX_WALL_MS) {
+    warnings.push({
+      code: 'CPU_BUDGET_GUARD_TRIGGERED',
+      message: `Se omitió ${step} por presupuesto de tiempo de cómputo.`,
+      severity: 'warning',
+      context: { elapsedMs: timer.elapsed(), budgetMs: CPU_GUARD_MAX_WALL_MS }
+    });
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -2944,6 +3009,40 @@ function getEffectiveRequestedVersions(versionVariants: EvaluationSpecV2['versio
   };
 }
 
+function hasVersionVariantInSpec(spec: unknown, key: 'B' | 'C'): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  const variants = (spec as { versionVariants?: Record<string, unknown> }).versionVariants;
+  if (!variants || typeof variants !== 'object') return false;
+  return Boolean(variants[key]);
+}
+
+export function computeRequestedVersionsForModify(params: {
+  incomingRequestedVersions?: { A?: boolean; B?: boolean; C?: boolean } | null;
+  currentEvaluationSpec?: unknown;
+  declaredContentAdaptationCount: number;
+  versionCFromDecision: boolean;
+  designPlanTriggers?: { versionB?: boolean; versionC?: boolean } | null;
+}): { A: boolean; B: boolean; C: boolean } {
+  const incoming = params.incomingRequestedVersions || {};
+  const triggers = params.designPlanTriggers || {};
+  const hasExistingB = hasVersionVariantInSpec(params.currentEvaluationSpec, 'B');
+  const hasExistingC = hasVersionVariantInSpec(params.currentEvaluationSpec, 'C');
+
+  return {
+    A: true,
+    B:
+      incoming.B === true ||
+      hasExistingB ||
+      params.declaredContentAdaptationCount > 0 ||
+      triggers.versionB === true,
+    C:
+      incoming.C === true ||
+      hasExistingC ||
+      params.versionCFromDecision === true ||
+      triggers.versionC === true
+  };
+}
+
 /**
  * Extract teacher reminders from design plan (only admin + correction, NOT allowances)
  */
@@ -3551,10 +3650,121 @@ type MaterialsPromptBundle = {
   usableBlocksCount?: number;
 };
 
-const MATERIAL_SELECTION_TOP_K = 10;
-const MATERIAL_SELECTION_MIN_K = 6;
-const MATERIAL_SELECTION_CHAR_BUDGET = 28000; // 20k–30k target; use ~28k as default
-const MATERIAL_SELECTION_CHAR_BUDGET_MIN = 20000;
+function stripNoiseLineLite(line: string): string {
+  const t = line.trim();
+  if (!t) return '';
+  if (/\.{4,}\s*\d{1,4}\s*$/.test(t)) return '';
+  if (/^\s*(?:p\.?|pag(?:ina)?|page)\s*\d{1,4}\s*$/i.test(t)) return '';
+  if (/^\s*\d{1,4}\s*$/.test(t)) return '';
+  if (/^\s*[-_=]{3,}\s*$/.test(t)) return '';
+  return t;
+}
+
+function cleanTextUltraLite(raw: string): string {
+  if (!raw) return '';
+  const lines = raw.split('\n');
+  let out = '';
+  for (let i = 0; i < lines.length; i++) {
+    const clean = stripNoiseLineLite(lines[i]);
+    if (!clean) continue;
+    if (out.length > 0) out += '\n';
+    out += clean;
+  }
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function buildMaterialsPromptBundleUltraLite(
+  materials: Array<{ title?: string; focusText?: string; extractedText?: string }>
+): { bundle: MaterialsPromptBundle; materialsUsed: Array<{ title?: string; focusText?: string; extractedText?: string }> } {
+  if (!materials?.length) {
+    return {
+      bundle: {
+        promptSection: '',
+        materialsIndexCount: 0,
+        passagesSelectedCount: 0,
+        materialsCharsSent: 0,
+        topKeywordsUsedForSelection: [],
+        passagesRejectedCount: { toc: 0, biblio: 0, prologue: 0, metadata: 0 },
+        keptBlocksCount: 0,
+        finalK: 0,
+        finalChars: 0,
+        bundleShortfallReason: 'NO_MATERIALS',
+        usableBlocksCount: 0
+      },
+      materialsUsed: []
+    };
+  }
+
+  let totalChars = 0;
+  const selectedRows: Array<{ idx: number; title: string; focus?: string; text: string }> = [];
+  const materialsUsed: Array<{ title?: string; focusText?: string; extractedText?: string }> = [];
+  const maxMaterials = Math.min(ULTRA_LITE_MAX_MATERIALS, materials.length);
+  for (let i = 0; i < maxMaterials; i++) {
+    const material = materials[i];
+    const raw = (material.extractedText || '').trim();
+    if (!raw) continue;
+    const cleaned = cleanTextUltraLite(raw).slice(0, ULTRA_LITE_MAX_CHARS_PER_MATERIAL);
+    if (!cleaned) continue;
+    const remaining = ULTRA_LITE_TOTAL_BUNDLE_CHARS - totalChars;
+    if (remaining <= 0) break;
+    const clipped = cleaned.slice(0, remaining);
+    if (!clipped.trim()) continue;
+    selectedRows.push({
+      idx: i,
+      title: material.title || `Material ${i + 1}`,
+      focus: material.focusText,
+      text: clipped
+    });
+    materialsUsed.push({ title: material.title, focusText: material.focusText, extractedText: clipped });
+    totalChars += clipped.length;
+    if (totalChars >= ULTRA_LITE_TOTAL_BUNDLE_CHARS) break;
+  }
+
+  if (selectedRows.length === 0) {
+    return {
+      bundle: {
+        promptSection: '',
+        materialsIndexCount: 0,
+        passagesSelectedCount: 0,
+        materialsCharsSent: 0,
+        topKeywordsUsedForSelection: [],
+        passagesRejectedCount: { toc: 0, biblio: 0, prologue: 0, metadata: 0 },
+        keptBlocksCount: 0,
+        finalK: 0,
+        finalChars: 0,
+        bundleShortfallReason: 'INSUFFICIENT_USABLE_TEXT',
+        usableBlocksCount: 0
+      },
+      materialsUsed: []
+    };
+  }
+
+  const lines: string[] = ['', '## MATERIALES (ULTRA_LITE)'];
+  for (const row of selectedRows) {
+    lines.push(`\n### [M${row.idx + 1}] ${row.title}`);
+    if (row.focus) lines.push(`Enfoque docente: ${row.focus}`);
+    lines.push(row.text);
+    lines.push('\n---');
+  }
+
+  return {
+    bundle: {
+      promptSection: lines.join('\n'),
+      materialsIndexCount: selectedRows.length,
+      passagesSelectedCount: selectedRows.length,
+      materialsCharsSent: totalChars,
+      topKeywordsUsedForSelection: [],
+      passagesRejectedCount: { toc: 0, biblio: 0, prologue: 0, metadata: 0 },
+      keptBlocksCount: selectedRows.length,
+      finalK: selectedRows.length,
+      finalChars: totalChars,
+      bundleShortfallReason: undefined,
+      usableBlocksCount: selectedRows.length
+    },
+    materialsUsed
+  };
+}
+
 const MIN_PARAGRAPH_LEN = 60; // paragraph floor for coherent evidence blocks
 const LONG_BLOCK_CHUNK_SIZE = 700; // ~700-char windows for long blocks
 const LONG_BLOCK_CHUNK_SIZE_AGGRESSIVE = 620;
@@ -3639,6 +3849,7 @@ function buildMaterialWindows(
   options?: { aggressiveChunking?: boolean }
 ): { windows: MaterialWindow[]; rejectedByReason: Record<PassageRejectReason, number>; keptBlocksCount: number; usableBlocksCount: number } {
   const windows: MaterialWindow[] = [];
+  const qualityCache = new Map<string, { keep: boolean; reason?: PassageRejectReason }>();
   const aggregatedRejected: Record<PassageRejectReason, number> = { toc: 0, biblio: 0, prologue: 0, metadata: 0 };
   let totalKeptBlocks = 0;
   let totalUsableBlocks = 0;
@@ -3661,7 +3872,7 @@ function buildMaterialWindows(
       }
     }
     rawBlocks = expanded.filter((p) => p.length >= MIN_PARAGRAPH_LEN);
-    const { kept: paragraphsStrict, rejected, rejectedByReason } = filterPassagesByQuality(rawBlocks);
+    const { kept: paragraphsStrict, rejected, rejectedByReason } = filterPassagesByQualityCached(rawBlocks, qualityCache);
     (['toc', 'biblio', 'prologue', 'metadata'] as const).forEach((r) => {
       aggregatedRejected[r] = (aggregatedRejected[r] || 0) + (rejectedByReason[r] || 0);
     });
@@ -3775,7 +3986,7 @@ function buildMaterialsPromptBundle(
   let finalChars = selected.reduce((acc, s) => acc + s.passage.length, 0);
   let bundleShortfallReason = '';
   // If materials are long but selected chars are still too low, rerank with aggressive chunking and top up.
-  if (hasLongMaterial && finalChars < MATERIAL_SELECTION_CHAR_BUDGET_MIN) {
+  if (USE_AGGRESSIVE_SELECTION_TOPUP && hasLongMaterial && finalChars < MATERIAL_SELECTION_CHAR_BUDGET_MIN) {
     const aggressive = buildMaterialWindows(materials, keywords, { aggressiveChunking: true });
     ranked = aggressive.windows;
     keptBlocksCount = Math.max(keptBlocksCount, aggressive.keptBlocksCount);
@@ -4486,11 +4697,11 @@ export function applyDeltaFiller(
   materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
   warnings: WarningV2[],
   subjectLabel?: string
-): { spec: EvaluationSpecV2; itemsAdded: number } {
+): { spec: EvaluationSpecV2; itemsAdded: number; groundingInsufficient: boolean; remainingDelta: number } {
   const low = Math.round(targetMinutes * 0.95);
   const currentEstimate = estimateDurationFromSpec(spec);
   let remainingDelta = Math.max(0, low - currentEstimate);
-  if (remainingDelta <= 0) return { spec, itemsAdded: 0 };
+  if (remainingDelta <= 0) return { spec, itemsAdded: 0, groundingInsufficient: false, remainingDelta: 0 };
 
   const { itemIds, sectionIds } = collectExistingIds(spec);
   const subject = (subjectLabel || 'el tema').trim();
@@ -4528,11 +4739,18 @@ export function applyDeltaFiller(
       if (stem) normalizedExistingStems.add(stem);
     }
   }
+  const minutesPerSource = DURATION_MINUTES_BY_ITEM_TYPE['source_analysis'] ?? 14;
   const minutesPerMC = DURATION_MINUTES_BY_ITEM_TYPE['multiple_choice'] ?? 2;
-  const minutesPerShort = DURATION_MINUTES_BY_ITEM_TYPE['short_answer'] ?? 4;
-  const minutesPerParagraph = DURATION_MINUTES_BY_ITEM_TYPE['paragraph'] ?? 9;
-  const minutesPerEssay = DURATION_MINUTES_BY_ITEM_TYPE['essay'] ?? 14;
   const hasHighQualityExcerpt = usableExcerpt.length >= MIN_EXCERPT_LENGTH_CHARS;
+  if (!hasHighQualityExcerpt) {
+    warnings.push({
+      code: 'GROUNDING_INSUFFICIENT',
+      message: 'No hay evidencia textual suficiente para agregar ítems de duración sin perder grounding.',
+      severity: 'warning',
+      context: { remainingDelta, targetLow: low }
+    });
+    return { spec, itemsAdded: 0, groundingInsufficient: true, remainingDelta };
+  }
 
   const passageKeywords = hasHighQualityExcerpt ? tokenizeKeywords(usableExcerpt, 10) : [];
   const fillerTerms = expandDeterministicTerms(passageKeywords.length > 0 ? passageKeywords : [subject], subject);
@@ -4549,41 +4767,32 @@ export function applyDeltaFiller(
     return false;
   };
   while (remainingDelta > 0 && newItems.length < MAX_DELTA_FILLER_ITEMS_TOTAL) {
-    if (remainingDelta >= minutesPerEssay) {
+    if (remainingDelta >= minutesPerSource) {
       const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
       itemIds.add(id);
       itemIndex++;
-      const prompt = `Desarrolle una respuesta argumentada sobre ${subject}, incorporando conceptos clave y evidencia trabajada en clase.`;
+      const prompt = `A partir del fragmento adjunto, analice ${subject} y justifique su respuesta con evidencia textual concreta.`;
       if (isDuplicateStem(prompt)) {
         remainingDelta -= 1;
         continue;
       }
       newItems.push({
         id,
-        type: 'essay',
+        type: 'source_analysis',
         prompt,
         points: 4,
+        source: {
+          type: 'text',
+          content: usableExcerpt,
+          caption: materialsWithExcerpt[0]?.title || 'Fragmento'
+        },
+        subItems: [
+          { id: `${id}-a`, prompt: `Identifique una idea central del fragmento sobre ${subject}.`, points: 2 },
+          { id: `${id}-b`, prompt: 'Explique qué evidencia del texto sostiene su interpretación.', points: 2 }
+        ],
         rubric: buildFallbackRubric(prompt, 4)
       } as EvaluationItemV2);
-      remainingDelta -= minutesPerEssay;
-      normalizedExistingStems.add(prompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
-    } else if (remainingDelta >= minutesPerParagraph) {
-      const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
-      itemIds.add(id);
-      itemIndex++;
-      const prompt = `Elabore un párrafo explicativo sobre ${subject} destacando una relación causa-consecuencia o evidencia concreta.`;
-      if (isDuplicateStem(prompt)) {
-        remainingDelta -= 1;
-        continue;
-      }
-      newItems.push({
-        id,
-        type: 'paragraph',
-        prompt,
-        points: 3,
-        rubric: buildFallbackRubric(prompt, 3)
-      } as EvaluationItemV2);
-      remainingDelta -= minutesPerParagraph;
+      remainingDelta -= minutesPerSource;
       normalizedExistingStems.add(prompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
     } else if (hasHighQualityExcerpt && remainingDelta >= minutesPerMC) {
       const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
@@ -4612,24 +4821,6 @@ export function applyDeltaFiller(
       } as EvaluationItemV2);
       remainingDelta -= minutesPerMC;
       normalizedExistingStems.add(mcPrompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
-    } else if (remainingDelta >= minutesPerShort) {
-      const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
-      itemIds.add(id);
-      itemIndex++;
-      const prompt = `Indique brevemente un aspecto relevante sobre ${subject}.`;
-      if (isDuplicateStem(prompt)) {
-        remainingDelta -= 1;
-        continue;
-      }
-      newItems.push({
-        id,
-        type: 'short_answer',
-        prompt,
-        points: 2,
-        rubric: buildFallbackRubric(prompt, 2)
-      } as EvaluationItemV2);
-      remainingDelta -= minutesPerShort;
-      normalizedExistingStems.add(prompt.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
     } else if (hasHighQualityExcerpt && remainingDelta >= minutesPerMC) {
       // last resort small step only when excerpt exists and remains high-quality
       const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
@@ -4656,7 +4847,7 @@ export function applyDeltaFiller(
     }
   }
 
-  if (newItems.length === 0) return { spec, itemsAdded: 0 };
+  if (newItems.length === 0) return { spec, itemsAdded: 0, groundingInsufficient: true, remainingDelta };
 
   const targetSection = (spec.sections || []).find((s) => Array.isArray(s.items)) || (spec.sections || [])[0];
   if (targetSection) {
@@ -4676,12 +4867,12 @@ export function applyDeltaFiller(
   });
   if (remainingDelta > 0) {
     warnings.push({
-      code: 'DURATION_REALISM_CAP_REACHED',
-      message: `Se detuvo el complemento de duración para preservar realismo pedagógico (delta pendiente aprox. ${remainingDelta} min).`,
+      code: 'GROUNDING_INSUFFICIENT',
+      message: `No fue posible completar la duración objetivo con evidencia suficiente (delta pendiente aprox. ${remainingDelta} min).`,
       severity: 'warning'
     });
   }
-  return { spec: newSpec, itemsAdded: newItems.length };
+  return { spec: newSpec, itemsAdded: newItems.length, groundingInsufficient: remainingDelta > 0, remainingDelta };
 }
 
 // ============================================================================
@@ -5479,9 +5670,9 @@ serve(async (req) => {
     });
   }
   
-  // Generate request ID and start timer
-  const requestId = generateRequestId();
-  const timer = new Timer(requestId);
+  // Generate provisional request ID and start timer (can be replaced by client-provided requestId after body parse)
+  let requestId = generateRequestId();
+  let timer = new Timer(requestId);
   const metrics = { llmCallCount: 0 };
 
   // Behavior path: default = NEW (production). Header x-aulaplus-env: legacy = LEGACY (rollback only; frontend must NOT send this).
@@ -5494,6 +5685,11 @@ serve(async (req) => {
   try {
     timer.log('Request received, parsing body');
     const requestBody = await req.json();
+    const clientRequestIdRaw = requestBody?.requestId ?? req.headers.get('x-request-id');
+    if (typeof clientRequestIdRaw === 'string' && clientRequestIdRaw.trim().length > 0) {
+      requestId = clientRequestIdRaw.trim().slice(0, 120);
+      timer = new Timer(requestId);
+    }
     
     // PING MODE: Lightweight probe (gateway already validated JWT when verify_jwt=true). No OpenAI calls.
     if (requestBody && typeof requestBody === 'object' && requestBody.__ping === true) {
@@ -5520,7 +5716,9 @@ serve(async (req) => {
       console.error('[V2_ERROR] OpenAI API key not configured');
       return new Response(JSON.stringify({
         success: false,
-        error: 'OpenAI API key not configured',
+        requestId,
+        error: { code: 'CONFIG_ERROR', message: 'OpenAI API key not configured' },
+        message: 'OpenAI API key not configured',
         warnings: [{ code: 'CONFIG_ERROR', message: 'El servicio no está configurado correctamente', severity: 'error' }]
       }), {
         status: 500,
@@ -5557,6 +5755,7 @@ serve(async (req) => {
       modification,
       groupContext,
       evaluation_design_plan,
+      requestedVersions: requestedVersionsFromClient,
       currentEvaluationSpec,  // For adjust mode: the current spec to refine
       adjustmentDetails       // For adjust mode: { targetVersions, scope, sectionId?, itemId? }
     } = requestBody;
@@ -5616,13 +5815,16 @@ serve(async (req) => {
       contemplacionesForDecision,
       teacherReminders
     );
-    const requestedVersions = {
-      A: true,
-      B: declaredContentAdaptationCount > 0,
-      C: versionCDecision.shouldCreateC || designPlan?.triggers?.versionC === true
-    };
+    const requestedVersions = computeRequestedVersionsForModify({
+      incomingRequestedVersions: requestedVersionsFromClient,
+      currentEvaluationSpec,
+      declaredContentAdaptationCount,
+      versionCFromDecision: versionCDecision.shouldCreateC,
+      designPlanTriggers: designPlan?.triggers
+    });
     timer.log(`[REGULATION_V3] versionCDecision shouldCreateC=${versionCDecision.shouldCreateC} explanation=${versionCDecision.explanation}`);
     timer.log(`[REGULATION_V3] declaredContentAdaptationCount=${declaredContentAdaptationCount}`);
+    timer.log(`[REGULATION_V3] clientRequestedVersions=${JSON.stringify(requestedVersionsFromClient || null)}`);
     timer.log(`versions: A=true, B=${requestedVersions.B}, C=${requestedVersions.C}`);
     timer.mark('versions_computed');
     
@@ -5653,7 +5855,10 @@ serve(async (req) => {
     }
     const selectionStartMs = Date.now();
     let selectionMs = 0;
+    let totalMaterialInputChars = 0;
     let materialsPromptPath: 'bundle' | 'legacy' = 'legacy';
+    let materialModeUsed: 'ULTRA_LITE' | 'SMART_SELECTION' | 'NONE' = 'NONE';
+    let materialsForPipeline = materialsForExcerpt;
     let materialsPromptStats: {
       materialsIndexCount: number;
       passagesSelectedCount: number;
@@ -5677,19 +5882,31 @@ serve(async (req) => {
       bundleShortfallReason: undefined,
     };
     if (materialsForExcerpt.length > 0) {
+      totalMaterialInputChars = materialsForExcerpt.reduce((acc, m) => acc + ((m.extractedText || '').length), 0);
       const withUsableText = materialsForExcerpt.filter(
         (m) => ((m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS)
       ).length;
       timer.log(`[PROMPT] materials: ${materialsForExcerpt.length} total, ${withUsableText} with extractedText >= ${MIN_EXCERPT_LENGTH_CHARS} chars`);
-      const selectionContext = [
-        modification || '',
-        groupContext?.subject || '',
-        ...(Array.isArray(groupContext?.content) ? groupContext.content : []),
-        ...(Array.isArray(groupContext?.competencies) ? groupContext.competencies : []),
-        ...(Array.isArray(groupContext?.criteriosLogro) ? groupContext.criteriosLogro : []),
-        instrumentDesignRules.join(' ')
-      ].join('\n');
-      const materialsBundle = buildMaterialsPromptBundle(materialsForExcerpt, selectionContext);
+      const forceUltraLiteBySize = !ULTRA_LITE_MODE && totalMaterialInputChars > ULTRA_LITE_FORCE_THRESHOLD_CHARS;
+      const useUltraLiteNow = ULTRA_LITE_MODE || forceUltraLiteBySize || !SMART_SELECTION_MODE;
+      let materialsBundle: MaterialsPromptBundle;
+      if (useUltraLiteNow) {
+        const lite = buildMaterialsPromptBundleUltraLite(materialsForExcerpt);
+        materialsBundle = lite.bundle;
+        materialsForPipeline = lite.materialsUsed;
+        materialModeUsed = 'ULTRA_LITE';
+      } else {
+        const selectionContext = [
+          modification || '',
+          groupContext?.subject || '',
+          ...(Array.isArray(groupContext?.content) ? groupContext.content : []),
+          ...(Array.isArray(groupContext?.competencies) ? groupContext.competencies : []),
+          ...(Array.isArray(groupContext?.criteriosLogro) ? groupContext.criteriosLogro : []),
+          instrumentDesignRules.join(' ')
+        ].join('\n');
+        materialsBundle = buildMaterialsPromptBundle(materialsForExcerpt, selectionContext);
+        materialModeUsed = 'SMART_SELECTION';
+      }
       if (materialsBundle.promptSection) {
         userPrompt += materialsBundle.promptSection;
         materialsPromptPath = 'bundle';
@@ -5706,7 +5923,7 @@ serve(async (req) => {
         finalChars: materialsBundle.finalChars ?? 0,
         bundleShortfallReason: materialsBundle.bundleShortfallReason,
       };
-      timer.log(`[PROMPT] materialsPromptPath=${materialsPromptPath} index=${materialsPromptStats.materialsIndexCount} passages=${materialsPromptStats.passagesSelectedCount} chars=${materialsPromptStats.materialsCharsSent} usableBlocks=${materialsPromptStats.usableBlocksCount} keptBlocks=${materialsPromptStats.keptBlocksCount} finalK=${materialsPromptStats.finalK} finalChars=${materialsPromptStats.finalChars} shortfall=${materialsPromptStats.bundleShortfallReason || 'none'} rejected=${JSON.stringify(materialsPromptStats.passagesRejectedCount || {})}`);
+      timer.log(`[PROMPT] mode=${materialModeUsed} totalInputChars=${totalMaterialInputChars} bundleChars=${materialsPromptStats.materialsCharsSent} passages=${materialsPromptStats.passagesSelectedCount}`);
     }
     selectionMs = Date.now() - selectionStartMs;
 
@@ -5772,7 +5989,12 @@ serve(async (req) => {
 
       // NEW behavior (default): excerpt validation, delta filler, deterministic fill. Auto-extend/trim only when USE_DURATION_AUTO_EXTEND=true (reduces llmCallCount to 1).
       if (!useLegacyPath) {
-      if (USE_DURATION_AUTO_EXTEND && targetDurationMinutes !== null && estimatedMinutes < targetDurationMinutes * 0.95) {
+      if (
+        USE_DURATION_AUTO_EXTEND &&
+        targetDurationMinutes !== null &&
+        estimatedMinutes < targetDurationMinutes * 0.95 &&
+        canRunOptionalStep('duration auto-extend', timer, metrics, result.warnings)
+      ) {
         const low = Math.round(targetDurationMinutes * 0.95);
         const deltaMinutesNeeded = computeDeltaMinutesNeeded(estimatedMinutes, low);
         timer.log(`[DURATION_AUTO_EXTEND_LOOP] initial estimate=${estimatedMinutes} target=${targetDurationMinutes} low=${low} deltaMinutesNeeded=${deltaMinutesNeeded}`);
@@ -5789,6 +6011,9 @@ serve(async (req) => {
         const MIN_MEANINGFUL_INCREASE = 1; // newEst must be > oldEst + MIN_MEANINGFUL_INCREASE to count
 
         for (let extendAttempt = 1; extendAttempt <= maxExtendAttempts; extendAttempt++) {
+          if (!canRunOptionalStep(`duration auto-extend attempt ${extendAttempt}`, timer, metrics, result.warnings)) {
+            break;
+          }
           timer.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} start current_estimated=${bestEstimate} target=${targetDurationMinutes}`);
           console.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} start current_estimated=${bestEstimate} target=${targetDurationMinutes}`);
           const extended = await runDurationAutoExtend(
@@ -5853,10 +6078,10 @@ serve(async (req) => {
       if (!excerptValidation.valid) {
         timer.log(`[EXCERPT_VALIDATION] failures: ${excerptValidation.failures.map(f => f.itemId + '(' + f.itemType + ')').join(', ')}`);
         console.log(`[EXCERPT_VALIDATION] failures:`, excerptValidation.failures.map((f) => ({ itemId: f.itemId, itemType: f.itemType, sectionId: f.sectionId })));
-        const materialsWithUsableText = materialsForExcerpt.filter(
+        const materialsWithUsableText = materialsForPipeline.filter(
           (m) => ((m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS)
         ).length;
-        if (materialsForExcerpt.length > 0 && materialsWithUsableText === 0) {
+        if (materialsForPipeline.length > 0 && materialsWithUsableText === 0) {
           result.warnings.push({
             code: 'SOURCE_EXCERPT_MISSING',
             message: 'Los materiales no incluyen texto extraído suficiente (mín. 200 caracteres); los ítems source_analysis pueden quedar sin fragmento.',
@@ -5864,9 +6089,14 @@ serve(async (req) => {
           });
           console.log('[EXCERPT] materials provided but no usable extractedText (>=200 chars); excerpts may be missing');
         }
-        if (materialsForExcerpt.length > 0 && materialsWithUsableText > 0 && USE_LLM_REPAIRS) {
+        if (
+          materialsForPipeline.length > 0 &&
+          materialsWithUsableText > 0 &&
+          USE_LLM_REPAIRS &&
+          canRunOptionalStep('excerpt repair', timer, metrics, result.warnings)
+        ) {
           timer.log('[EXCERPT_REPAIR] running LLM repair (USE_LLM_REPAIRS=true)');
-          const repaired = await runExcerptRepair(result.spec, materialsForExcerpt, requestedVersions, requestId, timer);
+          const repaired = await runExcerptRepair(result.spec, materialsForPipeline, requestedVersions, requestId, timer);
           metrics.llmCallCount += 1;
           result.warnings.push(...repaired.warnings);
           result.spec = repaired.spec;
@@ -5877,7 +6107,7 @@ serve(async (req) => {
             timer.log('[EXCERPT_VALIDATION] after repair still invalid; degraded remaining items');
           }
         } else {
-          if (materialsForExcerpt.length > 0 && materialsWithUsableText > 0 && !USE_LLM_REPAIRS) {
+          if (materialsForPipeline.length > 0 && materialsWithUsableText > 0 && !USE_LLM_REPAIRS) {
             timer.log('[EXCERPT_VALIDATION] skipping LLM repair; using deterministic cleaning + degrade');
           }
           degradeItemsWithMissingExcerpt(result.spec, excerptValidation.failures, result.warnings);
@@ -5886,14 +6116,14 @@ serve(async (req) => {
       }
 
       // Coherent excerpt cleaning: replace raw/metadata source_analysis content with 1–3 substantive paragraphs (when materials available)
-      const materialsWithUsableForCleaning = materialsForExcerpt.filter(
+      const materialsWithUsableForCleaning = materialsForPipeline.filter(
         (m) => (m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS
       );
-      if (materialsWithUsableForCleaning.length > 0) {
+      if (materialsWithUsableForCleaning.length > 0 && materialModeUsed !== 'ULTRA_LITE') {
         const canCollectExcerptDebug = (Date.now() - postProcessStartMs) <= 200;
         const { excerptStats } = applyExcerptCleaningToSpec(
           result.spec,
-          materialsForExcerpt,
+          materialsForPipeline,
           result.warnings,
           { collectDebugStats: canCollectExcerptDebug }
         );
@@ -5902,7 +6132,12 @@ serve(async (req) => {
       }
 
       // Auto-trim: if estimate >120% of target, one attempt to reduce (only when USE_DURATION_AUTO_EXTEND=true).
-      if (USE_DURATION_AUTO_EXTEND && targetDurationMinutes !== null && estimatedMinutes > targetDurationMinutes * 1.2) {
+      if (
+        USE_DURATION_AUTO_EXTEND &&
+        targetDurationMinutes !== null &&
+        estimatedMinutes > targetDurationMinutes * 1.2 &&
+        canRunOptionalStep('duration auto-trim', timer, metrics, result.warnings)
+      ) {
         const trimmed = await runDurationAutoTrim(
           result.spec,
           targetDurationMinutes,
@@ -5930,7 +6165,7 @@ serve(async (req) => {
       // Single deterministic post-processing pass is executed at the end of NEW path.
 
       // Rubric + Version B completion: one LLM repair pass when USE_LLM_REPAIRS (else quality-by-construction only)
-      if (USE_LLM_REPAIRS) {
+      if (USE_LLM_REPAIRS && canRunOptionalStep('rubric/promptB repair', timer, metrics, result.warnings)) {
         const rubricPromptBRepaired = await runRubricAndPromptBRepair(result.spec, requestedVersions, requestId, timer);
         metrics.llmCallCount += 1;
         result.warnings.push(...rubricPromptBRepaired.warnings);
@@ -5974,7 +6209,7 @@ serve(async (req) => {
             severity: 'warning'
           });
         }
-        if (USE_LLM_REPAIRS) {
+        if (USE_LLM_REPAIRS && canRunOptionalStep('item validity repair', timer, metrics, result.warnings)) {
           const repaired = await runItemValidityRepair(
             result.spec,
             validity.invalid,
@@ -6003,25 +6238,31 @@ serve(async (req) => {
         }
         estimatedMinutes = estimateDurationFromSpec(result.spec);
         if (targetDurationMinutes !== null && estimatedMinutes < Math.round(targetDurationMinutes * 0.95)) {
-          const low = Math.round(targetDurationMinutes * 0.95);
-          const { spec: specAfterFiller, itemsAdded } = applyDeltaFiller(
+          const { spec: specAfterFiller, itemsAdded, groundingInsufficient, remainingDelta } = applyDeltaFiller(
             result.spec,
             targetDurationMinutes,
-            materialsForExcerpt,
+            materialsForPipeline,
             result.warnings,
             groupContext?.subject
           );
-        if (itemsAdded > 0) {
-          result.spec = specAfterFiller;
-          estimatedMinutes = estimateDurationFromSpec(specAfterFiller);
-          timer.log(`[DURATION_DELTA_FILLER] post-degradation filler added ${itemsAdded} items, new_estimated=${estimatedMinutes}`);
+          if (itemsAdded > 0) {
+            result.spec = specAfterFiller;
+            estimatedMinutes = estimateDurationFromSpec(specAfterFiller);
+            timer.log(`[DURATION_DELTA_FILLER] post-degradation filler added ${itemsAdded} items, new_estimated=${estimatedMinutes}`);
+          }
+          if (groundingInsufficient) {
+            result.warnings.push({
+              code: 'GROUNDING_INSUFFICIENT_TO_MEET_DURATION',
+              message: `No se alcanzó la duración objetivo con evidencia suficiente (faltan aprox. ${remainingDelta} min).`,
+              severity: 'warning'
+            });
+          }
         }
-      }
 
       // Deterministic item fill runs LAST so table/matching/ordering/MC are always renderable (including filler-added items).
       fillMissingItemDataDeterministically(
         result.spec,
-        materialsForExcerpt,
+        materialsForPipeline,
         materialsPromptStats.topKeywordsUsedForSelection,
         groupContext?.subject,
         result.warnings
@@ -6029,7 +6270,7 @@ serve(async (req) => {
       if (materialsPromptStats.finalChars >= MIN_EXCERPT_LENGTH_CHARS) {
         ensureComprehensionBundleDeterministically(
           result.spec,
-          materialsForExcerpt,
+          materialsForPipeline,
           materialsPromptStats.topKeywordsUsedForSelection,
           groupContext?.subject,
           result.warnings
@@ -6041,7 +6282,7 @@ serve(async (req) => {
         // Rollback path: single-call + minimal deterministic invariants only.
         fillMissingItemDataDeterministically(
           result.spec,
-          materialsForExcerpt,
+          materialsForPipeline,
           materialsPromptStats.topKeywordsUsedForSelection,
           groupContext?.subject,
           result.warnings
@@ -6073,6 +6314,57 @@ serve(async (req) => {
       result.spec.meta.duration.breakdown = timeBreakdown;
       if (targetDurationMinutes !== null) {
         result.spec.meta.duration.targetMinutes = targetDurationMinutes;
+      }
+      const groundingInsufficient = result.warnings.some(
+        (w) => w.code === 'GROUNDING_INSUFFICIENT' || w.code === 'GROUNDING_INSUFFICIENT_TO_MEET_DURATION'
+      );
+      if (targetDurationMinutes !== null && groundingInsufficient) {
+        const response: V2Response = {
+          success: false,
+          requestId,
+          evaluationSpec: null,
+          targetDurationMinutes,
+          estimatedTotalMinutes: estimatedMinutes,
+          timeBreakdown,
+          requestedVersions: effectiveRequestedVersions,
+          instrumentDesignRulesApplied: instrumentDesignRules,
+          teacherRemindersByStudent: teacherReminders,
+          aiReport: null,
+          outcome: {
+            code: 'GROUNDING_INSUFFICIENT_TO_MEET_DURATION',
+            message: 'No hay evidencia suficiente para alcanzar la duración objetivo sin agregar relleno no fundamentado.',
+            actionableGuidance: [
+              'Reducí los minutos objetivo de la evaluación.',
+              'Adjuntá más materiales con contenido evaluable.',
+              'Acotá el alcance de contenidos o complejidad.'
+            ]
+          },
+          error: {
+            code: 'GROUNDING_INSUFFICIENT',
+            message: 'No fue posible completar la duración con grounding suficiente.'
+          },
+          warnings: dedupeWarningsByCode(result.warnings),
+          debug: {
+            mode: useLegacyPath ? 'legacy' : 'new',
+            build: currentBuildMarker,
+            model: result.attempts?.[result.attempts.length - 1]?.model ?? OPENAI_MODEL_PRIMARY,
+            llmCallCount: metrics.llmCallCount,
+            modeUsed: materialModeUsed,
+            totalInputChars: totalMaterialInputChars,
+            bundleChars: materialsPromptStats.materialsCharsSent,
+            promptTokensEstimate: Math.ceil(result.debug.promptLength / 4),
+            completionTokensEstimate: Math.ceil(result.debug.responseLength / 4),
+            attempt: result.attempt,
+            extractionMethod: result.extractionMethod,
+            requestId,
+            timings: timer.summary(),
+            totalDurationMs: timer.elapsed()
+          }
+        };
+        return new Response(JSON.stringify(response), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
       }
 
       const postProcessMs = Date.now() - postProcessStartMs;
@@ -6188,7 +6480,12 @@ serve(async (req) => {
       // If narrative is present but too short (<200 chars), try narrative-only OpenAI call only when USE_NARRATIVE_LLM_CALLS=true (default: single-call flow).
       if (narrativeText && typeof narrativeText === 'string') {
         const len = narrativeText.trim().length;
-        if (len > 0 && len < MIN_NARRATIVE_LENGTH && USE_NARRATIVE_LLM_CALLS) {
+        if (
+          len > 0 &&
+          len < MIN_NARRATIVE_LENGTH &&
+          USE_NARRATIVE_LLM_CALLS &&
+          canRunOptionalStep('narrative enhancement', timer, metrics, result.warnings)
+        ) {
           timer.log('[AI_REPORT] Narrative too short (any source), requesting narrative-only OpenAI call...');
           const enhanced = await generateNarrativeOnlyCall(
             result.spec,
@@ -6239,7 +6536,12 @@ serve(async (req) => {
       // When B/C are effective but narratives missing, attempt one fast secondary OpenAI call only when USE_NARRATIVE_LLM_CALLS=true (default: deterministic ensureByVersionNarratives only).
       const needsB = effectiveRequestedVersions.B && (!baseAiReport.byVersion?.B?.narrative?.trim());
       const needsC = effectiveRequestedVersions.C && (!baseAiReport.byVersion?.C?.narrative?.trim());
-      if (USE_NARRATIVE_LLM_CALLS && (needsB || needsC) && baseAiReport.byVersion) {
+      if (
+        USE_NARRATIVE_LLM_CALLS &&
+        (needsB || needsC) &&
+        baseAiReport.byVersion &&
+        canRunOptionalStep('by-version narratives', timer, metrics, result.warnings)
+      ) {
         const existingA = baseAiReport.byVersion.A?.narrative?.trim() || baseAiReport.narrative?.trim() || '';
         const filled = await generateMissingByVersionNarrativesCall(
           result.spec,
@@ -6357,6 +6659,7 @@ serve(async (req) => {
       console.log('[BUILD_FINGERPRINT]', currentBuildMarker, 'requestId=', requestId);
       const response: V2Response = {
         success: true,
+        requestId,
         evaluationSpec: evaluationSpecForResponse as typeof result.spec,
         targetDurationMinutes: targetDurationMinutes ?? null,
         estimatedTotalMinutes: estimatedMinutes,
@@ -6374,6 +6677,9 @@ serve(async (req) => {
           build: currentBuildMarker,
           model: result.attempts?.[result.attempts.length - 1]?.model ?? OPENAI_MODEL_PRIMARY,
           llmCallCount: metrics.llmCallCount,
+          modeUsed: materialModeUsed,
+          totalInputChars: totalMaterialInputChars,
+          bundleChars: materialsPromptStats.materialsCharsSent,
           promptTokensEstimate: Math.ceil(result.debug.promptLength / 4),
           completionTokensEstimate: Math.ceil(result.debug.responseLength / 4),
           attempt: result.attempt,
@@ -6499,6 +6805,7 @@ serve(async (req) => {
         // Build response with emergency spec (success:true to prevent V1 fallback); always include aiReport
         const response: V2Response = {
           success: true, // CRITICAL: Must be true to prevent V1 fallback
+          requestId,
           evaluationSpec: emergencySpec,
           targetDurationMinutes: targetDurationMinutes ?? null,
           estimatedTotalMinutes: estimateDurationFromSpec(emergencySpec),
@@ -6582,6 +6889,12 @@ serve(async (req) => {
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : '';
+    const normalizedErrorCode =
+      errorMsg.includes('WORKER_LIMIT') || errorMsg.includes('CPU Time exceeded')
+        ? 'WORKER_LIMIT'
+        : errorMsg.includes('TIMEOUT')
+          ? 'OPENAI_TIMEOUT'
+          : 'UNHANDLED_ERROR';
     
     console.log('══════════════════════════════════════════════════════════════════');
     console.log('🔥 [V2_UNHANDLED_ERROR] Unhandled exception caught');
@@ -6592,6 +6905,7 @@ serve(async (req) => {
     
     const response: V2Response = {
       success: false,
+          requestId,
       evaluationSpec: null,
       targetDurationMinutes: null,
       estimatedTotalMinutes: 0,
@@ -6600,11 +6914,19 @@ serve(async (req) => {
       instrumentDesignRulesApplied: [],
       teacherRemindersByStudent: [],
       aiReport: null,
-      warnings: [{
-        code: 'UNHANDLED_ERROR',
+          warnings: [{
+            code: normalizedErrorCode,
         message: `Error interno: ${errorMsg}`,
         severity: 'error'
       }],
+          error: {
+            code: normalizedErrorCode,
+            message: normalizedErrorCode === 'WORKER_LIMIT'
+              ? 'La función alcanzó el límite de cómputo.'
+              : normalizedErrorCode === 'OPENAI_TIMEOUT'
+                ? 'El servicio de IA no respondió a tiempo.'
+                : 'Error interno al procesar la generación.'
+          },
       debug: {
         mode: useLegacyPath ? 'legacy' : 'new',
         build: currentBuildMarker,

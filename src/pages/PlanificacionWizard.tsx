@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,6 +21,10 @@ import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
 import { resolveMockGroup } from '@/utils/resolveMockGroup';
+import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
+
+const PLAN_WIZARD_DRAFT_KEY = 'aulaplus.planWizard.draft';
+const SUMMARY_STEP = 3;
 
 // PHASE 1: Helper para expandir unidades según clases_estimadas (reutilizable)
 function expandUnitsToSessionPlan(
@@ -680,8 +684,9 @@ const generarPlanesAutomaticamente = async (
           };
           
           // FIX: Persist ai_design_report to session if available
-          if (data.ai_design_report) {
-            updatePayload.ai_design_report = data.ai_design_report;
+          const safeAiReport = sanitizePlanningAiDesignReport(data.ai_design_report);
+          if (safeAiReport) {
+            updatePayload.ai_design_report = safeAiReport;
             if (import.meta.env.DEV) {
               console.log(`[FIX] Sesión ${sesion.orden}: ai_design_report incluido en updatePayload`);
             }
@@ -708,10 +713,10 @@ const generarPlanesAutomaticamente = async (
             .eq('id', sesion.id);
           
           // FIX: Accumulate ai_design_report from this session
-          if (data.ai_design_report) {
+          if (safeAiReport) {
             accumulatedAiDesignReports.push({
               sessionOrder: sesion.orden,
-              report: data.ai_design_report
+              report: safeAiReport
             });
             if (import.meta.env.DEV) {
               console.log(`[FIX] Sesión ${sesion.orden}: ai_design_report acumulado`);
@@ -831,11 +836,8 @@ const generarPlanesAutomaticamente = async (
               structure: 'Estructura estándar aplicada a múltiples sesiones',
               timeAllocation: `Distribución de tiempo para ${accumulatedAiDesignReports.length} sesiones`
             },
-            assumptions: [
-              'Estudiantes tienen conocimientos previos básicos',
-              'Recursos básicos disponibles',
-              `Planificación generada para ${accumulatedAiDesignReports.length} sesiones`
-            ],
+            narrative: `Reporte consolidado de ${accumulatedAiDesignReports.length} sesiones generado en modo docente.`,
+            report_narrative: `Reporte consolidado de ${accumulatedAiDesignReports.length} sesiones generado en modo docente.`,
             sessionsGenerated: accumulatedAiDesignReports.length
           };
       
@@ -888,6 +890,7 @@ const generarPlanesAutomaticamente = async (
 
 export default function PlanificacionWizard() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
   const [isGeneratingPlans, setIsGeneratingPlans] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
@@ -904,10 +907,38 @@ export default function PlanificacionWizard() {
     validarPaso,
     generarSesionesEsquema,
     reiniciarWizard,
+    replaceWizardData,
     isDataComplete,
     setIsLoading,
     setError
   } = usePlanificacionWizard();
+
+  useEffect(() => {
+    const state = location.state as { returnToWizardStep?: number; fromWorkspace?: boolean } | null;
+    if (state?.returnToWizardStep !== SUMMARY_STEP && !state?.fromWorkspace) return;
+
+    try {
+      const raw = localStorage.getItem(PLAN_WIZARD_DRAFT_KEY);
+      if (!raw) return;
+      const draft = JSON.parse(raw) as WizardData;
+      if (draft && typeof draft.paso === 'number' && draft.paso >= 0 && draft.paso <= SUMMARY_STEP) {
+        replaceWizardData({ ...draft, paso: SUMMARY_STEP });
+      }
+    } catch {
+      // ignore invalid draft
+    }
+  }, [location.state, replaceWizardData]);
+
+  const saveDraftAndNavigateToWorkspace = (planificacionId: string) => {
+    try {
+      localStorage.setItem(PLAN_WIZARD_DRAFT_KEY, JSON.stringify(wizardData));
+    } catch {
+      // ignore localStorage errors
+    }
+    navigate(`/planificacion/${planificacionId}`, {
+      state: { from: '/planificacion/nuevo', returnToWizardStep: SUMMARY_STEP }
+    });
+  };
 
   const { generateAllSessions, isGenerating } = useFullSessionGeneration();
 
@@ -965,7 +996,7 @@ export default function PlanificacionWizard() {
           title: "¡Planificación completa!",
           description: "Todos los planes de clase han sido generados y guardados.",
         });
-        navigate(`/planificacion/${wizardData.planificacionId}`);
+        saveDraftAndNavigateToWorkspace(wizardData.planificacionId);
       } else {
         throw new Error('No se pudieron generar todos los planes');
       }
@@ -1329,7 +1360,7 @@ export default function PlanificacionWizard() {
           // Navigate to workspace after successful creation
           const planificacionId = planificacion.id;
           console.log(`[PlanificacionWizard] Navigating to workspace: /planificacion/${planificacionId}`);
-          navigate(`/planificacion/${planificacionId}`);
+          saveDraftAndNavigateToWorkspace(planificacionId);
           return; // Exit early on success
         } else {
           // FASE 1E: Construir mensaje de error detallado con sesiones fallidas
@@ -1360,7 +1391,7 @@ export default function PlanificacionWizard() {
         // Navigate anyway if plan was created (partial success)
         if (planificacion?.id) {
           console.log(`[PlanificacionWizard] Navigating to workspace despite generation errors: /planificacion/${planificacion.id}`);
-          navigate(`/planificacion/${planificacion.id}`);
+          saveDraftAndNavigateToWorkspace(planificacion.id);
           return;
         }
         
@@ -1407,7 +1438,7 @@ export default function PlanificacionWizard() {
               
               <div className="space-y-2">
                 <h2 className="text-2xl font-bold">
-                  {generationError ? 'Error en la generación' : 'Aguarda un instante mientras generamos las clases. Espero no demorar mucho'}
+                  {generationError ? 'Error en la generación' : 'Aguarda un instante mientras generamos las clases. Esperamos no demorar mucho.'}
                 </h2>
                 {generationError && (
                   <p className="text-muted-foreground">
@@ -1469,7 +1500,13 @@ export default function PlanificacionWizard() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => navigate('/planificacion')}
+          onClick={() => {
+            if (wizardData.paso > 0) {
+              handlePrev();
+            } else {
+              navigate('/planificacion');
+            }
+          }}
         >
           <ArrowLeft className="h-4 w-4 mr-2" />
           Volver

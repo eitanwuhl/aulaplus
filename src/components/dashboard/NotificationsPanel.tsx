@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertTriangle, Bell, Calendar, Check, User } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -100,9 +100,8 @@ export function NotificationsPanel() {
     }
 
     if (notification.groupId) {
-      navigate("/teacher-groups", {
-        state: { groupId: notification.groupId },
-      });
+      navigate("/teacher-groups", { state: { groupId: notification.groupId } });
+      return;
     }
   };
 
@@ -112,9 +111,9 @@ export function NotificationsPanel() {
         <CardTitle className="flex items-center justify-between">
           <span className="flex items-center">
             <Bell className="w-5 h-5 mr-2 text-primary" />
-            Notificaciones Importantes
+            Notificaciones
           </span>
-          {unreadCount > 0 && <Badge>{unreadCount} nuevas</Badge>}
+          {unreadCount > 0 && <Badge variant="secondary">{unreadCount} nuevas</Badge>}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">

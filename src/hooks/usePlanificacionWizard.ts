@@ -30,6 +30,10 @@ export const usePlanificacionWizard = () => {
     setWizardData(prev => ({ ...prev, tipo_planificacion: tipo }));
   }, []);
 
+  const replaceWizardData = useCallback((data: WizardData) => {
+    setWizardData(data);
+  }, []);
+
   const validarPaso = useCallback((paso: number): ValidationResult => {
     const errors: FieldError[] = [];
     let firstInvalidField: string | undefined;
@@ -344,6 +348,7 @@ export const usePlanificacionWizard = () => {
     updateHorario,
     updateEnfoque,
     updateTipoPlanificacion,
+    replaceWizardData,
     validarPaso,
     generarSesionesEsquema,
     reiniciarWizard,

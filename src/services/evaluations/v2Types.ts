@@ -165,6 +165,20 @@ export interface EvaluationSectionV2 {
   items: EvaluationItemV2[];
 }
 
+export interface TimeBreakdownSection {
+  sectionId?: string;
+  itemType: string;
+  estimatedMinutes: number;
+  description: string;
+  itemCount?: number;
+}
+
+export interface TimeBreakdownShape {
+  sections: TimeBreakdownSection[];
+  heuristicAssumptions?: string;
+  totalEstimatedMinutes?: number;
+}
+
 // ============================================================================
 // VERSION VARIANTS
 // ============================================================================
@@ -201,7 +215,8 @@ export interface EvaluationMetaV2 {
   totalStudents?: number;
   duration?: {
     minutes: number;
-    breakdown?: Record<string, number>;
+    targetMinutes?: number;
+    breakdown?: TimeBreakdownShape | Record<string, number>;
   };
   totalPoints?: number;
   evaluationType: string;
@@ -279,14 +294,28 @@ export interface AIReportV2 {
 
 export interface V2Response {
   success: boolean;
+  requestId?: string;
   evaluationSpec: EvaluationSpecV2 | null;
+  targetDurationMinutes?: number | null;
+  estimatedTotalMinutes?: number;
+  timeBreakdown?: TimeBreakdownShape | null;
   requestedVersions: { A: boolean; B: boolean; C: boolean };
   instrumentDesignRulesApplied: string[];
   teacherRemindersByStudent: TeacherReminderV2[];
   aiReport: AIReportV2 | null;
+  outcome?: {
+    code: string;
+    message: string;
+    actionableGuidance?: string[];
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
   warnings: WarningV2[];
   debug?: {
     model: string;
+    requestId?: string;
     promptTokensEstimate?: number;
     completionTokensEstimate?: number;
     attempt: number;
@@ -382,7 +411,7 @@ export interface NormalizedEvaluation {
   
   // Duration
   totalDuration: number;
-  durationBreakdown?: Record<string, number>;
+  durationBreakdown?: TimeBreakdownShape | Record<string, number>;
   
   // Structure
   sections: NormalizedSection[];

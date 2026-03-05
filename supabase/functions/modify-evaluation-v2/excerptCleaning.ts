@@ -351,12 +351,21 @@ export interface FilterPassagesResult {
   kept: string[];
   rejected: string[];
   rejectedByReason: Record<PassageRejectReason, number>;
+  cacheHits?: number;
+  cacheMisses?: number;
 }
 
 /**
  * Filter a list of text blocks. Rejection counts by reason (toc, biblio, prologue, metadata) for debug metrics.
  */
 export function filterPassagesByQuality(blocks: string[]): FilterPassagesResult {
+  return filterPassagesByQualityCached(blocks);
+}
+
+export function filterPassagesByQualityCached(
+  blocks: string[],
+  cache?: Map<string, FilterPassageResult>
+): FilterPassagesResult {
   const rejectedByReason: Record<PassageRejectReason, number> = {
     toc: 0,
     biblio: 0,
@@ -365,9 +374,19 @@ export function filterPassagesByQuality(blocks: string[]): FilterPassagesResult 
   };
   const kept: string[] = [];
   const rejected: string[] = [];
+  const qualityCache = cache ?? new Map<string, FilterPassageResult>();
+  let cacheHits = 0;
+  let cacheMisses = 0;
   blocks.forEach((block, idx) => {
     const isFromStart = idx < Math.ceil(blocks.length * PROLOGUE_MAX_RATIO_FIRST_BLOCK);
-    const result = filterPassageByQuality(block, { isFromStartOfDocument: isFromStart });
+    const key = `${isFromStart ? "S" : "N"}::${block}`;
+    const cached = qualityCache.get(key);
+    const result = cached ?? filterPassageByQuality(block, { isFromStartOfDocument: isFromStart });
+    if (cached) cacheHits += 1;
+    else {
+      cacheMisses += 1;
+      qualityCache.set(key, result);
+    }
     if (result.keep) {
       kept.push(block);
     } else {
@@ -375,5 +394,5 @@ export function filterPassagesByQuality(blocks: string[]): FilterPassagesResult 
       if (result.reason) rejectedByReason[result.reason] = (rejectedByReason[result.reason] || 0) + 1;
     }
   });
-  return { kept, rejected, rejectedByReason };
+  return { kept, rejected, rejectedByReason, cacheHits, cacheMisses };
 }

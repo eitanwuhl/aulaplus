@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AlertTriangle, FileWarning, Bug, Download, FileText, FileDown } from 'lucide-react';
+import { AlertTriangle, FileWarning, Bug, FileDown } from 'lucide-react';
 import { 
   V2Response, 
   NormalizedEvaluation, 
@@ -314,7 +314,6 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
   
   // Ref for PDF export
   const contentRef = useRef<HTMLDivElement>(null);
-  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isExportingAcademicPdf, setIsExportingAcademicPdf] = useState(false);
 
   // DEBUG: Log every render to diagnose blank screen
@@ -410,159 +409,6 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
       onVersionChange(version);
     } else {
       setInternalVersion(version);
-    }
-  };
-
-  /**
-   * PDF Export using html2canvas + jsPDF
-   * 
-   * CONFIGURATION NOTES:
-   * - A4 dimensions: 210mm x 297mm
-   * - Printable area with 10mm margins: 190mm x 277mm
-   * - At 96 DPI: 190mm ≈ 718px, 277mm ≈ 1046px per page
-   * - Scale factor of 2 gives crisp text at 192 DPI effective
-   * 
-   * TO ADJUST MARGINS:
-   * - Change PDF_MARGIN_MM for overall margin
-   * - Modify .pdf-export-mode width in index.css for content width
-   * 
-   * TO ADJUST SCALE:
-   * - Increase html2canvas scale for sharper output (2-3 recommended)
-   * - Higher scale = larger file size
-   */
-  const handleExportPdf = async () => {
-    if (!contentRef.current || isExportingPdf) return;
-    
-    setIsExportingPdf(true);
-    
-    // Constants for A4 PDF
-    const A4_WIDTH_MM = 210;
-    const A4_HEIGHT_MM = 297;
-    const PDF_MARGIN_MM = 10; // Margin on all sides
-    const PRINTABLE_WIDTH_MM = A4_WIDTH_MM - (PDF_MARGIN_MM * 2); // 190mm
-    const PRINTABLE_HEIGHT_MM = A4_HEIGHT_MM - (PDF_MARGIN_MM * 2); // 277mm
-    
-    // Capture width in pixels (at 96 DPI: 190mm ≈ 718px)
-    const CAPTURE_WIDTH_PX = Math.round((PRINTABLE_WIDTH_MM / 25.4) * 96); // ~718px
-    
-    try {
-      // Dynamic imports
-      const html2canvas = (await import('html2canvas')).default;
-      const { jsPDF } = await import('jspdf');
-      
-      const element = contentRef.current;
-      
-      // Store original styles
-      const originalWidth = element.style.width;
-      const originalMaxWidth = element.style.maxWidth;
-      const originalClassName = element.className;
-      
-      // Apply PDF export mode for clean capture
-      // This sets fixed width and PDF-friendly styles
-      element.classList.add('pdf-export-mode');
-      element.style.width = `${CAPTURE_WIDTH_PX}px`;
-      element.style.maxWidth = `${CAPTURE_WIDTH_PX}px`;
-      
-      // Wait for styles to apply and re-render
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Capture with html2canvas
-      const canvas = await html2canvas(element, {
-        scale: 2, // 2x scale for crisp text (effective 192 DPI)
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff',
-        width: CAPTURE_WIDTH_PX,
-        windowWidth: CAPTURE_WIDTH_PX,
-        // Remove any scroll to capture full content
-        scrollX: 0,
-        scrollY: 0,
-        // Ensure we capture the full height
-        height: element.scrollHeight,
-      });
-      
-      // Restore original styles immediately
-      element.classList.remove('pdf-export-mode');
-      element.style.width = originalWidth;
-      element.style.maxWidth = originalMaxWidth;
-      
-      // Create PDF
-      const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: 'a4',
-        compress: true,
-      });
-      
-      // Calculate dimensions for PDF
-      const imgWidth = PRINTABLE_WIDTH_MM;
-      const imgHeight = (canvas.height * PRINTABLE_WIDTH_MM) / canvas.width;
-      
-      // Convert canvas to image
-      const imgData = canvas.toDataURL('image/png', 1.0);
-      
-      // Add pages as needed
-      let heightRemaining = imgHeight;
-      let currentY = 0;
-      let pageNum = 0;
-      
-      while (heightRemaining > 0) {
-        if (pageNum > 0) {
-          pdf.addPage();
-        }
-        
-        // Calculate the slice position
-        const sourceY = pageNum * PRINTABLE_HEIGHT_MM;
-        
-        // Add the image with offset to show the correct portion
-        pdf.addImage(
-          imgData,
-          'PNG',
-          PDF_MARGIN_MM,
-          PDF_MARGIN_MM - sourceY,
-          imgWidth,
-          imgHeight,
-          undefined,
-          'FAST'
-        );
-        
-        // Clip to printable area (hide overflow from previous/next pages)
-        // This is handled by adding each page and positioning the image
-        
-        heightRemaining -= PRINTABLE_HEIGHT_MM;
-        pageNum++;
-        
-        // Safety limit to prevent infinite loops
-        if (pageNum > 50) {
-          console.warn('[PDF_EXPORT] Too many pages, stopping at 50');
-          break;
-        }
-      }
-      
-      // Generate filename with version
-      const subject = normalization.evaluation?.subject?.replace(/[^a-zA-Z0-9]/g, '_') || 'evaluacion';
-      const date = new Date().toISOString().split('T')[0];
-      const filename = `${subject}_v${selectedVersion}_${date}.pdf`;
-      
-      // Save the PDF
-      pdf.save(filename);
-      
-      console.log('[PDF_EXPORT] Success', {
-        pages: pageNum,
-        canvasSize: { width: canvas.width, height: canvas.height },
-        pdfSize: { width: imgWidth, height: imgHeight },
-      });
-      
-    } catch (error) {
-      console.error('[PDF_EXPORT] Error:', error);
-      // Restore styles on error
-      if (contentRef.current) {
-        contentRef.current.classList.remove('pdf-export-mode');
-      }
-      // Fallback: open browser print dialog
-      window.print();
-    } finally {
-      setIsExportingPdf(false);
     }
   };
 
@@ -681,7 +527,7 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
               </div>
             </div>
 
-            {/* Export Buttons: screenshot PDF + academic PDF */}
+            {/* Export: single PDF button (academic PDF) */}
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
@@ -697,24 +543,6 @@ export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
                 ) : (
                   <>
                     <FileDown className="h-4 w-4" />
-                    Descargar PDF (Académico)
-                  </>
-                )}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handleExportPdf}
-                disabled={isExportingPdf}
-                className="gap-2"
-              >
-                {isExportingPdf ? (
-                  <>
-                    <Download className="h-4 w-4 animate-spin" />
-                    Exportando...
-                  </>
-                ) : (
-                  <>
-                    <FileText className="h-4 w-4" />
                     Descargar PDF
                   </>
                 )}

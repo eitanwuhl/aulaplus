@@ -57,6 +57,8 @@ function extractMaterialSummary(materialsContext?: string): {
   return { themes, concepts, vocabulary };
 }
 
+import { filterMaterialPassages } from "./passageQualityFilter.ts";
+
 function partitionArray<T>(items: T[], bucketCount: number): T[][] {
   if (bucketCount <= 1) return [items];
   const safeCount = Math.max(1, bucketCount);
@@ -168,6 +170,65 @@ function buildCoveragePlan(
   }
   
   return plan;
+}
+
+/**
+ * Strip debug/markdown/JSON from plan_html so it contains only HTML suitable for rendering the class plan.
+ * Removes: ### AI Design Report, ```json ... ```, ``` ... ```, and any trailing content after </section>.
+ */
+function stripDebugFromPlanHtml(html: string): string {
+  if (!html || typeof html !== 'string') return html;
+  let out = html.trim();
+  // Remove markdown section headers and JSON/code blocks (model sometimes embeds report here)
+  out = out.replace(/\n?\s*###\s*AI Design Report\s*\n?/gi, '\n');
+  out = out.replace(/\n?\s*```json\s*[\s\S]*?```\s*/gi, '\n');
+  out = out.replace(/\n?\s*```\s*[\s\S]*?```\s*/gi, '\n');
+  // Keep only the plan section: from <section id="plan"> to the matching </section>
+  const sectionStart = out.indexOf('<section id="plan">');
+  if (sectionStart !== -1) {
+    const afterStart = out.slice(sectionStart);
+    const closeTag = afterStart.indexOf('</section>');
+    if (closeTag !== -1) {
+      out = afterStart.slice(0, closeTag + '</section>'.length);
+    }
+  }
+  // Final pass: remove any remaining ``` fences (in case of malformed or nested blocks)
+  if (out.includes('```')) {
+    out = out.replace(/\s*```[a-z]*\s*[\s\S]*?```\s*/gi, '\n').trim();
+  }
+  return out.trim() || html;
+}
+
+/** Strip HTML and prompt-instruction leakage from narrative for teacher-facing output. */
+function sanitizeReportNarrative(text: string): string {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function toTeacherSafeAiDesignReport(report: Record<string, unknown> | undefined, cleanNarrative: string): Record<string, unknown> {
+  const source = report || {};
+  const safe: Record<string, unknown> = {
+    narrative: cleanNarrative,
+    report_narrative: cleanNarrative,
+  };
+  const allowlist = [
+    'inputsUsed',
+    'decisions',
+    'contentCoverage',
+    'competencyDevelopment',
+    'teacherRequirementsApplied',
+    'standardsCoverage',
+    'competenciesOperationalization',
+    'sessionsGenerated',
+  ];
+  for (const key of allowlist) {
+    if (source[key] !== undefined) safe[key] = source[key];
+  }
+  return safe;
 }
 
 /**
@@ -479,7 +540,8 @@ function buildTeacherReportNarrative(params: {
   hasAnepContent: boolean;
   hasMaterials: boolean;
 }): string {
-  if (typeof params.maybeNarrative === "string" && params.maybeNarrative.trim().length > 0) {
+  // Use model narrative when present and substantial (>= 200 chars); avoid overwriting with generic fallback
+  if (typeof params.maybeNarrative === "string" && params.maybeNarrative.trim().length >= 200) {
     return params.maybeNarrative.trim();
   }
 
@@ -505,10 +567,11 @@ function buildTeacherReportNarrative(params: {
     : "Se cuidó una complejidad progresiva adecuada a la edad del grupo.";
 
   return [
-    `Esta planificación corresponde a la sesión ${params.orden}${params.totalSessions > 1 ? ` de ${params.totalSessions}` : ""} (${params.duracionMin} min) de ${params.materia || "la materia seleccionada"} en nivel ${params.nivel || "no especificado"}. El objetivo de hoy es consolidar aprendizajes útiles y observables para el grupo.`,
-    `Se organiza en Inicio-Desarrollo-Cierre para sostener una progresión clara: activar saberes previos, trabajar en profundidad y cerrar con síntesis evaluable. El foco principal fue ${foco}; ${justificacion} ${segmento}${continuidad}`,
-    `${compText} ${reqText} ${ageGuidance} En términos de evidencia, se espera participación argumentada, producciones breves y una síntesis final que muestre comprensión del contenido trabajado.`,
-    `${params.hasMaterials ? "Se usó material fuente como base del diseño. " : ""}${params.hasAnepContent ? "Los contenidos ANEP orientaron la selección y priorización didáctica." : "Cuando faltó detalle curricular explícito, se priorizó consistencia pedagógica a partir del plan generado."}`
+    `Esta planificación corresponde a la sesión ${params.orden}${params.totalSessions > 1 ? ` de ${params.totalSessions}` : ""} (${params.duracionMin} min) de ${params.materia || "la materia seleccionada"} en nivel ${params.nivel || "no especificado"}. El diseño parte de una lógica de secuencia didáctica clara: asegurar entrada comprensible al contenido, sostener el trabajo cognitivo en el tramo central y cerrar con una producción o síntesis que deje evidencia concreta del aprendizaje.`,
+    `Se organiza en Inicio-Desarrollo-Cierre para sostener progresión real y no solo orden formal. En el Inicio se activa conocimiento previo y se instala propósito de trabajo; en el Desarrollo se proponen actividades de análisis, intercambio y producción con andamiaje explícito; en el Cierre se recuperan ideas clave y se verifica comprensión con criterios observables. El foco principal de la sesión fue ${foco}; ${justificacion} ${segmento}${continuidad}`,
+    `${compText} La operacionalización de estas competencias se traduce en decisiones concretas de aula: tareas con consigna explícita, preguntas guía con vocabulario disciplinar, momentos de interacción entre pares y producción final breve para verificar transferencia. ${reqText} ${ageGuidance}`,
+    `En términos de evaluación formativa, la evidencia esperada no se limita a participación general: se busca argumentación pertinente, uso de conceptos de la sesión, conexión entre ejemplos trabajados y capacidad de síntesis con lenguaje propio. Por eso el plan incluye momentos de observación docente durante el proceso y una salida de cierre que permite detectar comprensión, vacíos y necesidades de refuerzo para la clase siguiente.`,
+    `${params.hasMaterials ? "Se usó material fuente como base del diseño para asegurar rigor conceptual y anclaje en evidencia textual, priorizando pasajes pertinentes al objetivo de esta sesión. " : ""}${params.hasAnepContent ? "Los contenidos ANEP orientaron la selección y la priorización didáctica, cuidando alineación con competencias y progresión curricular." : "Cuando faltó detalle curricular explícito, se priorizó consistencia pedagógica a partir del plan generado, manteniendo coherencia con la progresión de la unidad y la evaluación formativa."}`
   ].join("\n\n");
 }
 
@@ -630,10 +693,6 @@ serve(async (req) => {
         ai_design_report: {
           narrative: 'DRY_RUN_NARRATIVE_OK',
           report_narrative: 'DRY_RUN_NARRATIVE_OK',
-          report_technical: {
-            mode: 'dry_run',
-            generatedAt: new Date().toISOString()
-          },
           inputsUsed: {
             anepContent: Array.isArray(contenidos) && contenidos.length > 0,
             materials: !!materialsContext,
@@ -644,7 +703,6 @@ serve(async (req) => {
             structure: 'DRY_RUN: Estructura estándar',
             timeAllocation: `DRY_RUN: ${duracionMin || 90} minutos`
           },
-          assumptions: ['DRY_RUN mode'],
           contentCoverage: [],
           competencyDevelopment: [],
           teacherRequirementsApplied: []
@@ -653,11 +711,7 @@ serve(async (req) => {
           build: 'DRY_RUN_2026_02_12',
           now: new Date().toISOString()
         },
-        report_narrative: 'DRY_RUN_NARRATIVE_OK',
-        report_technical: {
-          mode: 'dry_run',
-          source: 'generate-plan-completo'
-        }
+        report_narrative: 'DRY_RUN_NARRATIVE_OK'
       };
       
       console.log('[GEN_PLAN] DRY_RUN completed ok');
@@ -815,16 +869,25 @@ No inventes una secuencia distinta si el docente ya la definió.
 
 ` : '';
 
-    // TASK C: Build coverage plan BEFORE constructing prompt (for multi-session coherence)
+    // Apply deterministic passage quality filter (TOC/biblio/prologue/metadata) before using materials
+    const passageFilterResult = filterMaterialPassages(materialsContext || "");
+    const filteredMaterialsContext = passageFilterResult.filteredText;
+    const materialsContextForPrompt = filteredMaterialsContext || materialsContext || "";
+    const passagesRejectedCount = passageFilterResult.rejectedByReason;
+    const passagesSelectedCount = passageFilterResult.keptCount;
+    const materialsCharsSent = passageFilterResult.materialsCharsSent;
+
+    // TASK C: Build coverage plan BEFORE constructing prompt (for multi-session coherence); use filtered material
     const totalSessions = unitContext?.totalClasesUnidad || 1;
     const coveragePlan = buildCoveragePlan(
       totalSessions,
-      materialsContext,
+      materialsContextForPrompt,
       contenidos,
       unitContext
     );
-    const sessionCoverage = coveragePlan.find(c => c.sessionNumber === orden) || coveragePlan[0];
-    const materialSummary = extractMaterialSummary(materialsContext);
+    const coverageSessionIndexUsed = Number(unitContext?.claseEnUnidad) || Number(orden) || 1;
+    const sessionCoverage = coveragePlan.find(c => c.sessionNumber === coverageSessionIndexUsed) || coveragePlan[0];
+    const materialSummary = extractMaterialSummary(materialsContextForPrompt);
     console.log('[GEN_PLAN] material_summary', {
       planificacion_id: planificacionId,
       session_id: sessionId,
@@ -835,6 +898,8 @@ No inventes una secuencia distinta si el docente ya la definió.
       planificacion_id: planificacionId,
       session_id: sessionId,
       orden,
+      coverageSessionIndexUsed,
+      unitTotalClasses: Number(unitContext?.totalClasesUnidad) || 1,
       contentFocus: sessionCoverage?.contentFocus || 'none',
       materialSegment: sessionCoverage?.materialSegment || 'none'
     });
@@ -842,34 +907,36 @@ No inventes una secuencia distinta si el docente ya la definió.
     
     // TASK C: Build coverage context section for prompt
     const coverageSection = sessionCoverage ? `
-COBERTURA DE CONTENIDO PARA ESTA SESIÓN (SESIÓN ${orden} DE ${totalSessions}):
+COBERTURA DE CONTENIDO PARA ESTA SESIÓN (SESIÓN ${coverageSessionIndexUsed} DE ${totalSessions}):
 - Foco de contenido específico: ${sessionCoverage.contentFocus}
-${sessionCoverage.materialSegment ? `- Segmento del material a trabajar: ${sessionCoverage.materialSegment}` : ''}
+${sessionCoverage.materialSegment ? `- Segmento del material a trabajar (USA SOLO ESTE SEGMENTO para esta sesión): ${sessionCoverage.materialSegment}` : ''}
 ${sessionCoverage.anepItems && sessionCoverage.anepItems.length > 0 ? `- Contenidos ANEP para esta sesión: ${sessionCoverage.anepItems.join(', ')}` : ''}
 - Justificación de selección: ${sessionCoverage.rationale}
+- OBLIGATORIO: El plan de esta sesión debe usar ÚNICAMENTE el contenido asignado a esta sesión en el mapeo anterior. No generes planes genéricos; incluye conceptos y detalles específicos del segmento asignado.
 ${totalSessions > 1 ? `
 CONTINUIDAD MULTI-SESIÓN:
-${orden === 1 ? '- Esta es la PRIMERA sesión: introduce conceptos base necesarios para las siguientes.' : ''}
-${orden > 1 && orden < totalSessions ? `- Esta es una sesión INTERMEDIA (${orden} de ${totalSessions}): continúa desde la sesión anterior y prepara para las siguientes.` : ''}
-${orden === totalSessions ? `- Esta es la ÚLTIMA sesión (${orden} de ${totalSessions}): integra y sintetiza todo lo trabajado en las sesiones anteriores.` : ''}
+${coverageSessionIndexUsed === 1 ? '- Esta es la PRIMERA sesión: introduce conceptos base necesarios para las siguientes.' : ''}
+${coverageSessionIndexUsed > 1 && coverageSessionIndexUsed < totalSessions ? `- Esta es una sesión INTERMEDIA (${coverageSessionIndexUsed} de ${totalSessions}): continúa desde la sesión anterior y prepara para las siguientes.` : ''}
+${coverageSessionIndexUsed === totalSessions ? `- Esta es la ÚLTIMA sesión (${coverageSessionIndexUsed} de ${totalSessions}): integra y sintetiza todo lo trabajado en las sesiones anteriores.` : ''}
 ` : ''}
 
 ` : '';
 
-    // FIX: Build materials section with special instructions for materials-only generation
+    // FIX: Build materials section with special instructions for materials-only generation (use filtered material)
     const hasAnepContent = Array.isArray(contenidos) ? contenidos.length > 0 && contenidos.some((c: any) => c && c.trim()) : contenidos && String(contenidos).trim();
-    const hasMaterials = materialsContext && materialsContext.trim().length > 0;
+    const hasMaterials = materialsContextForPrompt && materialsContextForPrompt.trim().length > 0;
     
     const materialsSection = hasMaterials ? `
-${materialsContext}
+${materialsContextForPrompt}
 
 ${!hasAnepContent ? `
 ⚠️ MODO MATERIALES-ONLY (SIN ANEP):
 NO hay contenido ANEP especificado. Los materiales docentes adjuntos son la ÚNICA fuente de contenido.
 
 REGLAS CRÍTICAS PARA MATERIALES-ONLY:
-1. El contenido del plan DEBE basarse EXCLUSIVAMENTE en el texto extraído de los PDFs proporcionados.
-2. NO uses plantillas genéricas ni contenido de relleno.
+1. El contenido del plan DEBE basarse EXCLUSIVAMENTE en el texto extraído de los PDFs proporcionados (ya filtrado: no incluye Índice, Prólogo, Referencias ni portada).
+2. NO uses como contenido de clase Índice, Prólogo, Presentación editorial ni Bibliografía/Referencias a menos que el docente lo pida explícitamente.
+3. NO uses plantillas genéricas ni contenido de relleno.
 3. DEBES incluir conceptos, vocabulario, eventos, nombres y detalles ESPECÍFICOS del material.
 4. Si el material menciona "Batllismo", "Batlle", "reformas sociales", etc., el plan DEBE usar esos términos exactos.
 5. Si el material describe eventos históricos, personajes, o procesos, el plan DEBE referenciarlos específicamente.
@@ -1035,15 +1102,12 @@ El campo "ai_design_report.narrative" DEBE ser un texto narrativo continuo (no l
 8. Qué adaptaciones se incluyeron y por qué (basadas en contemplaciones, sin mencionar diagnósticos específicos)
 
 REGLAS DEL REPORTE NARRATIVO:
-- Escribe en un tono amigable y pedagógico, como si le estuvieras explicando a un colega docente
-- NO uses lenguaje técnico innecesario
-- NO menciones diagnósticos médicos o etiquetas de estudiantes
-- NO menciones estudiantes individuales por nombre
-- NO uses formato de lista, usa párrafos continuos (2-4 párrafos largos)
-- Longitud: 400-600 palabras
-- Contexto: Uruguay/ANEP es apropiado mencionar
-- Si el material se divide en múltiples sesiones: menciona explícitamente qué parte corresponde a esta sesión y la continuidad con otras
-- Si NO hay materiales fuente/ANEP explícitos: indica que el contenido se infirió de las secciones generadas
+- Enfoca el narrativo en: (1) qué contenido se enseña a partir de los pasajes seleccionados, (2) cómo se operacionalizan las competencias en las actividades, (3) cómo el plan atiende contemplaciones/adaptaciones del grupo (no solo una lista genérica de "diferenciación"), (4) qué evidencia de aprendizaje se espera.
+- Escribe en tono amigable y pedagógico, como explicando a un colega docente.
+- NO incluyas volcados largos de material crudo ni JSON técnico. Salida en texto limpio o markdown; NO dejes etiquetas HTML visibles (<p>, <br>, etc.).
+- NO uses lenguaje técnico innecesario, ni diagnósticos médicos ni etiquetas de estudiantes, ni nombres de estudiantes.
+- Usa párrafos continuos (2-4 párrafos largos), 400-600 palabras.
+- Si el material se divide en múltiples sesiones: qué parte corresponde a esta sesión y continuidad con otras. Si NO hay materiales/ANEP explícitos: indica que el contenido se infirió de las secciones generadas.
 
 DEVOLVER JSON EXACTO:
 {
@@ -1052,7 +1116,7 @@ DEVOLVER JSON EXACTO:
   "recursos": ["Proyector", "Pizarrón", "Marcadores", "Material específico"],
   "titulo": "${sessionBrief?.trim() || 'Título extraído del H1 generado'}",
   "ai_design_report": {
-    "narrative": "<texto narrativo de 200-400 palabras explicando el diseño del plan en párrafos amigables para docentes>",
+    "narrative": "<texto narrativo de 400-600 palabras explicando el diseño del plan en párrafos amigables para docentes>",
     "inputsUsed": {
       "anepContent": ${hasAnepContent ? 'true' : 'false'},
       "materials": ${hasMaterials ? 'true' : 'false'},
@@ -1064,7 +1128,7 @@ DEVOLVER JSON EXACTO:
       "timeAllocation": "Distribución de tiempo según duración total (${duracionMin} min)"
     },
     "assumptions": [
-      "Estudiantes tienen conocimientos previos básicos del tema",
+      "Activar conocimientos previos si resulta apropiado para el grupo y el momento de la secuencia.",
       "Recursos básicos disponibles (pizarra, proyector)"
     ],
     "contentCoverage": [
@@ -1198,13 +1262,27 @@ REGLAS CRÍTICAS PARA competenciesOperationalization (OBLIGATORIO):
 
     // Intentar parsear como JSON
     let parsed;
+    let modelReturnedStructuredReport = false;
     try {
       parsed = JSON.parse(content);
+      // plan_html must be pure HTML for rendering; strip any embedded debug/markdown/JSON
+      if (parsed.plan_html && typeof parsed.plan_html === 'string') {
+        parsed.plan_html = stripDebugFromPlanHtml(parsed.plan_html);
+      }
+      // Detect if model returned a structured ai_design_report (canonical source)
+      const adr = parsed.ai_design_report;
+      if (adr && typeof adr === 'object') {
+        const hasNarrative = typeof adr.narrative === 'string' && adr.narrative.trim().length >= 80;
+        const hasReportNarrative = typeof adr.report_narrative === 'string' && adr.report_narrative.trim().length >= 80;
+        const hasContentCoverage = Array.isArray(adr.contentCoverage) && adr.contentCoverage.length > 0;
+        const hasTeacherReqs = Array.isArray(adr.teacherRequirementsApplied) && adr.teacherRequirementsApplied.length > 0;
+        modelReturnedStructuredReport = hasNarrative || hasReportNarrative || hasContentCoverage || hasTeacherReqs;
+      }
     } catch (parseError) {
       console.error('JSON parse error, attempting extraction:', parseError);
-      // Si no es JSON válido, intentar extraer
+      // Si no es JSON válido, intentar extraer; plan_html must be pure HTML (strip embedded report)
       parsed = {
-        plan_html: content,
+        plan_html: stripDebugFromPlanHtml(content),
         argumento_competencias: '',
         recursos: [],
         ai_design_report: {
@@ -1219,12 +1297,12 @@ REGLAS CRÍTICAS PARA competenciesOperationalization (OBLIGATORIO):
             timeAllocation: `Distribución según duración total (${duracionMin} min)`
           },
           assumptions: [
-            'Estudiantes tienen conocimientos previos básicos',
+            'Activar conocimientos previos si resulta apropiado para el grupo y el momento de la secuencia.',
             'Recursos básicos disponibles'
           ],
           contentCoverage: buildContentCoverage(
             contenidos,
-            materialsContext,
+            materialsContextForPrompt,
             unitContext,
             sessionBrief,
             orden,
@@ -1257,7 +1335,7 @@ REGLAS CRÍTICAS PARA competenciesOperationalization (OBLIGATORIO):
           timeAllocation: `Distribución según duración total (${duracionMin} min)`
         },
         assumptions: [
-          'Estudiantes tienen conocimientos previos básicos',
+          'Activar conocimientos previos si resulta apropiado para el grupo y el momento de la secuencia.',
           'Recursos básicos disponibles'
         ]
       };
@@ -1273,7 +1351,7 @@ REGLAS CRÍTICAS PARA competenciesOperationalization (OBLIGATORIO):
     if (!aiReport.contentCoverage || !Array.isArray(aiReport.contentCoverage) || aiReport.contentCoverage.length === 0) {
       aiReport.contentCoverage = buildContentCoverage(
         contenidos,
-        materialsContext,
+        materialsContextForPrompt,
         unitContext,
         sessionBrief,
         orden,
@@ -1330,16 +1408,16 @@ REGLAS CRÍTICAS PARA competenciesOperationalization (OBLIGATORIO):
     let coverageContext = '';
     if (sessionCoverage) {
       coverageContext = `
-CONTEXTO DE COBERTURA PARA ESTA SESIÓN (SESIÓN ${orden} DE ${totalSessions}):
+CONTEXTO DE COBERTURA PARA ESTA SESIÓN (SESIÓN ${coverageSessionIndexUsed} DE ${totalSessions}):
 - Foco de contenido: ${sessionCoverage.contentFocus}
 ${sessionCoverage.materialSegment ? `- Segmento del material: ${sessionCoverage.materialSegment}` : ''}
 ${sessionCoverage.anepItems && sessionCoverage.anepItems.length > 0 ? `- Contenidos ANEP para esta sesión: ${sessionCoverage.anepItems.join(', ')}` : ''}
 - Justificación: ${sessionCoverage.rationale}
 ${totalSessions > 1 ? `
 CONTINUIDAD MULTI-SESIÓN:
-${orden === 1 ? '- Esta es la PRIMERA sesión: introduce conceptos base que serán necesarios para las sesiones siguientes.' : ''}
-${orden > 1 && orden < totalSessions ? `- Esta es una sesión INTERMEDIA (${orden} de ${totalSessions}): continúa desde la sesión anterior y prepara para las siguientes.` : ''}
-${orden === totalSessions ? `- Esta es la ÚLTIMA sesión (${orden} de ${totalSessions}): integra y sintetiza todo lo trabajado en las sesiones anteriores.` : ''}
+${coverageSessionIndexUsed === 1 ? '- Esta es la PRIMERA sesión: introduce conceptos base que serán necesarios para las sesiones siguientes.' : ''}
+${coverageSessionIndexUsed > 1 && coverageSessionIndexUsed < totalSessions ? `- Esta es una sesión INTERMEDIA (${coverageSessionIndexUsed} de ${totalSessions}): continúa desde la sesión anterior y prepara para las siguientes.` : ''}
+${coverageSessionIndexUsed === totalSessions ? `- Esta es la ÚLTIMA sesión (${coverageSessionIndexUsed} de ${totalSessions}): integra y sintetiza todo lo trabajado en las sesiones anteriores.` : ''}
 ` : ''}
 `;
     }
@@ -1368,7 +1446,7 @@ Genera un reporte narrativo amigable (400-600 palabras, 2-4 párrafos largos) qu
    ${sessionBrief?.trim() ? `- Enfoque específico: "${sessionBrief.trim()}" - cómo se estructura el plan alrededor de este tema` : ''}
    ${instruccionesDocente ? '- Instrucciones del docente: qué parte de esas instrucciones se aplica en esta clase' : ''}
    ${unitContext ? `- Continuidad secuencial: ${unitContext.claseEnUnidad === 1 ? 'Esta es la primera clase, introduce contenidos base' : unitContext.claseEnUnidad === unitContext.totalClasesUnidad ? 'Esta es la última clase, integra y sintetiza' : `Esta clase (${unitContext.claseEnUnidad} de ${unitContext.totalClasesUnidad}) profundiza como continuación de clases anteriores`}` : ''}
-   ${totalSessions > 1 ? `- Continuidad multi-sesión: ${orden === 1 ? 'Primera sesión de la secuencia' : orden === totalSessions ? `Última sesión (${orden} de ${totalSessions}) - integra todo lo trabajado` : `Sesión intermedia (${orden} de ${totalSessions}) - continúa desde la anterior`}` : ''}
+   ${totalSessions > 1 ? `- Continuidad multi-sesión: ${coverageSessionIndexUsed === 1 ? 'Primera sesión de la secuencia' : coverageSessionIndexUsed === totalSessions ? `Última sesión (${coverageSessionIndexUsed} de ${totalSessions}) - integra todo lo trabajado` : `Sesión intermedia (${coverageSessionIndexUsed} de ${totalSessions}) - continúa desde la anterior`}` : ''}
 4. POR QUÉ esas partes fueron seleccionadas para esta sesión:
    ${unitContext ? `- Lógica de secuencia: ${unitContext.claseEnUnidad === 1 ? 'Primera clase introduce conceptos fundamentales' : unitContext.claseEnUnidad === unitContext.totalClasesUnidad ? 'Última clase integra todo lo trabajado' : `Clase intermedia profundiza en contenidos ya introducidos`}` : '- Relevancia pedagógica de los contenidos elegidos'}
 4. CÓMO se desarrollan las competencias seleccionadas:
@@ -1539,12 +1617,12 @@ Responde ÚNICAMENTE con el texto narrativo, sin formato JSON, sin code fences, 
             reason: 'HTML generado no tenía estructura válida, usando plan de respaldo'
           },
           assumptions: [
-            'Estudiantes tienen conocimientos previos básicos',
+            'Activar conocimientos previos si resulta apropiado para el grupo y el momento de la secuencia.',
             'Recursos básicos disponibles'
           ],
           contentCoverage: buildContentCoverage(
             contenidos,
-            materialsContext,
+            materialsContextForPrompt,
             unitContext,
             sessionBrief,
             orden,
@@ -1574,7 +1652,7 @@ Responde ÚNICAMENTE con el texto narrativo, sin formato JSON, sin code fences, 
       : [];
     const reportNarrative = buildTeacherReportNarrative({
       maybeNarrative: technicalReport?.report_narrative ?? technicalReport?.narrative,
-      orden: Number(orden) || 1,
+      orden: coverageSessionIndexUsed,
       totalSessions: Number(totalSessions) || 1,
       duracionMin: Number(duracionMin) || 60,
       materia,
@@ -1585,14 +1663,9 @@ Responde ÚNICAMENTE con el texto narrativo, sin formato JSON, sin code fences, 
       hasAnepContent: !!hasAnepContent,
       hasMaterials: !!hasMaterials
     });
-    parsed.ai_design_report = {
-      ...technicalReport,
-      narrative: reportNarrative,
-      report_narrative: reportNarrative,
-      report_technical: technicalReport
-    };
-    parsed.report_narrative = reportNarrative;
-    parsed.report_technical = technicalReport;
+    const cleanNarrative = sanitizeReportNarrative(reportNarrative);
+    parsed.ai_design_report = toTeacherSafeAiDesignReport(technicalReport as Record<string, unknown>, cleanNarrative);
+    parsed.report_narrative = cleanNarrative;
     parsed.plan_json = {
       titulo: parsed.titulo || null,
       contentCoverage: parsed.ai_design_report?.contentCoverage || [],
@@ -1602,6 +1675,18 @@ Responde ÚNICAMENTE con el texto narrativo, sin formato JSON, sin code fences, 
     console.log('[GEN_PLAN] completed ok');
     console.log('[GEN_PLAN] session_id=', sesionId || 'unknown', 'hasNarrative=', finalHasNarrative ? 'yes' : 'no');
     console.log('[GEN_PLAN] plan_html_length=', parsed.plan_html?.length || 0);
+    (parsed as any).debug = {
+      ...((parsed as any).debug || {}),
+      aiReportSource: modelReturnedStructuredReport ? 'structured' : 'fallback',
+      materialsUsed: !!hasMaterials,
+      coverageSessionIndexUsed,
+      unitTotalClasses: Number(unitContext?.totalClasesUnidad) || 1,
+      ...(typeof passageFilterResult !== 'undefined' ? {
+        passagesRejectedCount: passageFilterResult.rejectedByReason,
+        passagesSelectedCount: passageFilterResult.keptCount,
+        materialsCharsSent: passageFilterResult.materialsCharsSent,
+      } : {}),
+    };
 
     return new Response(JSON.stringify(parsed), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -1644,16 +1729,9 @@ Responde ÚNICAMENTE con el texto narrativo, sin formato JSON, sin code fences, 
       error_status: isRateLimit ? 429 : errorStatus,
       isRateLimit: isRateLimit,
       report_narrative: '',
-      report_technical: {
-        error: finalErrorMessage,
-        code: isRateLimit ? 'RATE_LIMIT' : errorCode
-      },
       ai_design_report: {
         report_narrative: '',
-        report_technical: {
-          error: finalErrorMessage,
-          code: isRateLimit ? 'RATE_LIMIT' : errorCode
-        },
+        narrative: '',
         inputsUsed: {
           anepContent: false,
           materials: false,
@@ -1664,7 +1742,6 @@ Responde ÚNICAMENTE con el texto narrativo, sin formato JSON, sin code fences, 
           structure: 'Error: no se pudo generar plan',
           timeAllocation: 'N/A'
         },
-        assumptions: [],
         contentCoverage: [],
         competencyDevelopment: [],
         teacherRequirementsApplied: [],

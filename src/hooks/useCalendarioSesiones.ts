@@ -5,6 +5,7 @@ import { useToast } from '@/hooks/use-toast';
 import { normalizeSessionArrayFields } from '@/lib/normalizeSupabaseArrays';
 
 export const useCalendarioSesiones = (planificacionId?: string) => {
+  const DEBUG_SESIONES = import.meta.env.DEV && (window as any).__PLAN_SESIONES_DEBUG__ === true;
   const [sesiones, setSesiones] = useState<SesionClase[]>([]);
   const [sesionSeleccionada, setSesionSeleccionada] = useState<SesionClase | null>(null);
   const [mesActual, setMesActual] = useState(new Date());
@@ -14,11 +15,11 @@ export const useCalendarioSesiones = (planificacionId?: string) => {
   // Cargar sesiones de la planificación
   const cargarSesiones = useCallback(async () => {
     if (!planificacionId) {
-      console.log('No hay planificacionId para cargar sesiones');
+      if (DEBUG_SESIONES) console.log('[useCalendarioSesiones] No hay planificacionId para cargar sesiones');
       return;
     }
     
-    console.log('Cargando sesiones para planificación:', planificacionId);
+    if (DEBUG_SESIONES) console.log('[useCalendarioSesiones] Cargando sesiones para planificación:', planificacionId);
     setIsLoading(true);
     try {
       const { data, error } = await supabase
@@ -27,8 +28,13 @@ export const useCalendarioSesiones = (planificacionId?: string) => {
         .eq('planificacion_id', planificacionId)
         .order('fecha', { ascending: true });
 
-      console.log('Datos de sesiones:', data);
-      console.log('Error de sesiones:', error);
+      if (DEBUG_SESIONES) {
+        console.log('[useCalendarioSesiones] Resultado sesiones', {
+          planificacionId,
+          count: Array.isArray(data) ? data.length : 0,
+          hasError: !!error
+        });
+      }
 
       if (error) throw error;
       
@@ -43,7 +49,7 @@ export const useCalendarioSesiones = (planificacionId?: string) => {
     } finally {
       setIsLoading(false);
     }
-  }, [planificacionId, toast]);
+  }, [planificacionId, toast, DEBUG_SESIONES]);
 
   // Crear sesiones iniciales basadas en el horario
   const crearSesionesIniciales = useCallback(async (

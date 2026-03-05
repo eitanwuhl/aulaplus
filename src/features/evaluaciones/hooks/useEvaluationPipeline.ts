@@ -10,6 +10,7 @@ import { invokeEdgeFunctionAuthed } from '@/lib/edgeFunctionAuth';
 import { Group } from '@/data/mockData';
 import type { EvaluationDesignPlan, StudentReminders, MissingTemplateError } from '@/services/evaluations';
 import type { V2Response } from '@/services/evaluations/v2Types';
+import { decideRequestedVersionsForModify } from '@/services/evaluations/requestedVersionsPolicy';
 import type { GeneratedEvaluation, EvaluationBundle, GenerationErrorState, PipelineDebugState } from '../types';
 
 export type PipelineStatus = 'idle' | 'generating' | 'success' | 'error';
@@ -80,9 +81,17 @@ export interface UseEvaluationPipelineResult {
 const sid = (s: { studentId?: string | number; id?: string | number; student_id?: string | number } | null | undefined): string =>
   String(s?.studentId ?? s?.id ?? s?.student_id ?? '');
 
+const ENABLE_V2_TO_V1_FALLBACK = import.meta.env.VITE_EVAL_V2_TO_V1_FALLBACK === 'true';
+
+function createClientRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `eval-${crypto.randomUUID()}`;
+  }
+  return `eval-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): UseEvaluationPipelineResult {
   const {
-    groupId,
     group,
     materia,
     esInterdisciplinaria,
@@ -293,6 +302,7 @@ export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): Us
     }
 
     setIsGenerating(true);
+    const requestId = createClientRequestId();
 
     let generationContext: unknown = null;
     if (hasSessions || evaluationMaterialsConfig.directMaterialIds.length > 0) {
@@ -350,9 +360,15 @@ export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): Us
       const effectivePlan = plan;
 
       let modificationText = requerimientos || 'Genera una evaluación escrita universal basada en los contenidos seleccionados.';
+      let materialsForDesignPlan: Array<{ title?: string; focusText?: string; extractedText?: string }> = [];
       if (generationContext) {
         const { serializeGenerationContext } = await import('@/services/evaluations');
         const serialized = serializeGenerationContext(generationContext);
+        materialsForDesignPlan = (serialized.materials || []).slice(0, 5).map((m: { title?: string; focusText?: string; extractedText?: string }) => ({
+          title: m.title,
+          focusText: m.focusText,
+          extractedText: (m.extractedText || '').substring(0, 4000)
+        }));
         const contextSections: string[] = [];
         const sessionsToInclude = (serialized.sessions || []).slice(0, 5);
         if (sessionsToInclude.length > 0) {
@@ -401,6 +417,7 @@ export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): Us
       }
 
       const requestBody = {
+        requestId,
         originalEvaluation: originalEvaluation,
         modification: modificationText,
         groupContext,
@@ -441,9 +458,18 @@ export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): Us
       let usedV2Endpoint = false;
 
       if (useBetaV2) {
+        const requestedVersions = decideRequestedVersionsForModify({
+          evaluationDesignPlan: {
+            triggers: effectivePlan.triggers,
+            assignmentByStudentId: effectivePlan.assignmentByStudentId
+          },
+          groupContextStudents: groupContextData.anonymizedStudentsForPrompt
+        });
         const v2RequestBody = {
+          requestId,
           modification: modificationText,
           groupContext,
+          requestedVersions,
           evaluation_design_plan: {
             instrumentDesignRules,
             responseOptions: effectivePlan.responseOptions,
@@ -454,17 +480,59 @@ export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): Us
             highStructureNeed: effectivePlan.highStructureNeed,
             designComplexityCount: effectivePlan.designComplexityCount,
             bucketedContemplacionIds: effectivePlan.bucketedContemplacionIds,
-            targetDurationMinutes
+            targetDurationMinutes,
+            ...(materialsForDesignPlan.length > 0 && { materials: materialsForDesignPlan })
           }
         };
         const v2Result = await invokeEdgeFunctionAuthed('modify-evaluation-v2', { body: v2RequestBody });
 
         if (v2Result.error) {
-          console.warn('[EVAL_PIPELINE] V2 endpoint error, falling back to V1:', v2Result.error.message);
+          const details = `No se pudo generar con el motor V2. Ajustá la duración objetivo, agregá más material fuente o simplificá la solicitud. requestId=${requestId}.`;
+          if (!ENABLE_V2_TO_V1_FALLBACK) {
+            setGenerationError({
+              message: 'La generación V2 no pudo completarse',
+              details,
+              code: 'V2_EDGE_CALL_FAILED',
+              requestId,
+              show: true
+            });
+            throw new Error(v2Result.error.message || 'V2 edge call failed');
+          }
+          console.warn('[EVAL_PIPELINE] V2 endpoint error, falling back to V1 (flag enabled):', v2Result.error.message);
         } else if (!v2Result.data) {
-          console.warn('[EVAL_PIPELINE] V2 returned no data, falling back to V1');
+          const details = `La respuesta V2 llegó vacía. Ajustá duración/materiales y reintentá. requestId=${requestId}.`;
+          if (!ENABLE_V2_TO_V1_FALLBACK) {
+            setGenerationError({
+              message: 'La generación V2 devolvió una respuesta inválida',
+              details,
+              code: 'V2_EMPTY_RESPONSE',
+              requestId,
+              show: true
+            });
+            throw new Error('V2 returned no data');
+          }
+          console.warn('[EVAL_PIPELINE] V2 returned no data, falling back to V1 (flag enabled)');
         } else if (!(v2Result.data as { success?: boolean }).success) {
-          console.warn('[EVAL_PIPELINE] V2 returned success=false, falling back to V1');
+          const v2Data = v2Result.data as {
+            requestId?: string;
+            error?: { code?: string; message?: string };
+            outcome?: { code?: string; message?: string; actionableGuidance?: string[] };
+          };
+          const serverRequestId = v2Data.requestId || requestId;
+          const failureCode = v2Data.error?.code || v2Data.outcome?.code || 'V2_GENERATION_FAILED';
+          const guidance = (v2Data.outcome?.actionableGuidance || []).join(' ');
+          const details = `${v2Data.error?.message || v2Data.outcome?.message || 'No se pudo cumplir la solicitud con grounding suficiente.'} ${guidance}`.trim() + ` requestId=${serverRequestId}.`;
+          if (!ENABLE_V2_TO_V1_FALLBACK) {
+            setGenerationError({
+              message: 'La generación V2 no pudo completarse',
+              details,
+              code: failureCode,
+              requestId: serverRequestId,
+              show: true
+            });
+            throw new Error(details);
+          }
+          console.warn('[EVAL_PIPELINE] V2 returned success=false, falling back to V1 (flag enabled)');
         } else {
           const v2Response = v2Result.data as V2Response;
           setV2RawResponse(v2Response);
@@ -489,6 +557,9 @@ export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): Us
       }
 
       if (!usedV2Endpoint) {
+        if (useBetaV2 && !ENABLE_V2_TO_V1_FALLBACK) {
+          throw new Error(`V2 failure without fallback. requestId=${requestId}`);
+        }
         const v1Result = await invokeEdgeFunctionAuthed('modify-evaluation', { body: requestBody });
         data = v1Result.data;
         error = v1Result.error;
@@ -616,8 +687,17 @@ export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): Us
         setMissingTemplateErrors([]);
       }
 
-      onSuccess?.setEstimatedDurationMinutes?.((dataObj?.estimatedTotalMinutes as number) ?? null);
-      onSuccess?.setTimeBreakdown?.(dataObj?.timeBreakdown ?? null);
+      const derivedEstimatedMinutes =
+        (dataObj?.estimatedTotalMinutes as number | undefined) ??
+        (dataObj?.evaluationSpec as { meta?: { duration?: { minutes?: number } } } | undefined)?.meta?.duration?.minutes ??
+        null;
+      const derivedTimeBreakdown =
+        dataObj?.timeBreakdown ??
+        (dataObj?.evaluationSpec as { meta?: { duration?: { breakdown?: unknown } } } | undefined)?.meta?.duration?.breakdown ??
+        null;
+
+      onSuccess?.setEstimatedDurationMinutes?.(derivedEstimatedMinutes);
+      onSuccess?.setTimeBreakdown?.(derivedTimeBreakdown);
 
       if (dataObj?.aiReport) {
         onSuccess?.setAiDesignReport?.(JSON.stringify(dataObj.aiReport));
