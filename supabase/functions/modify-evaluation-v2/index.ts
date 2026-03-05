@@ -1,5 +1,23 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import {
+  DURATION_MINUTES_BY_ITEM_TYPE,
+  DEFAULT_MINUTES_PER_ITEM,
+  SECTION_OVERHEAD_MINUTES,
+  estimateDurationFromSpec,
+  buildDurationBreakdownFromSpec,
+  computeDeltaMinutesNeeded,
+  formatHeuristicTableForPrompt
+} from "./durationMath.ts";
+import { validateExcerpts, MIN_EXCERPT_LENGTH_CHARS, MAX_EXCERPT_LENGTH_CHARS } from "./excerptValidation.ts";
+import { cleanAndSelectExcerpt, looksLikeMetadata, cleanMaterialTextForPrompt, filterPassagesByQuality, filterPassageByQuality, looksLikeTOC, type PassageRejectReason } from "./excerptCleaning.ts";
+import {
+  validateSpecItems,
+  isAnswerLeakingExcerpt,
+  getDegradationType,
+  type InvalidItem,
+  type ItemValidityResult
+} from "./itemValidity.ts";
 
 // ============================================================================
 // MODIFY-EVALUATION-V2: Structured JSON Response Edge Function
@@ -26,8 +44,15 @@ const OPENAI_TIMEOUT_RETRY_MS = OPENAI_TIMEOUT_PER_ATTEMPT_MS;
 const OPENAI_TIMEOUT_ADJUST_MS = 60000;       // 60s for adjust mode (smaller payload)
 const TOTAL_TIMEOUT_MS = 400000;              // ~6.5 min total budget for 3 attempts of 120s
 
-// Debug build stamp — change this when deploying to prove which code is running
-const DEBUG_BUILD = 'v3-timeout-fix-DEPLOY-FP-2026-02-17-05';
+/** Single build ID for deploy verification. debug.build = BUILD_ID + "-new" | BUILD_ID + "-legacy". Change when deploying. */
+const BUILD_ID = 'v2-guided-deploy-2026-02';
+
+/** When false, skip LLM repair cascades (excerpt, rubric+promptB, item validity). Only deterministic safeguards run. Reduces WORKER_LIMIT. */
+const USE_LLM_REPAIRS = (Deno.env.get('MODIFY_EVALUATION_V2_USE_LLM_REPAIRS') || 'false').toLowerCase() === 'true';
+/** When false, skip duration auto-extend/trim LLM calls. Single-call flow; delta filler + deterministic fill only. */
+const USE_DURATION_AUTO_EXTEND = (Deno.env.get('MODIFY_EVALUATION_V2_USE_DURATION_AUTO_EXTEND') || 'false').toLowerCase() === 'true';
+/** When false, skip narrative-only and by-version narrative LLM calls. Use deterministic fallbacks only. */
+const USE_NARRATIVE_LLM_CALLS = (Deno.env.get('MODIFY_EVALUATION_V2_USE_NARRATIVE_LLM_CALLS') || 'false').toLowerCase() === 'true';
 
 /** Fingerprint for contingency responses (debuggable, non-destructive) */
 const CONTINGENCY_FINGERPRINT = 'v3-contingency-debug-DEPLOY-FP-2026-02-17-04';
@@ -40,7 +65,7 @@ const OPENAI_TIMEOUT_MS = OPENAI_TIMEOUT_GENERATE_MS;
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'apikey, authorization, content-type, x-client-info',
+  'Access-Control-Allow-Headers': 'apikey, authorization, content-type, x-client-info, x-aulaplus-env',
 };
 
 // ============================================================================
@@ -101,6 +126,17 @@ interface EvaluationItemV2 {
     points: number;
     responseFormat?: string;
   }>;
+  // Matching: left/right columns with display text (string[] or { id, text }[])
+  leftColumn?: string[] | Array<{ id: string; text: string }>;
+  rightColumn?: string[] | Array<{ id: string; text: string }>;
+  // Ordering: list of elements to order with display text
+  itemsToOrder?: string[] | Array<{ id: string; text: string }>;
+  // Table completion structure
+  table?: {
+    columns: Array<{ id: string; header: string }>;
+    rows: string[][];
+    cellType?: 'text' | 'numeric';
+  };
 }
 
 interface EvaluationSectionV2 {
@@ -111,7 +147,21 @@ interface EvaluationSectionV2 {
   items: EvaluationItemV2[];
 }
 
-interface EvaluationSpecV2 {
+interface DurationBreakdownSectionV2 {
+  sectionId: string;
+  itemType: string;
+  estimatedMinutes: number;
+  description: string;
+  itemCount: number;
+}
+
+interface DurationBreakdownV2 {
+  sections: DurationBreakdownSectionV2[];
+  heuristicAssumptions: string;
+  totalEstimatedMinutes?: number;
+}
+
+export interface EvaluationSpecV2 {
   version: '2.0';
   generatedAt: string;
   meta: {
@@ -119,7 +169,7 @@ interface EvaluationSpecV2 {
     gradeLevel?: string;
     groupName?: string;
     totalStudents?: number;
-    duration?: { minutes: number; breakdown?: Record<string, number> };
+    duration?: { minutes: number; targetMinutes?: number; breakdown?: DurationBreakdownV2 | Record<string, number> };
     totalPoints?: number;
     evaluationType: string;
     contentIds?: string[];
@@ -156,6 +206,59 @@ interface WarningV2 {
   context?: Record<string, unknown>;
 }
 
+/** Emit each warning code only once per request (keeps first occurrence). */
+function dedupeWarningsByCode(warnings: WarningV2[]): WarningV2[] {
+  const seen = new Set<string>();
+  return warnings.filter((w) => {
+    if (seen.has(w.code)) return false;
+    seen.add(w.code);
+    return true;
+  });
+}
+
+/**
+ * Ensure versionVariants.B exists when Version B was requested and at least one item has promptB.
+ * Prevents "Version B was requested but not generated" when repair has filled promptB.
+ */
+function ensureVersionBVariantWhenRequested(
+  spec: EvaluationSpecV2,
+  requestedVersions: { A: boolean; B: boolean; C: boolean }
+): void {
+  if (!requestedVersions.B) return;
+  let itemsWithPromptB = 0;
+  for (const section of spec.sections || []) {
+    for (const item of section.items || []) {
+      const vc = item.versionedContent;
+      if (typeof vc?.promptB === 'string' && vc.promptB.trim().length > 0) itemsWithPromptB++;
+    }
+  }
+  if (itemsWithPromptB === 0) return;
+  if (!spec.versionVariants) spec.versionVariants = { A: { label: 'Versión A (Universal)', isBase: true } };
+  const v = spec.versionVariants as Record<string, unknown>;
+  if (!v.B) {
+    v.B = {
+      label: 'Versión B (Adaptación de contenido declarada)',
+      isBase: false,
+      reason: 'Adaptación de contenido para estudiantes con adecuaciones declaradas',
+      modifications: []
+    };
+  }
+}
+
+/** Count items with promptB and total items in spec (for single VERSION_B_PARTIAL_CONTENT warning). */
+function countPromptBCoverage(spec: EvaluationSpecV2): { itemsWithPromptB: number; totalItems: number } {
+  let itemsWithPromptB = 0;
+  let totalItems = 0;
+  for (const section of spec.sections || []) {
+    for (const item of section.items || []) {
+      totalItems++;
+      const vc = item.versionedContent;
+      if (typeof vc?.promptB === 'string' && vc.promptB.trim().length > 0) itemsWithPromptB++;
+    }
+  }
+  return { itemsWithPromptB, totalItems };
+}
+
 interface AiReportPerVersion {
   narrative: string;
   decisionsApplied?: string[];
@@ -190,6 +293,9 @@ interface AIReportV2 {
 interface V2Response {
   success: boolean;
   evaluationSpec: EvaluationSpecV2 | null;
+  targetDurationMinutes?: number | null;
+  estimatedTotalMinutes: number;
+  timeBreakdown?: DurationBreakdownV2 | null;
   requestedVersions: { A: boolean; B: boolean; C: boolean };
   instrumentDesignRulesApplied: string[];
   teacherRemindersByStudent: TeacherReminderV2[];
@@ -231,6 +337,11 @@ interface V2Response {
     versionCDecision?: { shouldCreateC: boolean; explanation: string; triggersUsed: string[] };
     declaredContentAdaptationCount?: number;
     semanticMap?: { A: 'universal'; B: 'content_adaptation_declared'; C: 'equivalent_accessibility' };
+    materialsIndexCount?: number;
+    passagesSelectedCount?: number;
+    materialsCharsSent?: number;
+    passagesRejectedCount?: Record<PassageRejectReason, number>;
+    topKeywordsUsedForSelection?: string[];
     contingency?: boolean;
     contingencyReason?: string;
     contingencyFingerprint?: string;
@@ -391,6 +502,9 @@ function buildSafeMinimalResponse(
   return {
     success: false,
     evaluationSpec: null,
+    targetDurationMinutes: null,
+    estimatedTotalMinutes: 0,
+    timeBreakdown: null,
     requestedVersions,
     instrumentDesignRulesApplied: instrumentDesignRules,
     teacherRemindersByStudent: teacherReminders,
@@ -2616,14 +2730,8 @@ function validateAndNormalizeSpec(
       severity: 'warning'
     });
   }
-  if (requestedVersions.B && itemsWithPromptB > 0 && itemsWithPromptB < totalItems) {
-    warnings.push({
-      code: 'VERSION_B_PARTIAL_CONTENT',
-      message: `Solo ${itemsWithPromptB} de ${totalItems} ítems tienen versionedContent.promptB; el resto usa contenido base en B.`,
-      severity: 'info'
-    });
-  }
-  
+  // VERSION_B_PARTIAL_CONTENT is emitted once with final counts from the main flow (after repair), not here.
+
   // Warn when B/C were requested but variant metadata missing (model didn't return variant)
   if (requestedVersions.B && !variants.B) {
     warnings.push({
@@ -2995,6 +3103,27 @@ REGLAS OBLIGATORIAS PARA CADA DESCRIPTOR DE RÚBRICA:
   }
 }
 
+## AGRUPACIÓN POR TEXTO/PASAGE (OBLIGATORIO)
+
+- Cuando un ítem se basa en un texto/pasaje/fuente proporcionado:
+  - multiple_choice: genera un CONJUNTO de 4 a 6 ítems de opción múltiple sobre ese mismo texto (no una sola pregunta). Cada ítem con id único. La duración se calcula por ítem (2 min por cada MC).
+  - source_analysis: genera al menos 2–3 subpreguntas o ítems claramente separados sobre la misma fuente (subItems o ítems consecutivos con la misma source). Cada uno con id único. 14 min por ítem en la estimación.
+- No generes un solo ítem MC por pasaje; se requieren 4–6 ítems cuando hay texto base. No generes un solo ítem source_analysis sin subpreguntas; mínimo 2–3.
+- La duración estimada sigue la tabla heurística (MC=2 min por ítem, source_analysis=14 min por ítem, etc.).
+
+## BLOQUE DE COMPRENSIÓN LECTORA (OBLIGATORIO cuando hay pasajes utilizables)
+
+Cuando en el prompt del usuario se incluyen PASAJES RELEVANTES (sección "PASAJES RELEVANTES" con fragmentos de material):
+
+1. DEBES incluir al menos UNA sección dedicada a comprensión basada en un excerpt concreto:
+   - (a) Un ítem **source_analysis** con el fragmento adjunto en \`source.content\` (1–3 párrafos coherentes del material, no Índice ni Prólogo).
+   - (b) Entre **4 y 6** ítems **multiple_choice** que se refieran explícitamente a ese mismo fragmento (mismo \`source\` o mismo pasaje citado).
+   - (c) Un ítem **short_answer** que pida citar o parafrasear evidencia del fragmento (con rúbrica que valore uso de evidencia).
+
+2. PROHIBIDO escribir en el prompt de ningún ítem frases como "según el fragmento anterior", "según el texto proporcionado" o "de la fuente anterior" si NO hay un \`source\` adjunto a ese ítem o a la sección. Si el ítem referencia un fragmento, ese fragmento DEBE estar en \`source.content\` del ítem (source_analysis) o disponible en la misma sección para los MC/short_answer.
+
+3. Las opciones de los MC de comprensión deben ser específicas del contenido del pasaje (no placeholders genéricos "Opción A/B/C").
+
 ## TIPOS DE ITEMS
 
 - multiple_choice: Requiere "options": [{"id": "a", "text": "...", "isCorrect": true/false}]
@@ -3003,13 +3132,22 @@ REGLAS OBLIGATORIAS PARA CADA DESCRIPTOR DE RÚBRICA:
 - short_answer: Puede incluir "maxLength" y DEBE incluir "rubric" (mínimo 4 niveles)
 - paragraph: Puede incluir "minLength", "maxLength" y DEBE incluir "rubric" (mínimo 4 niveles)
 - essay: Puede incluir "guidingQuestions", "equivalentResponseOptions" y DEBE incluir "rubric" (mínimo 4 niveles)
-- source_analysis: Requiere "source": {"type": "text"|"image", "content"/"url", "caption"} y DEBE incluir "rubric" (mínimo 4 niveles)
+- source_analysis: Requiere "source": {"type": "text"|"image", "content"/"url", "caption"} con "content" siendo el fragmento real del material (no solo el título). DEBE incluir "rubric" (mínimo 4 niveles). Incluir al menos 2–3 subpreguntas o ítems sobre la misma fuente.
 - table_completion: Requiere "table": {"columns": [{"id": "col-1", "header": "Columna 1"}, ...], "rows": [["valor1", "", "valor3"], ["", "", ""]]}
   - columns: array de objetos con id y header (encabezados de columna)
   - rows: array de arrays de strings. Strings vacíos "" indican celdas para completar por el estudiante
   - Ejemplo: tabla de 3 columnas con 2 filas, algunas celdas pre-llenadas y otras vacías
 - matching: Requiere "leftColumn": ["item1", "item2"], "rightColumn": ["matchA", "matchB"]
 - ordering: Requiere "itemsToOrder": ["paso1", "paso2", "paso3"]
+
+## VALIDEZ POR CONSTRUCCIÓN (OBLIGATORIO - cada ítem debe ser renderizable y válido)
+
+1) **ordering**: Incluye SIEMPRE "itemsToOrder" como array de al menos 2 elementos con texto visible (eventos, pasos, conceptos a ordenar). Ejemplo: ["Primer evento", "Segundo evento", "Tercero"].
+2) **matching**: Incluye SIEMPRE "leftColumn" y "rightColumn" con al menos 2 elementos cada uno y texto visible. Sin estas columnas el ítem no se puede mostrar.
+3) **multiple_choice**: Incluye al menos 3 opciones en "options", cada una con "id" y "text" no vacío.
+4) **source_analysis**: El campo "source.content" debe ser un fragmento de 1–3 párrafos coherentes del material (no portada ni metadatos). PROHIBIDO usar resúmenes o abstract que den la respuesta (evita frases como "en este trabajo se analiza…", "las ideas principales son…", "se examinan las características…"). El fragmento debe aportar evidencia sin enunciar la conclusión esperada.
+5) **Versión B**: Si se solicita Versión B, CADA ítem debe incluir "versionedContent": { "promptB": "..." } con consigna adaptada. Sin promptB en todos los ítems, la Versión B no estará disponible.
+6) **Rúbricas**: En ítems abiertos (essay, paragraph, short_answer, source_analysis, true_false_justify) cada descriptor de rúbrica debe referirse al contenido concreto del ítem y a la acción pedida; no uses frases genéricas reutilizables.
 
 ## REPORTE NARRATIVO PARA DOCENTE (aiReport.narrative)
 
@@ -3088,9 +3226,52 @@ function buildV2UserPrompt(
   },
   modification: string,
   instrumentDesignRules: string[],
-  requestedVersions: { A: boolean; B: boolean; C: boolean }
+  requestedVersions: { A: boolean; B: boolean; C: boolean },
+  targetDurationMinutes?: number | null
 ): string {
   const totalStudents = groupContext.students?.length || 0;
+  const normalizedTarget = typeof targetDurationMinutes === 'number' && targetDurationMinutes > 0
+    ? Math.round(targetDurationMinutes)
+    : null;
+  // Target-centered band: aim for >=95% of target, up to 105% (not 90–110%)
+  const low = normalizedTarget !== null ? Math.round(normalizedTarget * 0.95) : null;
+  const high = normalizedTarget !== null ? Math.round(normalizedTarget * 1.05) : null;
+  // Simple operational floor to avoid ultra-short specs:
+  // average 6 min/item gives practical minimum item count for requested duration.
+  const suggestedMinItems = normalizedTarget !== null
+    ? Math.max(6, Math.ceil(normalizedTarget / 6))
+    : null;
+  const heuristicGuide = [
+    '- opción múltiple: 2 min por ítem',
+    '- verdadero/falso: 1 min por ítem',
+    '- verdadero/falso con justificación: 4 min por ítem',
+    '- respuesta corta: 4 min por ítem',
+    '- párrafo: 9 min por ítem',
+    '- ensayo: 14 min por ítem',
+    '- análisis de fuente: 14 min por ítem',
+    '- completar tabla: 5 min por ítem',
+    '- relacionar: 5 min por ítem',
+    '- ordenar: 5 min por ítem',
+    `- tipo no listado: ${DEFAULT_MINUTES_PER_ITEM} min por ítem`,
+    `- sobrecarga por sección: ${SECTION_OVERHEAD_MINUTES} min por sección`,
+  ].join('\n');
+  const durationInstructions = normalizedTarget !== null ? `
+## DURACIÓN OBJETIVO (OBLIGATORIO)
+
+- Duración objetivo solicitada por el docente: ${normalizedTarget} minutos.
+- Rango aceptable para la duración estimada total: ${low}–${high} minutos (95%–105% del objetivo).
+
+## GUÍA OPERATIVA DE TIEMPO (usa esta tabla para planificar estructura)
+
+${heuristicGuide}
+
+## REGLAS OPERATIVAS PARA CUMPLIR LA DURACIÓN
+
+- Diseña la evaluación con suficientes secciones/ítems para alcanzar el rango ${low}–${high} usando la guía de tiempo anterior.
+- Sugerencia estructural mínima: al menos ${suggestedMinItems} ítems totales (pueden combinarse con ítems largos/cortos según necesidad).
+- Si usas más ítems de respuesta corta/selección, aumenta el número total de ítems; si usas más ensayos/análisis, puedes usar menos.
+- En el JSON final, **meta.duration.minutes** debe reflejar la duración estimada según esta tabla (NO copiar mecánicamente el objetivo).
+` : '';
   
   return `## CONTEXTO DEL GRUPO
 
@@ -3113,6 +3294,7 @@ ${instrumentDesignRules.length ? instrumentDesignRules.map(rule => `- ${rule}`).
 ## REQUERIMIENTOS DEL DOCENTE
 
 ${modification || 'No hay requerimientos adicionales'}
+${durationInstructions}
 
 ## INSTRUCCIONES
 
@@ -3318,73 +3500,621 @@ async function generateEvaluationV2(
 }
 
 // ============================================================================
-// DURATION COHERENCE: deterministic estimate + optional auto-extend
+// SOURCE EXCERPT: validation + repair for text-based items
 // ============================================================================
 
-/** Minutes per item type (heuristic for exam-like pacing). Used for estimate and auto-extend. */
-const DURATION_MINUTES_BY_ITEM_TYPE: Record<string, number> = {
-  multiple_choice: 2,
-  true_false: 1,
-  true_false_justify: 4,
-  short_answer: 4,
-  paragraph: 9,
-  essay: 14,
-  source_analysis: 14,
-  table_completion: 5,
-  matching: 5,
-  ordering: 5,
+type MaterialWindow = {
+  materialIdx: number;
+  materialTitle: string;
+  focusText?: string;
+  passage: string;
+  score: number;
+  matchedKeywords: string[];
 };
 
-const DEFAULT_MINUTES_PER_ITEM = 5;
-const SECTION_OVERHEAD_MINUTES = 1;
+type MaterialsPromptBundle = {
+  promptSection: string;
+  materialsIndexCount: number;
+  passagesSelectedCount: number;
+  materialsCharsSent: number;
+  topKeywordsUsedForSelection: string[];
+  passagesRejectedCount?: Record<PassageRejectReason, number>;
+  keptBlocksCount?: number;
+  finalK?: number;
+  finalChars?: number;
+  bundleShortfallReason?: string;
+};
 
-/**
- * Deterministic estimate of total duration (minutes) from a V2 spec.
- * Sums per-item estimates by type plus optional section overhead.
- */
-function estimateDurationFromSpec(spec: EvaluationSpecV2): number {
-  let total = 0;
-  for (const section of spec.sections || []) {
-    total += SECTION_OVERHEAD_MINUTES;
-    for (const item of section.items || []) {
-      const t = item.type as string;
-      total += DURATION_MINUTES_BY_ITEM_TYPE[t] ?? DEFAULT_MINUTES_PER_ITEM;
+const MATERIAL_SELECTION_TOP_K = 10;
+const MATERIAL_SELECTION_MIN_K = 6;
+const MATERIAL_SELECTION_CHAR_BUDGET = 28000; // 20k–30k target; use ~28k as default
+const MATERIAL_SELECTION_CHAR_BUDGET_MIN = 20000;
+const MIN_PARAGRAPH_LEN = 45; // lower to produce more candidates before quality filtering
+const LONG_BLOCK_CHUNK_SIZE = 520; // split blocks more aggressively for better coverage
+const LONG_BLOCK_CHUNK_SIZE_AGGRESSIVE = 360;
+const MATERIAL_LONG_TEXT_THRESHOLD = 20000;
+
+function summarizePassageForIndex(passage: string, maxLen = 220): string {
+  const normalized = passage.replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'Sin resumen disponible.';
+  const sentences = normalized.split(/(?<=[.!?])\s+/).filter(Boolean);
+  const twoSentences = sentences.slice(0, 2).join(' ');
+  const base = twoSentences || normalized;
+  return base.length > maxLen ? `${base.slice(0, maxLen).trim()}...` : base;
+}
+
+function guessPassageLabel(passage: string, fallback: string): string {
+  const firstLine = (passage.split(/\n/).map((l) => l.trim()).find(Boolean) || '').replace(/^[\-*#\d.\)\s]+/, '');
+  if (!firstLine) return fallback;
+  if (firstLine.length <= 80) return firstLine;
+  const sentence = firstLine.split(/[.!?]/)[0].trim();
+  if (sentence.length >= 12 && sentence.length <= 80) return sentence;
+  return `${firstLine.slice(0, 80).trim()}...`;
+}
+
+function tokenizeKeywords(input: string, max = 32): string[] {
+  const stop = new Set([
+    'para','como','donde','desde','hasta','sobre','entre','porque','cuando','este','esta','estos','estas',
+    'that','with','from','have','were','will','your','para','debe','deben','item','items','evaluacion','evaluación',
+    'grupo','materia','contenido','competencias','criterios','logro','version','versión','teacher','request'
+  ]);
+  const words = (input || '')
+    .toLowerCase()
+    .split(/\P{L}+/u)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 4 && !stop.has(w));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const w of words) {
+    if (seen.has(w)) continue;
+    seen.add(w);
+    out.push(w);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function splitParagraphs(rawText: string): string[] {
+  return (rawText || '')
+    .split(/\n\s*\n+/)
+    .map((p) => p.replace(/\s+/g, ' ').trim())
+    .filter((p) => p.length >= 90 && !looksLikeMetadata(p));
+}
+
+/** Split a long block into smaller chunks at sentence boundaries to produce more candidates. */
+function chunkLongBlock(block: string, maxChunkChars: number): string[] {
+  const t = block.trim();
+  if (t.length <= maxChunkChars) return [t];
+  const sentences = t.split(/(?<=[.!?])\s+/).filter(Boolean);
+  if (sentences.length <= 1) {
+    const out: string[] = [];
+    for (let i = 0; i < t.length; i += maxChunkChars) out.push(t.slice(i, i + maxChunkChars).trim());
+    return out.filter((p) => p.length >= MIN_PARAGRAPH_LEN);
+  }
+  const chunks: string[] = [];
+  let current = '';
+  for (const s of sentences) {
+    const next = current ? `${current} ${s}` : s;
+    if (next.length >= maxChunkChars && current.length >= MIN_PARAGRAPH_LEN) {
+      chunks.push(current);
+      current = s;
+    } else {
+      current = next;
     }
   }
-  return Math.max(0, total);
+  if (current.trim().length >= MIN_PARAGRAPH_LEN) chunks.push(current.trim());
+  return chunks;
+}
+
+/** Build candidate windows from materials; ensures enough blocks (chunking + relaxed filter when kept < 6). */
+function buildMaterialWindows(
+  materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
+  keywords: string[],
+  options?: { aggressiveChunking?: boolean }
+): { windows: MaterialWindow[]; rejectedByReason: Record<PassageRejectReason, number>; keptBlocksCount: number } {
+  const windows: MaterialWindow[] = [];
+  const aggregatedRejected: Record<PassageRejectReason, number> = { toc: 0, biblio: 0, prologue: 0, metadata: 0 };
+  let totalKeptBlocks = 0;
+  const chunkSize = options?.aggressiveChunking ? LONG_BLOCK_CHUNK_SIZE_AGGRESSIVE : LONG_BLOCK_CHUNK_SIZE;
+  const maxWindowChars = options?.aggressiveChunking ? 5200 : 4200;
+  for (let mIdx = 0; mIdx < materials.length; mIdx++) {
+    const material = materials[mIdx];
+    const raw = (material.extractedText || '').trim();
+    if (!raw) continue;
+    let rawBlocks = (raw || '')
+      .split(/\n\s*\n+/)
+      .map((p) => p.replace(/\s+/g, ' ').trim())
+      .filter((p) => p.length >= MIN_PARAGRAPH_LEN);
+    const expanded: string[] = [];
+    for (const b of rawBlocks) {
+      if (b.length > chunkSize) {
+        expanded.push(...chunkLongBlock(b, chunkSize));
+      } else {
+        expanded.push(b);
+      }
+    }
+    rawBlocks = expanded.filter((p) => p.length >= MIN_PARAGRAPH_LEN);
+    const { kept: paragraphsStrict, rejected, rejectedByReason } = filterPassagesByQuality(rawBlocks);
+    (['toc', 'biblio', 'prologue', 'metadata'] as const).forEach((r) => {
+      aggregatedRejected[r] = (aggregatedRejected[r] || 0) + (rejectedByReason[r] || 0);
+    });
+    let paragraphs = paragraphsStrict;
+    if (paragraphs.length < MATERIAL_SELECTION_MIN_K && rejected.length > 0) {
+      const relaxed: string[] = [];
+      for (const block of rejected) {
+        if (block.length < MIN_EXCERPT_LENGTH_CHARS) continue;
+        const quality = filterPassageByQuality(block, { isFromStartOfDocument: false });
+        // Controlled fallback: keep strict rejection for metadata and TOC always.
+        if (!quality.keep && (quality.reason === 'metadata' || quality.reason === 'toc')) continue;
+        if (looksLikeTOC(block) || looksLikeMetadata(block)) continue;
+        relaxed.push(block);
+      }
+      paragraphs = [...paragraphs, ...relaxed].slice(0, options?.aggressiveChunking ? 80 : 40);
+    }
+    totalKeptBlocks += paragraphs.length;
+    if (paragraphs.length === 0) continue;
+    for (let i = 0; i < paragraphs.length; i++) {
+      let block = '';
+      for (let n = 1; n <= 5 && i + n <= paragraphs.length; n++) {
+        block = block ? `${block}\n\n${paragraphs[i + n - 1]}` : paragraphs[i + n - 1];
+        if (block.length > maxWindowChars) break;
+        if (block.length < MIN_EXCERPT_LENGTH_CHARS) continue;
+        if (isAnswerLeakingExcerpt(block)) continue;
+        const lower = block.toLowerCase();
+        const matched = keywords.filter((k) => lower.includes(k));
+        const score = matched.length + Math.min(2, n) + (material.focusText ? 1 : 0);
+        windows.push({
+          materialIdx: mIdx,
+          materialTitle: material.title || `Material ${mIdx + 1}`,
+          focusText: material.focusText,
+          passage: block,
+          score,
+          matchedKeywords: matched.slice(0, 10)
+        });
+      }
+    }
+  }
+  windows.sort((a, b) => b.score - a.score || b.passage.length - a.passage.length);
+  return { windows, rejectedByReason: aggregatedRejected, keptBlocksCount: totalKeptBlocks };
+}
+
+/** Build lightweight index + curated relevant passages for the main prompt. */
+function buildMaterialsPromptBundle(
+  materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
+  selectionContext: string
+): MaterialsPromptBundle {
+  if (!materials?.length) {
+    return {
+      promptSection: '',
+      materialsIndexCount: 0,
+      passagesSelectedCount: 0,
+      materialsCharsSent: 0,
+      topKeywordsUsedForSelection: [],
+      passagesRejectedCount: { toc: 0, biblio: 0, prologue: 0, metadata: 0 },
+      keptBlocksCount: 0,
+      finalK: 0,
+      finalChars: 0,
+      bundleShortfallReason: 'no_materials'
+    };
+  }
+
+  const keywords = tokenizeKeywords(selectionContext, 30);
+  const totalExtractedChars = materials.reduce((acc, m) => acc + ((m.extractedText || '').trim().length), 0);
+  const hasLongMaterial = totalExtractedChars >= MATERIAL_LONG_TEXT_THRESHOLD;
+  let { windows: ranked, rejectedByReason, keptBlocksCount } = buildMaterialWindows(materials, keywords);
+  const selected: MaterialWindow[] = [];
+  let charBudgetUsed = 0;
+  const budgetMax = MATERIAL_SELECTION_CHAR_BUDGET;
+  for (const window of ranked) {
+    const extra = window.passage.length + 200;
+    const wouldExceed = charBudgetUsed + extra > budgetMax;
+    if (selected.length >= MATERIAL_SELECTION_TOP_K) break;
+    if (wouldExceed && selected.length >= MATERIAL_SELECTION_MIN_K) continue;
+    const dup = selected.some((s) => s.materialIdx === window.materialIdx && s.passage === window.passage);
+    if (dup) continue;
+    selected.push(window);
+    charBudgetUsed += extra;
+  }
+  for (let i = selected.length; i < ranked.length && selected.length < MATERIAL_SELECTION_MIN_K; i++) {
+    const next = ranked[i];
+    const dup = selected.some((s) => s.materialIdx === next.materialIdx && s.passage === next.passage);
+    if (dup) continue;
+    const extra = next.passage.length + 200;
+    if (charBudgetUsed + extra > budgetMax && selected.length >= 3) continue;
+    selected.push(next);
+    charBudgetUsed += extra;
+  }
+  if (selected.length === 0) {
+    for (let i = 0; i < materials.length && selected.length < MATERIAL_SELECTION_MIN_K; i++) {
+      const raw = (materials[i].extractedText || '').trim();
+      if (!raw) continue;
+      const seed = cleanMaterialTextForPrompt(raw, 3200);
+      if (seed.length < MIN_EXCERPT_LENGTH_CHARS || isAnswerLeakingExcerpt(seed)) continue;
+      selected.push({
+        materialIdx: i,
+        materialTitle: materials[i].title || `Material ${i + 1}`,
+        focusText: materials[i].focusText,
+        passage: seed,
+        score: 0,
+        matchedKeywords: []
+      });
+      charBudgetUsed += seed.length + 120;
+    }
+  }
+
+  let finalChars = selected.reduce((acc, s) => acc + s.passage.length, 0);
+  let bundleShortfallReason = '';
+  // If materials are long but selected chars are still too low, rerank with aggressive chunking and top up.
+  if (hasLongMaterial && finalChars < MATERIAL_SELECTION_CHAR_BUDGET_MIN) {
+    const aggressive = buildMaterialWindows(materials, keywords, { aggressiveChunking: true });
+    ranked = aggressive.windows;
+    keptBlocksCount = Math.max(keptBlocksCount, aggressive.keptBlocksCount);
+    (['toc', 'biblio', 'prologue', 'metadata'] as const).forEach((r) => {
+      rejectedByReason[r] = Math.max(rejectedByReason[r] || 0, aggressive.rejectedByReason[r] || 0);
+    });
+    for (const window of ranked) {
+      if (selected.length >= MATERIAL_SELECTION_TOP_K) break;
+      const dup = selected.some((s) => s.materialIdx === window.materialIdx && s.passage === window.passage);
+      if (dup) continue;
+      if (isAnswerLeakingExcerpt(window.passage)) continue;
+      selected.push(window);
+      finalChars += window.passage.length;
+      if (finalChars >= MATERIAL_SELECTION_CHAR_BUDGET_MIN && selected.length >= MATERIAL_SELECTION_MIN_K) break;
+    }
+    if (finalChars < MATERIAL_SELECTION_CHAR_BUDGET_MIN) {
+      bundleShortfallReason = keptBlocksCount <= 0
+        ? 'no_clean_blocks_after_filters'
+        : 'insufficient_clean_passages_for_min_budget';
+    }
+  } else if (!hasLongMaterial && finalChars < MATERIAL_SELECTION_CHAR_BUDGET_MIN) {
+    bundleShortfallReason = 'source_material_too_short_for_min_budget';
+  }
+
+  const indexLines = [
+    '',
+    '## INDICE DE MATERIALES (ALCANCE GLOBAL)',
+    'Resumen de bloques disponibles para que conozcas el alcance del corpus antes de redactar ítems.'
+  ];
+  selected.forEach((s, idx) => {
+    const label = guessPassageLabel(s.passage, `Bloque ${idx + 1}`);
+    const summary = summarizePassageForIndex(s.passage);
+    const kw = s.matchedKeywords.length ? ` | keywords: ${s.matchedKeywords.slice(0, 6).join(', ')}` : '';
+    const focus = s.focusText ? ` | enfoque docente: ${s.focusText}` : '';
+    indexLines.push(`- [M${s.materialIdx + 1}-B${idx + 1}] ${s.materialTitle} - ${label}${focus}${kw}`);
+    indexLines.push(`  resumen: ${summary}`);
+  });
+
+  const passagesLines = [
+    '',
+    '## PASAJES RELEVANTES (EVIDENCIA VERBATIM CURADA)',
+    `Usa estos pasajes para construir ítems rigurosos. Son fragmentos coherentes (1-3 párrafos), limpios de portada/metadatos y seleccionados por relevancia.`,
+    `Presupuesto total aprox: ${MATERIAL_SELECTION_CHAR_BUDGET} caracteres; pasajes incluidos: ${selected.length}.`
+  ];
+  selected.forEach((s, idx) => {
+    passagesLines.push(`\n### [M${s.materialIdx + 1}-B${idx + 1}] ${s.materialTitle}`);
+    if (s.focusText) passagesLines.push(`Enfoque sugerido por docente: ${s.focusText}`);
+    passagesLines.push(s.passage);
+    passagesLines.push('\n---');
+  });
+
+  return {
+    promptSection: [...indexLines, ...passagesLines].join('\n'),
+    materialsIndexCount: selected.length,
+    passagesSelectedCount: selected.length,
+    materialsCharsSent: finalChars,
+    topKeywordsUsedForSelection: keywords.slice(0, 12),
+    passagesRejectedCount: rejectedByReason,
+    keptBlocksCount,
+    finalK: selected.length,
+    finalChars,
+    bundleShortfallReason: bundleShortfallReason || undefined
+  };
+}
+
+/** Backward-compatible helper used by legacy repair code paths. */
+function buildMaterialsExcerptSection(materials: Array<{ title?: string; focusText?: string; extractedText?: string }>): string {
+  return buildMaterialsPromptBundle(materials, '').promptSection;
 }
 
 /**
- * One-shot auto-extend: call OpenAI to add/expand items so estimated duration reaches target (±10%).
+ * One-shot repair: fill missing/short source.content only from provided materials. No hallucination.
+ * Returns repaired spec and warnings; if repair fails or no materials, returns original spec and adds SOURCE_EXCERPT_MISSING.
+ */
+async function runExcerptRepair(
+  currentSpec: EvaluationSpecV2,
+  materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
+  requestedVersions: { A: boolean; B: boolean; C: boolean },
+  requestId: string,
+  timer: Timer
+): Promise<{ spec: EvaluationSpecV2; warnings: WarningV2[] }> {
+  const warnings: WarningV2[] = [];
+  if (!materials?.length) {
+    warnings.push({
+      code: 'SOURCE_EXCERPT_MISSING',
+      message: 'No se proporcionaron materiales con texto para rellenar ítems source_analysis; algunos ítems pueden tener solo título.',
+      severity: 'warning'
+    });
+    return { spec: currentSpec, warnings };
+  }
+  const systemPrompt = [
+    'Eres un asistente que solo devuelve JSON válido.',
+    'Tu ÚNICA tarea: en la evaluación JSON proporcionada, rellenar el campo source.content de cada ítem de tipo source_analysis usando ÚNICAMENTE los textos de materiales que te doy.',
+    'Reglas: NO inventes textos. Usa solo fragmentos copiados o resumidos de los materiales proporcionados. Mantén el resto del JSON igual (IDs, prompts, opciones, rúbricas).',
+    'Responde ÚNICAMENTE con el objeto JSON completo de la evaluación. Sin explicaciones ni code fences.'
+  ].join('\n');
+  const materialsBlock = buildMaterialsExcerptSection(materials);
+  const userPrompt = `Evaluación actual (algunos ítems source_analysis tienen source.content vacío o muy corto):\n\n${JSON.stringify(currentSpec)}\n\nMateriales con texto a usar:\n${materialsBlock}\n\nDevuelve la evaluación con source.content rellenado en cada source_analysis usando solo los textos de arriba.`;
+
+  timer.log('[EXCERPT_REPAIR] calling OpenAI');
+  console.log('[EXCERPT_REPAIR] requestId=' + requestId);
+
+  const openaiResult = await callOpenAIWithRetries('excerpt_repair', requestId, () => ({
+    body: {
+      model: OPENAI_MODEL_PRIMARY,
+      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+      response_format: { type: 'json_object' },
+      max_completion_tokens: 6000,
+      temperature: 0.2
+    },
+    timeoutMs: Math.min(OPENAI_TIMEOUT_PER_ATTEMPT_MS, 60000)
+  }));
+
+  if (!openaiResult.ok) {
+    warnings.push({
+      code: 'SOURCE_EXCERPT_MISSING',
+      message: `No se pudo rellenar excerpts: ${openaiResult.error.slice(0, 100)}`,
+      severity: 'warning'
+    });
+    return { spec: currentSpec, warnings };
+  }
+  let parsed: unknown;
+  try {
+    let clean = openaiResult.rawContent.trim();
+    if (clean.startsWith('```')) clean = clean.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+    parsed = JSON.parse(clean);
+  } catch {
+    warnings.push({ code: 'SOURCE_EXCERPT_MISSING', message: 'Error al parsear la evaluación tras reparar excerpts.', severity: 'warning' });
+    return { spec: currentSpec, warnings };
+  }
+  const { spec, warnings: validationWarnings } = validateAndNormalizeSpec(parsed, requestedVersions);
+  warnings.push(...validationWarnings);
+  if (!spec) {
+    warnings.push({ code: 'SOURCE_EXCERPT_MISSING', message: 'La evaluación tras reparar excerpts no pasó validación.', severity: 'warning' });
+    return { spec: currentSpec, warnings };
+  }
+  const after = validateExcerpts(spec);
+  if (after.valid) {
+    warnings.push({ code: 'SOURCE_EXCERPT_REPAIRED', message: 'Se rellenaron excerpts faltantes en ítems source_analysis con los materiales proporcionados.', severity: 'info' });
+    timer.log('[EXCERPT_REPAIR] success');
+    console.log('[EXCERPT_REPAIR] success');
+  } else {
+    timer.log(`[EXCERPT_REPAIR] still invalid after repair: ${after.failures.length} items`);
+    console.log(`[EXCERPT_REPAIR] still invalid: itemIds=${after.failures.map(f => f.itemId).join(', ')}`);
+    warnings.push({
+      code: 'SOURCE_EXCERPT_MISSING',
+      message: `Tras reparar, ${after.failures.length} ítem(s) source_analysis siguen sin excerpt suficiente; se mantiene la evaluación.`,
+      severity: 'warning'
+    });
+  }
+  return { spec, warnings };
+}
+
+/** Excerpt debug stats (only attached to response.debug when present). */
+export type ExcerptDebugStat = {
+  itemId: string;
+  excerptSource: 'cleaned_selection' | 'fallback' | 'degraded';
+  excerptLengthChars: number;
+  topMatchedKeywords?: string[];
+  excerptRejectReason?: string;
+};
+
+/**
+ * Apply coherent excerpt selection/cleaning to all source_analysis items: replace raw/metadata-like
+ * content with 1–3 contiguous substantive paragraphs matched to the item prompt. Pushes
+ * SOURCE_EXCERPT_CLEANED (info) and/or SOURCE_EXCERPT_LOW_RELEVANCE (warning) into warnings.
+ * Optionally returns excerptStats for debug.
+ */
+function applyExcerptCleaningToSpec(
+  spec: EvaluationSpecV2,
+  materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
+  warnings: WarningV2[],
+  options?: { collectDebugStats?: boolean }
+): { excerptStats: ExcerptDebugStat[] } {
+  const excerptStats: ExcerptDebugStat[] = [];
+  const materialsWithText = materials.filter((m) => (m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS);
+  if (materialsWithText.length === 0) return { excerptStats };
+
+  for (const section of spec.sections || []) {
+    for (const item of section.items || []) {
+      if (item.type !== 'source_analysis' || !item.source) continue;
+      const itemId = item.id || '';
+      const prompt = (item.prompt || '').trim();
+      const currentContent = (item.source.content || '').trim();
+      const currentQuality = filterPassageByQuality(currentContent, { isFromStartOfDocument: false });
+      const candidates: Array<{
+        excerpt: string;
+        source: 'cleaned_selection' | 'fallback';
+        excerptLengthChars: number;
+        topMatchedKeywords?: string[];
+        wasCleaned?: boolean;
+        lowRelevance?: boolean;
+        excerptRejectReason?: PassageRejectReason;
+      }> = [];
+      for (const m of materialsWithText) {
+        const raw = (m.extractedText || '').trim();
+        const result = cleanAndSelectExcerpt(raw, prompt);
+        const excerpt = (result.excerpt || '').trim();
+        const quality = filterPassageByQuality(excerpt, { isFromStartOfDocument: false });
+        if (excerpt.length >= MIN_EXCERPT_LENGTH_CHARS && quality.keep && !looksLikeTOC(excerpt) && !looksLikeMetadata(excerpt)) {
+          candidates.push({
+            excerpt,
+            source: result.source,
+            excerptLengthChars: result.excerptLengthChars,
+            topMatchedKeywords: result.topMatchedKeywords,
+            wasCleaned: result.wasCleaned,
+            lowRelevance: result.lowRelevance,
+            excerptRejectReason: result.excerptRejectReason,
+          });
+        }
+      }
+      const best = (() => {
+        if (candidates.length === 0) return null;
+        candidates.sort((a, b) => {
+          if (a.source !== b.source) return a.source === 'cleaned_selection' ? -1 : 1;
+          const aKw = a.topMatchedKeywords?.length ?? 0;
+          const bKw = b.topMatchedKeywords?.length ?? 0;
+          if (bKw !== aKw) return bKw - aKw;
+          return (a.lowRelevance === false ? 1 : 0) - (b.lowRelevance === false ? 1 : 0);
+        });
+        return candidates[0];
+      })();
+      if (best && best.excerpt.length >= MIN_EXCERPT_LENGTH_CHARS) {
+        item.source.content = best.excerpt;
+        if (best.wasCleaned && (looksLikeMetadata(currentContent) || looksLikeTOC(currentContent) || currentContent !== best.excerpt)) {
+          warnings.push({
+            code: 'SOURCE_EXCERPT_CLEANED',
+            message: `Fragmento de fuente reemplazado por párrafos coherentes en ítem ${itemId}.`,
+            severity: 'info',
+          });
+        }
+        if (best.lowRelevance) {
+          warnings.push({
+            code: 'SOURCE_EXCERPT_LOW_RELEVANCE',
+            message: `No se encontró un pasaje óptimo para el ítem ${itemId}; se usó el mejor disponible.`,
+            severity: 'warning',
+          });
+        }
+        if (options?.collectDebugStats) {
+          excerptStats.push({
+            itemId,
+            excerptSource: best.source,
+            excerptLengthChars: best.excerptLengthChars,
+            topMatchedKeywords: best.topMatchedKeywords,
+            excerptRejectReason: best.excerptRejectReason,
+          });
+        }
+        continue;
+      }
+
+      // No acceptable excerpt was found (or existing one is low quality): deterministically degrade.
+      item.type = 'short_answer';
+      item.prompt = containsFragmentReference(prompt)
+        ? fixPromptFragmentReference(prompt)
+        : (prompt || `Explique un aspecto relevante de la temática trabajada.`);
+      (item as Record<string, unknown>).source = undefined;
+      warnings.push({
+        code: 'SOURCE_EXCERPT_LOW_QUALITY_DEGRADED',
+        message: `Ítem ${itemId} degradado a short_answer por falta de excerpt analizable de calidad.`,
+        severity: 'warning',
+      });
+      if (options?.collectDebugStats) {
+        excerptStats.push({
+          itemId,
+          excerptSource: 'degraded',
+          excerptLengthChars: 0,
+          excerptRejectReason: currentQuality.keep ? 'no_clean_candidate' : (currentQuality.reason || 'no_clean_candidate'),
+        });
+      }
+    }
+  }
+  return { excerptStats };
+}
+
+/**
+ * Degrade items that require source but have no/short excerpt: convert to short_answer or remove and add a short compensatory item.
+ * Does not change existing item IDs; new items get new unique IDs.
+ */
+function degradeItemsWithMissingExcerpt(
+  spec: EvaluationSpecV2,
+  failures: Array<{ sectionId: string; itemId: string; itemType: string }>,
+  warnings: WarningV2[]
+): void {
+  for (const failure of failures) {
+    for (const section of spec.sections || []) {
+      if (section.id !== failure.sectionId) continue;
+      const items = section.items || [];
+      const idx = items.findIndex((i: EvaluationItemV2) => i.id === failure.itemId);
+      if (idx < 0) continue;
+      const item = items[idx] as EvaluationItemV2;
+      item.type = 'short_answer';
+      if (item.source) {
+        (item as Record<string, unknown>).source = undefined;
+      }
+      warnings.push({
+        code: 'SOURCE_EXCERPT_MISSING',
+        message: `Ítem ${failure.itemId} (source_analysis) sin excerpt suficiente; convertido a short_answer.`,
+        severity: 'warning'
+      });
+      break;
+    }
+  }
+}
+
+// ============================================================================
+// DURATION COHERENCE: deterministic estimate + optional auto-extend
+// ============================================================================
+
+/**
+ * One-shot auto-extend: call OpenAI to add/change items so heuristic estimated duration reaches target (±10%).
  * Returns extended spec + warnings, or null spec on parse/validation failure.
+ * The estimate is computed by item TYPE (and section count), NOT by text length—so the model must add items or convert types.
  */
 async function runDurationAutoExtend(
   currentSpec: EvaluationSpecV2,
   targetDurationMinutes: number,
   requestedVersions: { A: boolean; B: boolean; C: boolean },
   requestId: string,
-  timer: Timer
+  timer: Timer,
+  currentEstimateMinutes: number,
+  previousAttemptDidNotIncreaseHeuristic?: boolean
 ): Promise<{ spec: EvaluationSpecV2 | null; warnings: WarningV2[] }> {
   const warnings: WarningV2[] = [];
-  const low = Math.round(targetDurationMinutes * 0.9);
-  const high = Math.round(targetDurationMinutes * 1.1);
-  const systemPrompt = `Eres un asistente que solo devuelve JSON válido.
-Tu ÚNICA tarea: extender la evaluación proporcionada para que su duración estimada total esté entre ${low} y ${high} minutos.
-Reglas:
-- Añade ítems nuevos o expande ítems existentes (más sub-ítems, preguntas guía, etc.).
-- Mantén meta (contentIds, competencyIds, criteriosLogro), versionVariants y versionedContent donde existan.
-- No cambies los IDs de secciones/ítems existentes; los nuevos ítems deben tener IDs únicos.
-- Responde ÚNICAMENTE con el objeto JSON de la evaluación completa. Sin explicaciones ni code fences.`;
+  // Target-centered: aim for 95%–105% of target (not 90–110%)
+  const low = Math.round(targetDurationMinutes * 0.95);
+  const high = Math.round(targetDurationMinutes * 1.05);
+  const deltaMinutesNeeded = computeDeltaMinutesNeeded(currentEstimateMinutes, low);
+  const heuristicTable = formatHeuristicTableForPrompt();
+
+  const systemParts = [
+    "Eres un asistente que solo devuelve JSON válido.",
+    "Tu ÚNICA tarea: extender la evaluación para que su duración ESTIMADA (heurística) total esté entre " + low + " y " + high + " minutos.",
+    "",
+    "CÓMO SE CALCULA LA DURACIÓN ESTIMADA (importante):",
+    "La duración se calcula como SUMA por tipo de ítem y por sección. La cantidad de texto o explicaciones NO cuenta.",
+    "Regla explícita: Añadir más texto o explicaciones más largas NO aumenta la duración estimada en este sistema.",
+    "Para AUMENTAR la duración estimada DEBES añadir ítems nuevos y/o convertir tipos de ítem a tipos de más minutos según la tabla siguiente.",
+    "",
+    "Tabla de minutos por tipo de ítem (y por sección):",
+    heuristicTable,
+    "",
+    "Reglas de salida:",
+    "- Debes añadir al menos " + deltaMinutesNeeded + " minutos en valor heurístico (sumando ítems nuevos o tipos de más minutos).",
+    "  Preferir ítems nuevos con IDs únicos; no modificar los IDs de ítems existentes.",
+    "- Puedes añadir 1–2 secciones nuevas si hace falta; la sobrecarga por sección es solo 1 minuto, así que enfócate en ítems.",
+    "- Mantén meta (contentIds, competencyIds, criteriosLogro), versionVariants y versionedContent donde existan.",
+    "- Responde ÚNICAMENTE con el objeto JSON de la evaluación completa. Sin explicaciones ni code fences."
+  ];
+  if (previousAttemptDidNotIncreaseHeuristic) {
+    systemParts.push("");
+    systemParts.push("IMPORTANTE: Tu intento anterior no aumentó los minutos heurísticos estimados. Expandir solo texto no basta. Debes añadir ítems nuevos o cambiar tipos de ítem a tipos de más minutos.");
+  }
+  const systemPrompt = systemParts.join("\n");
 
   const specJson = JSON.stringify(currentSpec);
-  const userPrompt = `Evaluación actual (duración objetivo: ${targetDurationMinutes} min, rango aceptable: ${low}-${high} min):
+  const userParts = [
+    "Evaluación actual.",
+    "Duración estimada actual (heurística): " + currentEstimateMinutes + " min.",
+    "Objetivo: " + targetDurationMinutes + " min. Rango aceptable: " + low + "–" + high + " min.",
+    "Minutos heurísticos que debes añadir como mínimo para llegar al menos a " + low + " min: " + deltaMinutesNeeded + " (deltaMinutesNeeded).",
+    "",
+    "Debes añadir al menos " + deltaMinutesNeeded + " minutos en ítems (nuevos ítems o conversión a tipos de más minutos). No basta con ampliar texto.",
+    "",
+    specJson
+  ];
+  const userPrompt = userParts.join("\n");
 
-${specJson}
-
-Devuelve la evaluación extendida en JSON completo para alcanzar entre ${low} y ${high} minutos de duración estimada.`;
-
-  timer.log(`[DURATION_AUTO_EXTEND] calling OpenAI target=${targetDurationMinutes} low=${low} high=${high}`);
-  console.log(`[DURATION_AUTO_EXTEND] target=${targetDurationMinutes} requestId=${requestId}`);
+  timer.log(`[DURATION_AUTO_EXTEND] calling OpenAI currentEst=${currentEstimateMinutes} target=${targetDurationMinutes} low=${low} high=${high} deltaMinutesNeeded=${deltaMinutesNeeded}`);
+  console.log(`[DURATION_AUTO_EXTEND] currentEst=${currentEstimateMinutes} target=${targetDurationMinutes} deltaMinutesNeeded=${deltaMinutesNeeded} requestId=${requestId}`);
 
   const openaiResult = await callOpenAIWithRetries('duration_extend', requestId, () => ({
     body: {
@@ -3437,9 +4167,1008 @@ Devuelve la evaluación extendida en JSON completo para alcanzar entre ${low} y 
   }
 
   const newEst = estimateDurationFromSpec(spec);
-  timer.log(`[DURATION_AUTO_EXTEND] extended estimate=${newEst} target=${targetDurationMinutes}`);
-  console.log(`[DURATION_AUTO_EXTEND] extended estimate=${newEst} target=${targetDurationMinutes}`);
+  timer.log(`[DURATION_AUTO_EXTEND] oldEst=${currentEstimateMinutes} -> newEst=${newEst} target=${targetDurationMinutes}`);
+  console.log(`[DURATION_AUTO_EXTEND] oldEst=${currentEstimateMinutes} -> newEst=${newEst} target=${targetDurationMinutes}`);
   return { spec, warnings };
+}
+
+/**
+ * One-shot auto-trim: call OpenAI to remove items or convert to lower-minute types so heuristic estimate falls within target band (90–110%).
+ * Shortening text does NOT reduce the heuristic estimate; only fewer items or lower-minute types do.
+ */
+async function runDurationAutoTrim(
+  currentSpec: EvaluationSpecV2,
+  targetDurationMinutes: number,
+  requestedVersions: { A: boolean; B: boolean; C: boolean },
+  requestId: string,
+  timer: Timer,
+  currentEstimateMinutes: number
+): Promise<{ spec: EvaluationSpecV2 | null; warnings: WarningV2[] }> {
+  const warnings: WarningV2[] = [];
+  // Target-centered: 95%–105% band
+  const low = Math.round(targetDurationMinutes * 0.95);
+  const high = Math.round(targetDurationMinutes * 1.05);
+  const heuristicTable = formatHeuristicTableForPrompt();
+  const minutesToRemove = Math.max(0, currentEstimateMinutes - high);
+
+  const systemPrompt = [
+    "Eres un asistente que solo devuelve JSON válido.",
+    "Tu ÚNICA tarea: acortar la evaluación para que su duración ESTIMADA (heurística) total esté entre " + low + " y " + high + " minutos.",
+    "",
+    "CÓMO SE CALCULA LA DURACIÓN ESTIMADA:",
+    "La duración es SUMA por tipo de ítem y por sección. Acortar solo el texto NO reduce la estimación.",
+    "Regla: Para REDUCIR la duración estimada DEBES quitar ítems o convertir tipos a tipos de menos minutos (según la tabla).",
+    "",
+    "Tabla de minutos por tipo:",
+    heuristicTable,
+    "",
+    "Reglas:",
+    "- Reduce la estimación heurística en al menos " + minutesToRemove + " minutos (quitando ítems o pasando a tipos de menos minutos). Mantén la cobertura esencial.",
+    "- No cambies los IDs de los ítems que conserves; los ítems que elimines simplemente desaparecen.",
+    "- Mantén meta (contentIds, competencyIds, criteriosLogro), versionVariants y versionedContent donde existan.",
+    "- Responde ÚNICAMENTE con el objeto JSON de la evaluación completa. Sin explicaciones ni code fences."
+  ].join("\n");
+
+  const specJson = JSON.stringify(currentSpec);
+  const userPrompt = [
+    "Evaluación actual. Duración estimada actual: " + currentEstimateMinutes + " min.",
+    "Objetivo: entre " + low + " y " + high + " min. Debes reducir al menos " + minutesToRemove + " minutos heurísticos (quitando ítems o cambiando tipos).",
+    "",
+    specJson
+  ].join("\n");
+
+  timer.log(`[DURATION_AUTO_TRIM] calling OpenAI currentEst=${currentEstimateMinutes} target=${targetDurationMinutes} low=${low} high=${high} minutesToRemove=${minutesToRemove}`);
+  console.log(`[DURATION_AUTO_TRIM] currentEst=${currentEstimateMinutes} target=${targetDurationMinutes} minutesToRemove=${minutesToRemove} requestId=${requestId}`);
+
+  const openaiResult = await callOpenAIWithRetries('duration_trim', requestId, () => ({
+    body: {
+      model: OPENAI_MODEL_PRIMARY,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      response_format: { type: 'json_object' },
+      max_completion_tokens: 6000,
+      temperature: 0.4
+    },
+    timeoutMs: Math.min(OPENAI_TIMEOUT_PER_ATTEMPT_MS, 90000)
+  }));
+
+  if (!openaiResult.ok) {
+    warnings.push({
+      code: 'DURATION_TRIM_OPENAI_ERROR',
+      message: `No se pudo acortar la evaluación: ${openaiResult.error.slice(0, 120)}`,
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+
+  let parsed: unknown;
+  try {
+    let cleanContent = openaiResult.rawContent.trim();
+    if (cleanContent.startsWith('```')) {
+      cleanContent = cleanContent.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+    }
+    parsed = JSON.parse(cleanContent);
+  } catch {
+    warnings.push({
+      code: 'DURATION_TRIM_PARSE_ERROR',
+      message: 'Error al parsear la evaluación recortada',
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+
+  const { spec, warnings: validationWarnings } = validateAndNormalizeSpec(parsed, requestedVersions);
+  warnings.push(...validationWarnings);
+  if (!spec) {
+    warnings.push({
+      code: 'DURATION_TRIM_VALIDATION_FAILED',
+      message: 'La evaluación recortada no pasó la validación',
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+
+  const newEst = estimateDurationFromSpec(spec);
+  timer.log(`[DURATION_AUTO_TRIM] oldEst=${currentEstimateMinutes} -> newEst=${newEst} target=${targetDurationMinutes}`);
+  console.log(`[DURATION_AUTO_TRIM] oldEst=${currentEstimateMinutes} -> newEst=${newEst} target=${targetDurationMinutes}`);
+  return { spec, warnings };
+}
+
+// ============================================================================
+// RUBRIC + VERSION B COMPLETION: single post-processing repair pass
+// ============================================================================
+
+/**
+ * Detect items that need rubric improvement (open-ended with fallback/low-quality rubric)
+ * or missing versionedContent.promptB when Version B is requested.
+ * Returns { rubricRepairIds, promptBRepairIds }. Exported for unit tests.
+ */
+export function detectRubricAndPromptBRepairCandidates(
+  spec: EvaluationSpecV2,
+  requestedVersions: { A: boolean; B: boolean; C: boolean }
+): { rubricRepairIds: string[]; promptBRepairIds: string[] } {
+  const rubricRepairIds: string[] = [];
+  const promptBRepairIds: string[] = [];
+  for (const section of spec.sections || []) {
+    for (const item of section.items || []) {
+      const id = item.id || '';
+      if (!id) continue;
+      if (isOpenEndedItemType(item.type)) {
+        const prompt = (item.prompt || '').trim();
+        const points = typeof item.points === 'number' ? item.points : 4;
+        const normalized = normalizeAndValidateRubric(item.rubric, prompt, points);
+        let needsRubricRepair = !normalized;
+        if (normalized) {
+          const keywords = extractPromptKeywords(prompt);
+          const contentPhrase = extractContentPhrase(prompt);
+          const action = extractPromptAction(prompt);
+          needsRubricRepair = checkRubricQuality(normalized, keywords, contentPhrase, action).lowQuality;
+        }
+        if (needsRubricRepair) rubricRepairIds.push(id);
+      }
+      if (requestedVersions.B) {
+        const vc = item.versionedContent;
+        const hasPromptB = typeof vc?.promptB === 'string' && vc.promptB.trim().length > 0;
+        if (!hasPromptB) promptBRepairIds.push(id);
+      }
+    }
+  }
+  return { rubricRepairIds, promptBRepairIds };
+}
+
+/**
+ * One-shot LLM repair: improve rubrics with content-specific descriptors and fill missing promptB.
+ * Keeps item IDs and evaluated content/objective unchanged. If repair fails, returns original spec + single warning.
+ */
+async function runRubricAndPromptBRepair(
+  currentSpec: EvaluationSpecV2,
+  requestedVersions: { A: boolean; B: boolean; C: boolean },
+  requestId: string,
+  timer: Timer
+): Promise<{ spec: EvaluationSpecV2 | null; warnings: WarningV2[] }> {
+  const warnings: WarningV2[] = [];
+  const { rubricRepairIds, promptBRepairIds } = detectRubricAndPromptBRepairCandidates(currentSpec, requestedVersions);
+  const needsRepair = rubricRepairIds.length > 0 || promptBRepairIds.length > 0;
+  if (!needsRepair) {
+    return { spec: currentSpec, warnings };
+  }
+
+  const systemParts = [
+    'Eres un asistente que solo devuelve JSON válido.',
+    'Tu ÚNICA tarea: en la evaluación JSON proporcionada, hacer SOLO los siguientes cambios (sin modificar IDs ni contenido evaluado):',
+    rubricRepairIds.length > 0
+      ? `1) RÚBRICAS: Para los ítems con id en [${rubricRepairIds.join(', ')}], mejora "rubric.levels" con descriptores específicos al contenido del ítem y a la acción pedida (analizar, justificar, explicar, etc.). Mínimo 4 niveles. Prohibido descriptores genéricos reutilizables.`
+      : '',
+    promptBRepairIds.length > 0
+      ? `2) VERSIÓN B (OBLIGATORIO): Para CADA ítem con id en [${promptBRepairIds.join(', ')}] debes añadir "versionedContent": { "promptB": "..." } con una consigna pedagógicamente adaptada (no equivalente a A), manteniendo evidencia escrita y contemplaciones de accesibilidad. Es OBLIGATORIO rellenar promptB en todos estos ítems; la Versión B solo se ofrecerá si todos tienen promptB.`
+      : '',
+    'No cambies los id de ítems ni secciones. No alteres prompt, options, correctAnswer ni objetivos de los ítems. Responde ÚNICAMENTE con el objeto JSON completo. Sin explicaciones ni code fences.'
+  ].filter(Boolean);
+
+  const systemPrompt = systemParts.join('\n');
+  const userPrompt = `Evaluación actual:\n\n${JSON.stringify(currentSpec)}\n\nAplica solo los cambios indicados (rúbricas y/o promptB) y devuelve el JSON completo.`;
+
+  timer.log('[RUBRIC_PROMPTB_REPAIR] calling OpenAI');
+  const openaiResult = await callOpenAIWithRetries('rubric_promptb_repair', requestId, () => ({
+    body: {
+      model: OPENAI_MODEL_PRIMARY,
+      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+      response_format: { type: 'json_object' },
+      max_completion_tokens: 8000,
+      temperature: 0.3
+    },
+    timeoutMs: Math.min(OPENAI_TIMEOUT_PER_ATTEMPT_MS, 60000)
+  }));
+
+  if (!openaiResult.ok) {
+    warnings.push({
+      code: 'RUBRIC_PROMPTB_REPAIR_FAILED',
+      message: 'No se pudo completar la reparación de rúbricas y/o promptB; se mantiene la especificación original.',
+      severity: 'warning'
+    });
+    return { spec: currentSpec, warnings };
+  }
+
+  let parsed: unknown;
+  try {
+    let clean = openaiResult.rawContent.trim();
+    if (clean.startsWith('```')) clean = clean.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+    parsed = JSON.parse(clean);
+  } catch {
+    warnings.push({
+      code: 'RUBRIC_PROMPTB_REPAIR_FAILED',
+      message: 'Error al parsear la evaluación tras reparar rúbricas/promptB; se mantiene la especificación original.',
+      severity: 'warning'
+    });
+    return { spec: currentSpec, warnings };
+  }
+
+  const { spec, warnings: validationWarnings } = validateAndNormalizeSpec(parsed, requestedVersions);
+  if (!spec) {
+    warnings.push({
+      code: 'RUBRIC_PROMPTB_REPAIR_FAILED',
+      message: 'La evaluación tras reparar rúbricas/promptB no pasó validación; se mantiene la especificación original.',
+      severity: 'warning'
+    });
+    return { spec: currentSpec, warnings };
+  }
+  warnings.push(...validationWarnings);
+  const repairedCount = rubricRepairIds.length + promptBRepairIds.length;
+  warnings.push({
+    code: 'RUBRIC_PROMPTB_REPAIRED',
+    message: `Se completaron rúbricas y/o versionedContent.promptB para ${repairedCount} ítem(s).`,
+    severity: 'info'
+  });
+  timer.log('[RUBRIC_PROMPTB_REPAIR] success');
+  return { spec, warnings };
+}
+
+// ============================================================================
+// DURATION DELTA FILLER: deterministic guardrail when LLM extend falls short
+// ============================================================================
+
+const DELTA_FILLER_SECTION_ID = 'duration-filler-section';
+const DELTA_FILLER_SECTION_TITLE = 'Complemento de duración';
+const DELTA_FILLER_ITEM_ID_PREFIX = 'filler-';
+const MAX_DELTA_FILLER_ITEMS_TOTAL = 6; // hard cap: avoid low-quality item spam
+
+/**
+ * Collect all existing item and section IDs in the spec (to generate unique new IDs).
+ */
+function collectExistingIds(spec: EvaluationSpecV2): { itemIds: Set<string>; sectionIds: Set<string> } {
+  const itemIds = new Set<string>();
+  const sectionIds = new Set<string>();
+  for (const section of spec.sections || []) {
+    if (section.id) sectionIds.add(section.id);
+    for (const item of section.items || []) {
+      if (item.id) itemIds.add(item.id);
+    }
+  }
+  return { itemIds, sectionIds };
+}
+
+/**
+ * Generate a unique item ID that does not exist in the spec. Uses prefix and numeric suffix.
+ */
+function nextFillerItemId(existingItemIds: Set<string>, prefix: string, startIndex: number): string {
+  let n = startIndex;
+  let id: string;
+  do {
+    id = `${prefix}${n}`;
+    n++;
+  } while (existingItemIds.has(id));
+  return id;
+}
+
+/**
+ * Deterministic delta filler: add items until heuristic estimate >= low (95% of target).
+ * Policy: prefer fewer high-value items (essay/paragraph); MC only when high-quality excerpt exists.
+ * Never modifies existing item IDs; adds only new items in a dedicated section.
+ * Documented in 24-delta-filler-and-version-b-fix.md. Exported for unit tests.
+ */
+export function applyDeltaFiller(
+  spec: EvaluationSpecV2,
+  targetMinutes: number,
+  materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
+  warnings: WarningV2[],
+  subjectLabel?: string
+): { spec: EvaluationSpecV2; itemsAdded: number } {
+  const low = Math.round(targetMinutes * 0.95);
+  const currentEstimate = estimateDurationFromSpec(spec);
+  let remainingDelta = Math.max(0, low - currentEstimate);
+  if (remainingDelta <= 0) return { spec, itemsAdded: 0 };
+
+  const { itemIds, sectionIds } = collectExistingIds(spec);
+  const subject = (subjectLabel || 'el tema').trim();
+  const materialsWithExcerpt = materials.filter(
+    (m) => (m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS
+  );
+  let usableExcerpt = '';
+  if (materialsWithExcerpt.length > 0) {
+    for (const material of materialsWithExcerpt) {
+      const selected = cleanAndSelectExcerpt(
+        (material.extractedText || '').trim(),
+        `análisis de ${subject}`
+      );
+      const excerpt = (selected.excerpt || '').trim();
+      const quality = filterPassageByQuality(excerpt, { isFromStartOfDocument: false });
+      if (
+        excerpt.length >= MIN_EXCERPT_LENGTH_CHARS &&
+        quality.keep &&
+        !looksLikeTOC(excerpt) &&
+        !looksLikeMetadata(excerpt) &&
+        !isAnswerLeakingExcerpt(excerpt)
+      ) {
+        usableExcerpt = excerpt.slice(0, MAX_EXCERPT_LENGTH_CHARS);
+        break;
+      }
+    }
+  }
+
+  const newItems: EvaluationItemV2[] = [];
+  let itemIndex = 0;
+  const minutesPerMC = DURATION_MINUTES_BY_ITEM_TYPE['multiple_choice'] ?? 2;
+  const minutesPerShort = DURATION_MINUTES_BY_ITEM_TYPE['short_answer'] ?? 4;
+  const minutesPerParagraph = DURATION_MINUTES_BY_ITEM_TYPE['paragraph'] ?? 9;
+  const minutesPerEssay = DURATION_MINUTES_BY_ITEM_TYPE['essay'] ?? 14;
+  const hasHighQualityExcerpt = usableExcerpt.length >= MIN_EXCERPT_LENGTH_CHARS;
+
+  const fillerTerms = expandDeterministicTerms([subject], subject);
+  while (remainingDelta > 0 && newItems.length < MAX_DELTA_FILLER_ITEMS_TOTAL) {
+    if (remainingDelta >= minutesPerEssay) {
+      const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
+      itemIds.add(id);
+      itemIndex++;
+      const prompt = `Desarrolle una respuesta argumentada sobre ${subject}, incorporando conceptos clave y evidencia trabajada en clase.`;
+      newItems.push({
+        id,
+        type: 'essay',
+        prompt,
+        points: 4,
+        rubric: buildFallbackRubric(prompt, 4)
+      } as EvaluationItemV2);
+      remainingDelta -= minutesPerEssay;
+    } else if (remainingDelta >= minutesPerParagraph) {
+      const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
+      itemIds.add(id);
+      itemIndex++;
+      const prompt = `Elabore un párrafo explicativo sobre ${subject} destacando una relación causa-consecuencia o evidencia concreta.`;
+      newItems.push({
+        id,
+        type: 'paragraph',
+        prompt,
+        points: 3,
+        rubric: buildFallbackRubric(prompt, 3)
+      } as EvaluationItemV2);
+      remainingDelta -= minutesPerParagraph;
+    } else if (hasHighQualityExcerpt && remainingDelta >= minutesPerMC) {
+      const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
+      itemIds.add(id);
+      itemIndex++;
+      const options = buildDeterministicMcOptions(fillerTerms, subject).map((opt, idx) => ({
+        ...opt,
+        id: `${id}-opt-${idx + 1}`
+      }));
+      newItems.push({
+        id,
+        type: 'multiple_choice',
+        prompt: 'A partir del fragmento adjunto, seleccione la opción que mejor responde.',
+        points: 1,
+        options,
+        source: {
+          type: 'text',
+          content: usableExcerpt,
+          caption: materialsWithExcerpt[0]?.title || 'Fragmento'
+        }
+      } as EvaluationItemV2);
+      remainingDelta -= minutesPerMC;
+    } else if (remainingDelta >= minutesPerShort) {
+      const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
+      itemIds.add(id);
+      itemIndex++;
+      const prompt = `Indique brevemente un aspecto relevante sobre ${subject}.`;
+      newItems.push({
+        id,
+        type: 'short_answer',
+        prompt,
+        points: 2,
+        rubric: buildFallbackRubric(prompt, 2)
+      } as EvaluationItemV2);
+      remainingDelta -= minutesPerShort;
+    } else if (hasHighQualityExcerpt && remainingDelta >= minutesPerMC) {
+      // last resort small step only when excerpt exists and remains high-quality
+      const id = nextFillerItemId(itemIds, DELTA_FILLER_ITEM_ID_PREFIX, itemIndex);
+      itemIds.add(id);
+      itemIndex++;
+      const options = buildDeterministicMcOptions(fillerTerms, subject).map((opt, idx) => ({ ...opt, id: `${id}-opt-${idx + 1}` }));
+      newItems.push({
+        id,
+        type: 'multiple_choice',
+        prompt: 'A partir del fragmento adjunto, seleccione la opción que mejor responde.',
+        points: 1,
+        options,
+        source: { type: 'text', content: usableExcerpt, caption: materialsWithExcerpt[0]?.title || 'Fragmento' }
+      } as EvaluationItemV2);
+      remainingDelta -= minutesPerMC;
+    } else {
+      break;
+    }
+  }
+
+  if (newItems.length === 0) return { spec, itemsAdded: 0 };
+
+  const sectionId = sectionIds.has(DELTA_FILLER_SECTION_ID)
+    ? `${DELTA_FILLER_SECTION_ID}-${Date.now()}`
+    : DELTA_FILLER_SECTION_ID;
+  const fillerSection: EvaluationSectionV2 = {
+    id: sectionId,
+    title: DELTA_FILLER_SECTION_TITLE,
+    items: newItems
+  };
+  const newSections = [...(spec.sections || []), fillerSection];
+  const newSpec: EvaluationSpecV2 = {
+    ...spec,
+    sections: newSections
+  };
+  warnings.push({
+    code: 'DURATION_DELTA_FILLER_APPLIED',
+    message: `Se añadieron ${newItems.length} ítem(s) de complemento para alcanzar la duración objetivo (estimado anterior ${currentEstimate} min, objetivo ≥${low} min).`,
+    severity: 'info',
+    context: { itemsAdded: newItems.length, previousEstimate: currentEstimate, targetLow: low, usedHighQualityExcerpt: hasHighQualityExcerpt, maxItemsCap: MAX_DELTA_FILLER_ITEMS_TOTAL }
+  });
+  return { spec: newSpec, itemsAdded: newItems.length };
+}
+
+// ============================================================================
+// ITEM VALIDITY: validation, one-shot repair, fallback degradation
+// ============================================================================
+
+/**
+ * One-shot LLM repair for invalid items: fill ordering/matching/MC/source_analysis,
+ * replace answer-leaking excerpts. Keeps all IDs unchanged. Returns repaired spec or null.
+ */
+async function runItemValidityRepair(
+  currentSpec: EvaluationSpecV2,
+  invalidItems: InvalidItem[],
+  materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
+  _groupContext: { subject?: string; groupName?: string },
+  requestedVersions: { A: boolean; B: boolean; C: boolean },
+  requestId: string,
+  timer: Timer
+): Promise<{ spec: EvaluationSpecV2 | null; warnings: WarningV2[] }> {
+  const warnings: WarningV2[] = [];
+  const invalidIds = invalidItems.map((i) => i.itemId).join(', ');
+  const materialsBlock = materials.length > 0
+    ? materials
+        .map((m, i) => `### Material ${i + 1} (${m.title || 'Sin título'}):\n${(m.extractedText || '').trim().slice(0, 3000)}`)
+        .join('\n\n')
+    : '';
+
+  const systemParts = [
+    'Eres un asistente que solo devuelve JSON válido.',
+    'Tu ÚNICA tarea: corregir los ítems inválidos en la evaluación JSON sin cambiar ningún id de ítem ni sección.',
+    'Reglas:',
+    '- ordering: incluir "itemsToOrder" como array de strings (o { id, text }) con al menos 2 elementos con texto visible (eventos, pasos, etc.).',
+    '- matching: incluir "leftColumn" y "rightColumn" como arrays con al menos 2 elementos cada uno y texto visible.',
+    '- multiple_choice: incluir "options" con al menos 3 opciones, cada una con "id" y "text".',
+    '- source_analysis: si el fragmento en source.content es un resumen/abstract que da la respuesta, reemplazarlo por un pasaje de 1–3 párrafos que aporte evidencia sin enunciar la conclusión esperada. Usar solo texto de los materiales proporcionados.',
+    'No alteres objetivos de aprendizaje ni ids. Responde ÚNICAMENTE con el objeto JSON completo. Sin explicaciones ni code fences.'
+  ];
+  const userPrompt = `Evaluación actual. Los siguientes ítems deben corregirse (ids: ${invalidIds}):\n\n${JSON.stringify(currentSpec)}\n\nMateriales (para rellenar o reemplazar source.content cuando aplique):\n${materialsBlock}\n\nDevuelve la evaluación completa con los ítems corregidos.`;
+
+  timer.log('[ITEM_VALIDITY_REPAIR] calling OpenAI');
+  const openaiResult = await callOpenAIWithRetries('item_validity_repair', requestId, () => ({
+    body: {
+      model: OPENAI_MODEL_PRIMARY,
+      messages: [{ role: 'system', content: systemParts.join('\n') }, { role: 'user', content: userPrompt }],
+      response_format: { type: 'json_object' },
+      max_completion_tokens: 8000,
+      temperature: 0.2
+    },
+    timeoutMs: Math.min(OPENAI_TIMEOUT_PER_ATTEMPT_MS, 60000)
+  }));
+
+  if (!openaiResult.ok) {
+    warnings.push({
+      code: 'ITEM_SCHEMA_REPAIR_FAILED',
+      message: `No se pudo reparar ítems inválidos: ${openaiResult.error.slice(0, 80)}`,
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+
+  let parsed: unknown;
+  try {
+    let clean = openaiResult.rawContent.trim();
+    if (clean.startsWith('```')) clean = clean.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+    parsed = JSON.parse(clean);
+  } catch {
+    warnings.push({
+      code: 'ITEM_SCHEMA_REPAIR_FAILED',
+      message: 'Error al parsear la evaluación tras reparar ítems inválidos.',
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+
+  const { spec, warnings: validationWarnings } = validateAndNormalizeSpec(parsed, requestedVersions);
+  if (!spec) {
+    warnings.push({
+      code: 'ITEM_SCHEMA_REPAIR_FAILED',
+      message: 'La evaluación tras reparar ítems no pasó validación.',
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+  warnings.push(...validationWarnings);
+  const after = validateSpecItems(spec);
+  if (after.invalid.length > 0) {
+    warnings.push({
+      code: 'ITEM_SCHEMA_REPAIR_FAILED',
+      message: `Tras la reparación siguen ${after.invalid.length} ítem(s) inválidos; se aplicará degradación.`,
+      severity: 'warning'
+    });
+    return { spec: null, warnings };
+  }
+  warnings.push({
+    code: 'ITEM_SCHEMA_REPAIRED',
+    message: `Se corrigieron ${invalidItems.length} ítem(s) (ordenamiento, relación, opciones o fragmento de fuente).`,
+    severity: 'info'
+  });
+  timer.log('[ITEM_VALIDITY_REPAIR] success');
+  return { spec, warnings };
+}
+
+function toTextArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const e of input) {
+    if (typeof e === 'string' && e.trim().length > 0) out.push(e.trim());
+    else if (e && typeof e === 'object') {
+      const text = typeof (e as Record<string, unknown>).text === 'string' ? (e as Record<string, unknown>).text as string : '';
+      if (text.trim().length > 0) out.push(text.trim());
+    }
+  }
+  return out;
+}
+
+function expandDeterministicTerms(baseKeywords: string[], subject?: string): string[] {
+  const seed = [
+    ...(baseKeywords || []),
+    ...(subject ? tokenizeKeywords(subject, 8) : []),
+    'contexto', 'proceso', 'actor', 'medida', 'impacto', 'evidencia'
+  ];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of seed) {
+    const clean = (t || '').trim().toLowerCase();
+    if (!clean || clean.length < 4 || seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(clean);
+    if (out.length >= 8) break;
+  }
+  return out.length > 0 ? out : ['concepto', 'contexto', 'evidencia', 'impacto'];
+}
+
+function buildDeterministicTable(terms: string[]): { columns: Array<{ id: string; header: string }>; rows: string[][] } {
+  const colA = terms[0] ? `Concepto (${terms[0]})` : 'Concepto';
+  const colB = terms[1] ? `Evidencia / ejemplo (${terms[1]})` : 'Evidencia / ejemplo';
+  const colC = 'Explicación breve';
+  const columns = [
+    { id: 'col-1', header: colA },
+    { id: 'col-2', header: colB },
+    { id: 'col-3', header: colC }
+  ];
+  const rows = [
+    [terms[0] || 'Concepto 1', '', ''],
+    [terms[1] || 'Concepto 2', '', ''],
+    [terms[2] || 'Concepto 3', '', ''],
+    ['', '', '']
+  ];
+  return { columns, rows };
+}
+
+function buildDeterministicPairs(terms: string[]): { left: string[]; right: string[] } {
+  const left = [
+    terms[0] ? `Concepto: ${terms[0]}` : 'Concepto: base',
+    terms[1] ? `Proceso: ${terms[1]}` : 'Proceso: desarrollo',
+    terms[2] ? `Actor/medida: ${terms[2]}` : 'Actor/medida: referencia'
+  ];
+  const right = [
+    terms[3] ? `Impacto: ${terms[3]}` : 'Impacto: consecuencia observada',
+    terms[4] ? `Evidencia: ${terms[4]}` : 'Evidencia: dato del texto',
+    terms[5] ? `Contexto: ${terms[5]}` : 'Contexto: marco temporal/social'
+  ];
+  return { left, right };
+}
+
+function buildDeterministicOrdering(terms: string[]): string[] {
+  const t1 = terms[0] || 'contexto inicial';
+  const t2 = terms[1] || 'medidas iniciales';
+  const t3 = terms[2] || 'consolidación del proceso';
+  const t4 = terms[3] || 'impactos posteriores';
+  return [
+    `Contexto previo y surgimiento de ${t1}`,
+    `Implementación temprana de ${t2}`,
+    `Desarrollo y consolidación de ${t3}`,
+    `Resultados e impactos de ${t4}`
+  ];
+}
+
+function buildFallbackSourcePassage(terms: string[], subject?: string): string {
+  const topic = subject || 'la temática trabajada';
+  const a = terms[0] || 'contexto';
+  const b = terms[1] || 'proceso';
+  const c = terms[2] || 'evidencia';
+  return [
+    `En ${topic}, el texto presenta un ${a} que permite comprender cómo se organiza el ${b} en un marco histórico y social concreto. Se describen actores, decisiones y condiciones que explican por qué ciertos cambios ocurren en este momento y no en otro.`,
+    `A partir de esa descripción, aparecen ejemplos y datos que funcionan como ${c}: permiten comparar posturas, identificar relaciones causa-consecuencia y distinguir entre hechos y opiniones. El fragmento aporta información suficiente para sostener un análisis con argumentos, sin adelantar una conclusión única.`
+  ].join('\n\n');
+}
+
+function hasGenericMcOptions(options: Array<{ text?: string }>): boolean {
+  const generic = /^(opci[oó]n|option)\s*[a-d1-4]$/i;
+  if (options.length === 0) return true;
+  const texts = options.map((o) => (o.text || '').trim()).filter(Boolean);
+  if (texts.length < 3) return true;
+  const genericCount = texts.filter((t) => generic.test(t)).length;
+  return genericCount >= Math.min(3, texts.length);
+}
+
+function buildDeterministicMcOptions(terms: string[], subject?: string): Array<{ id: string; text: string; isCorrect?: boolean }> {
+  const topic = subject || 'la temática';
+  const t0 = terms[0] || 'concepto central';
+  const t1 = terms[1] || 'evidencia textual';
+  const t2 = terms[2] || 'contexto histórico';
+  const t3 = terms[3] || 'impacto social';
+  return [
+    { id: 'opt-a', text: `Identifica y relaciona ${t0} con ${t1} dentro de ${topic}.`, isCorrect: true },
+    { id: 'opt-b', text: `Describe solo ${t2} sin conectar causas ni consecuencias.` },
+    { id: 'opt-c', text: `Enumera datos aislados sin justificar con ${t1}.` },
+    { id: 'opt-d', text: `Se enfoca en ${t3} pero omite el proceso principal.` }
+  ];
+}
+
+function containsFragmentReference(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  return [
+    'según el fragmento',
+    'segun el fragmento',
+    'fragmento anterior',
+    'texto proporcionado',
+    'fuente proporcionada',
+    'a partir del fragmento',
+    'del texto anterior',
+    'de la fuente anterior'
+  ].some((marker) => p.includes(marker));
+}
+
+function fixPromptFragmentReference(prompt: string): string {
+  const replaced = prompt
+    .replace(/seg[uú]n\s+el\s+fragmento\s+anterior/gi, 'según la temática trabajada')
+    .replace(/seg[uú]n\s+el\s+fragmento/gi, 'según la temática trabajada')
+    .replace(/a\s+partir\s+del\s+fragmento/gi, 'a partir del tema trabajado')
+    .replace(/texto\s+proporcionado/gi, 'tema trabajado')
+    .replace(/fuente\s+proporcionada/gi, 'tema trabajado')
+    .replace(/del\s+texto\s+anterior/gi, 'del tema trabajado')
+    .replace(/de\s+la\s+fuente\s+anterior/gi, 'del tema trabajado');
+  return replaced.replace(/\s+/g, ' ').trim();
+}
+
+function hasHighQualityExcerptContent(content: string): boolean {
+  const excerpt = (content || '').trim();
+  if (excerpt.length < MIN_EXCERPT_LENGTH_CHARS) return false;
+  const quality = filterPassageByQuality(excerpt, { isFromStartOfDocument: false });
+  if (!quality.keep) return false;
+  if (looksLikeTOC(excerpt) || looksLikeMetadata(excerpt)) return false;
+  return true;
+}
+
+function enforceFinalItemInvariants(
+  spec: EvaluationSpecV2,
+  warnings: WarningV2[],
+  subject?: string
+): void {
+  let fixedCount = 0;
+  for (const section of spec.sections || []) {
+    const sectionHasHighQualitySource = (section.items || []).some(
+      (i) => hasHighQualityExcerptContent((i.source?.content || '').trim())
+    );
+    for (const item of section.items || []) {
+      if (item.type === 'multiple_choice') {
+        const options = Array.isArray(item.options) ? item.options : [];
+        const validOptions = options.filter((o) => typeof o?.text === 'string' && o.text.trim().length > 0);
+        if (validOptions.length < 3 || hasGenericMcOptions(validOptions)) {
+          item.options = buildDeterministicMcOptions(expandDeterministicTerms([subject || 'tema'], subject), subject).map((opt, idx) => ({
+            ...opt,
+            id: `${item.id}-opt-${idx + 1}`
+          }));
+          fixedCount += 1;
+        } else if (!validOptions.some((o) => o.isCorrect === true)) {
+          validOptions[0].isCorrect = true;
+          item.options = validOptions;
+          fixedCount += 1;
+        }
+      }
+
+      if (item.type === 'source_analysis') {
+        const excerpt = (item.source?.content || '').trim();
+        if (!hasHighQualityExcerptContent(excerpt)) {
+          item.type = 'short_answer';
+          item.prompt = fixPromptFragmentReference((item.prompt || '').trim() || `Explique una idea clave de ${subject || 'la temática trabajada'}.`);
+          (item as Record<string, unknown>).source = undefined;
+          fixedCount += 1;
+        }
+      }
+
+      const prompt = (item.prompt || '').trim();
+      if (prompt && containsFragmentReference(prompt)) {
+        const hasOwnSource = hasHighQualityExcerptContent((item.source?.content || '').trim());
+        if (!hasOwnSource && !sectionHasHighQualitySource) {
+          item.prompt = fixPromptFragmentReference(prompt);
+          fixedCount += 1;
+        }
+      }
+    }
+  }
+  if (fixedCount > 0) {
+    warnings.push({
+      code: 'ITEM_INVARIANT_FIXED',
+      message: `Se aplicaron ${fixedCount} correcciones deterministas para cumplir invariantes de calidad de ítems.`,
+      severity: 'info'
+    });
+  }
+}
+
+function selectDeterministicSourcePassage(
+  materialsWithText: Array<{ extractedText?: string }>,
+  prompt: string,
+  terms: string[],
+  subject?: string
+): string {
+  for (const m of materialsWithText) {
+    const result = cleanAndSelectExcerpt((m.extractedText || '').trim(), prompt || terms.join(' '));
+    const excerpt = (result.excerpt || '').trim();
+    const quality = filterPassageByQuality(excerpt, { isFromStartOfDocument: false });
+    if (
+      excerpt.length >= MIN_EXCERPT_LENGTH_CHARS &&
+      quality.keep &&
+      !looksLikeTOC(excerpt) &&
+      !looksLikeMetadata(excerpt) &&
+      !isAnswerLeakingExcerpt(excerpt)
+    ) {
+      return excerpt;
+    }
+  }
+  return '';
+}
+
+/**
+ * Deterministic post-processor: fills missing render-critical item data without extra LLM calls.
+ * Keeps IDs stable and emits one info warning per item type applied.
+ */
+export function fillMissingItemDataDeterministically(
+  spec: EvaluationSpecV2,
+  materials: Array<{ title?: string; focusText?: string; extractedText?: string }>,
+  baseKeywords: string[],
+  subject: string | undefined,
+  warnings: WarningV2[]
+): void {
+  const materialsWithText = (materials || []).filter((m) => (m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS);
+  const terms = expandDeterministicTerms(baseKeywords, subject);
+  let filledSource = 0;
+  let filledTable = 0;
+  let filledMatching = 0;
+  let filledOrdering = 0;
+  let filledMultipleChoice = 0;
+  let fixedFragmentReference = 0;
+
+  for (const section of spec.sections || []) {
+    let sectionHasRenderableSource = false;
+    for (const item of section.items || []) {
+      if ((item.source?.content || '').trim().length >= 40) {
+        sectionHasRenderableSource = true;
+      }
+      // Normalize legacy aliases before validation/rendering.
+      const itemAny = item as Record<string, unknown>;
+      if (!item.itemsToOrder && Array.isArray(itemAny.orderingItems)) item.itemsToOrder = itemAny.orderingItems as EvaluationItemV2['itemsToOrder'];
+      if (!item.itemsToOrder && Array.isArray(itemAny.sequence)) item.itemsToOrder = itemAny.sequence as EvaluationItemV2['itemsToOrder'];
+      if (!item.leftColumn && Array.isArray(itemAny.leftItems)) item.leftColumn = itemAny.leftItems as EvaluationItemV2['leftColumn'];
+      if (!item.rightColumn && Array.isArray(itemAny.rightItems)) item.rightColumn = itemAny.rightItems as EvaluationItemV2['rightColumn'];
+      if (!item.table && itemAny.tableData && typeof itemAny.tableData === 'object') item.table = itemAny.tableData as EvaluationItemV2['table'];
+      if (!item.table && (Array.isArray(itemAny.headers) || Array.isArray(itemAny.columns) || Array.isArray(itemAny.rows))) {
+        const headers = (Array.isArray(itemAny.headers) ? itemAny.headers : itemAny.columns) as unknown[] | undefined;
+        const rows = (Array.isArray(itemAny.rows) ? itemAny.rows : []) as unknown[];
+        item.table = {
+          columns: (headers || []).map((h, i) => ({
+            id: `col-${item.id}-${i + 1}`,
+            header: typeof h === 'string' ? h : String((h as Record<string, unknown>)?.header || (h as Record<string, unknown>)?.text || `Columna ${i + 1}`)
+          })),
+          rows: rows.map((r) => Array.isArray(r) ? r.map((c) => (typeof c === 'string' ? c : String(c ?? ''))) : [])
+        };
+      }
+
+      if (item.type === 'source_analysis') {
+        const current = (item.source?.content || '').trim();
+        const currentQuality = filterPassageByQuality(current, { isFromStartOfDocument: false });
+        const currentIsUsable = current.length >= MIN_EXCERPT_LENGTH_CHARS && currentQuality.keep && !looksLikeTOC(current) && !looksLikeMetadata(current);
+        if (!currentIsUsable) {
+          const prompt = (item.prompt || '').trim();
+          const chosen = selectDeterministicSourcePassage(materialsWithText, prompt, terms, subject);
+          if (chosen.length >= MIN_EXCERPT_LENGTH_CHARS) {
+            if (!item.source) item.source = { type: 'text' };
+            item.source.type = item.source.type || 'text';
+            item.source.content = chosen;
+            item.source.caption = item.source.caption || 'Fragmento para análisis';
+            filledSource += 1;
+            sectionHasRenderableSource = true;
+          } else {
+            item.type = 'short_answer';
+            item.prompt = fixPromptFragmentReference(prompt || `Explique un aspecto relevante de ${subject || 'la temática trabajada'}.`);
+            (item as Record<string, unknown>).source = undefined;
+            warnings.push({
+              code: 'SOURCE_EXCERPT_LOW_QUALITY_DEGRADED',
+              message: `Ítem ${item.id || 'sin-id'} degradado a short_answer por falta de excerpt de calidad.`,
+              severity: 'warning'
+            });
+          }
+        } else {
+          sectionHasRenderableSource = true;
+        }
+      }
+
+      if (item.type === 'table_completion') {
+        const cols = item.table?.columns || [];
+        const rows = item.table?.rows || [];
+        const hasValid = cols.length >= 2 && rows.length >= 1;
+        if (!hasValid) {
+          item.table = buildDeterministicTable(terms);
+          if (!item.prompt || item.prompt.trim().length < 12) {
+            item.prompt = `Completá la tabla utilizando información de ${subject || 'la temática trabajada'}.`;
+          }
+          filledTable += 1;
+        }
+      }
+
+      if (item.type === 'matching') {
+        const left = toTextArray(item.leftColumn);
+        const right = toTextArray(item.rightColumn);
+        if (left.length < 2 || right.length < 2) {
+          const pairs = buildDeterministicPairs(terms);
+          item.leftColumn = pairs.left.map((text, i) => ({ id: `l-${item.id}-${i + 1}`, text }));
+          item.rightColumn = pairs.right.map((text, i) => ({ id: `r-${item.id}-${i + 1}`, text }));
+          if (!item.prompt || item.prompt.trim().length < 12) {
+            item.prompt = `Relacioná cada concepto con su impacto o evidencia en ${subject || 'el tema trabajado'}.`;
+          }
+          filledMatching += 1;
+        }
+      }
+
+      if (item.type === 'ordering') {
+        const values = toTextArray(item.itemsToOrder);
+        if (values.length < 3) {
+          const sequence = buildDeterministicOrdering(terms);
+          item.itemsToOrder = sequence.map((text, i) => ({ id: `o-${item.id}-${i + 1}`, text }));
+          if (!item.prompt || item.prompt.trim().length < 12) {
+            item.prompt = `Ordená cronológicamente los eventos o etapas vinculadas con ${subject || 'la temática trabajada'}.`;
+          }
+          filledOrdering += 1;
+        }
+      }
+
+      if (item.type === 'multiple_choice') {
+        const options = Array.isArray(item.options) ? item.options : [];
+        const validOptions = options.filter((o) => typeof o?.text === 'string' && o.text.trim().length > 0);
+        if (validOptions.length < 3 || hasGenericMcOptions(validOptions)) {
+          item.options = buildDeterministicMcOptions(terms, subject).map((opt, idx) => ({ ...opt, id: `${item.id}-opt-${idx + 1}` }));
+          filledMultipleChoice += 1;
+        } else if (!validOptions.some((o) => o.isCorrect === true)) {
+          validOptions[0].isCorrect = true;
+          item.options = validOptions;
+        } else {
+          item.options = validOptions;
+        }
+      }
+
+      const promptText = (item.prompt || '').trim();
+      if (promptText && containsFragmentReference(promptText)) {
+        const hasOwnSource = (item.source?.content || '').trim().length >= 40;
+        if (!hasOwnSource && !sectionHasRenderableSource) {
+          if (item.type === 'source_analysis') {
+            const chosen = selectDeterministicSourcePassage(materialsWithText, promptText, terms, subject);
+            if (chosen.length >= MIN_EXCERPT_LENGTH_CHARS) {
+              if (!item.source) item.source = { type: 'text' };
+              item.source.type = item.source.type || 'text';
+              item.source.content = chosen;
+              item.source.caption = item.source.caption || 'Fragmento para análisis';
+              sectionHasRenderableSource = true;
+              filledSource += 1;
+              fixedFragmentReference += 1;
+            } else {
+              item.type = 'short_answer';
+              item.prompt = fixPromptFragmentReference(promptText);
+              (item as Record<string, unknown>).source = undefined;
+              warnings.push({
+                code: 'SOURCE_EXCERPT_LOW_QUALITY_DEGRADED',
+                message: `Ítem ${item.id || 'sin-id'} degradado por referencia a fragmento sin excerpt de calidad.`,
+                severity: 'warning'
+              });
+              fixedFragmentReference += 1;
+            }
+          } else {
+            item.prompt = fixPromptFragmentReference(promptText);
+            fixedFragmentReference += 1;
+          }
+        }
+      }
+    }
+  }
+
+  if (filledSource > 0) {
+    warnings.push({ code: 'SOURCE_FILLED', message: `Se completó source.content de ${filledSource} ítem(s) source_analysis con selección determinista.`, severity: 'info' });
+  }
+  if (filledTable > 0) {
+    warnings.push({ code: 'ITEM_DATA_FILLED_TABLE', message: `Se completó estructura de tabla en ${filledTable} ítem(s) table_completion.`, severity: 'info' });
+  }
+  if (filledMatching > 0) {
+    warnings.push({ code: 'MATCHING_FILLED', message: `Se completaron columnas de relación en ${filledMatching} ítem(s) matching.`, severity: 'info' });
+  }
+  if (filledOrdering > 0) {
+    warnings.push({ code: 'ORDERING_FILLED', message: `Se completó secuencia en ${filledOrdering} ítem(s) ordering.`, severity: 'info' });
+  }
+  if (filledMultipleChoice > 0) {
+    warnings.push({ code: 'MC_OPTIONS_FILLED', message: `Se completaron opciones coherentes en ${filledMultipleChoice} ítem(s) multiple_choice.`, severity: 'info' });
+  }
+  if (fixedFragmentReference > 0) {
+    warnings.push({ code: 'PROMPT_FRAGMENT_REFERENCE_FIXED', message: `Se corrigieron ${fixedFragmentReference} referencia(s) a fragmento sin fuente visible.`, severity: 'info' });
+  }
+}
+
+/**
+ * Deterministic validator: when usable passages were sent, at least one section must contain
+ * a "comprehension bundle": 1 source_analysis with excerpt + 4–6 MC + 1 short_answer.
+ * Used for smoke tests and optional quality checks (no LLM).
+ */
+export function hasSectionWithComprehensionBundle(spec: EvaluationSpecV2): boolean {
+  if (!spec.sections?.length) return false;
+  for (const section of spec.sections) {
+    const items = section.items || [];
+    const sourceAnalysis = items.filter((i) => i.type === 'source_analysis' && (i.source?.content || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS);
+    const mcCount = items.filter((i) => i.type === 'multiple_choice').length;
+    const shortAnswer = items.filter((i) => i.type === 'short_answer').length;
+    if (sourceAnalysis.length >= 1 && mcCount >= 4 && mcCount <= 10 && shortAnswer >= 1) return true;
+  }
+  return false;
+}
+
+/**
+ * Degrade invalid items deterministically: ordering -> short_answer, matching -> paragraph.
+ * Keeps item IDs; preserves prompt/points; adds rubric for open-ended. Mutates spec.
+ */
+function degradeInvalidItems(
+  spec: EvaluationSpecV2,
+  invalidItems: InvalidItem[],
+  warnings: WarningV2[],
+  buildRubric: (prompt: string, points: number) => ItemRubricV2
+): void {
+  const byKey = new Map(invalidItems.map((i) => [`${i.sectionId}:${i.itemId}`, i]));
+  for (const section of spec.sections || []) {
+    for (const item of section.items || []) {
+      const key = `${section.id}:${item.id}`;
+      const inv = byKey.get(key);
+      if (!inv) continue;
+      const newType = getDegradationType(inv.type);
+      const prompt = (item.prompt || '').trim();
+      const points = typeof item.points === 'number' ? item.points : 2;
+      (item as EvaluationItemV2).type = newType as EvaluationItemV2['type'];
+      if (inv.type === 'ordering') {
+        (item as Record<string, unknown>).itemsToOrder = undefined;
+        if (!item.prompt || item.prompt.length < 20) {
+          (item as EvaluationItemV2).prompt = `Explique el orden o la secuencia cronológica correcta según lo estudiado. ${prompt || 'Describa los pasos o eventos en orden.'}`;
+        }
+      }
+      if (inv.type === 'matching') {
+        (item as Record<string, unknown>).leftColumn = undefined;
+        (item as Record<string, unknown>).rightColumn = undefined;
+        if (!item.prompt || item.prompt.length < 20) {
+          (item as EvaluationItemV2).prompt = `Relacione los conceptos o términos con sus correspondencias y explique la relación en sus propias palabras. ${prompt || ''}`.trim();
+        }
+      }
+      if (inv.type === 'source_analysis') {
+        (item as Record<string, unknown>).source = undefined;
+      }
+      if (inv.type === 'multiple_choice') {
+        (item as Record<string, unknown>).options = undefined;
+      }
+      if (newType === 'short_answer' || newType === 'paragraph') {
+        if (!(item as EvaluationItemV2).rubric) {
+          (item as EvaluationItemV2).rubric = buildRubric((item as EvaluationItemV2).prompt, points);
+        }
+      }
+    }
+  }
 }
 
 // ============================================================================
@@ -3587,50 +5316,52 @@ serve(async (req) => {
     });
   }
   
-  // Check API key
-  if (!openAIApiKey) {
-    console.error('[V2_ERROR] OpenAI API key not configured');
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'OpenAI API key not configured',
-      warnings: [{
-        code: 'CONFIG_ERROR',
-        message: 'El servicio no está configurado correctamente',
-        severity: 'error'
-      }]
-    }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-  
   // Generate request ID and start timer
   const requestId = generateRequestId();
   const timer = new Timer(requestId);
+  const metrics = { llmCallCount: 0 };
+
+  // Behavior path: default = NEW (production). Header x-aulaplus-env: legacy = LEGACY (rollback only; frontend must NOT send this).
+  const envHeader = req.headers.get('x-aulaplus-env')?.toLowerCase?.()?.trim?.() ?? '';
+  const useLegacyPath = (envHeader === 'legacy');
+  const currentBuildMarker = useLegacyPath ? `${BUILD_ID}-legacy` : `${BUILD_ID}-new`;
+  timer.log(`[BEHAVIOR] path=${useLegacyPath ? 'legacy' : 'new'} (x-aulaplus-env=${envHeader || 'absent'})`);
+  console.log(`[BEHAVIOR] useLegacyPath=${useLegacyPath} x-aulaplus-env=${envHeader || 'absent'} buildMarker=${currentBuildMarker}`);
   
   try {
     timer.log('Request received, parsing body');
-    
     const requestBody = await req.json();
     
-    // PING MODE: Zero-cost probe to verify function is deployed and reachable
-    // If __ping is true, return immediately without any OpenAI calls or heavy processing
+    // PING MODE: Lightweight probe (gateway already validated JWT when verify_jwt=true). No OpenAI calls.
     if (requestBody && typeof requestBody === 'object' && requestBody.__ping === true) {
+      const build = String(currentBuildMarker);
       const pingResponse = {
         success: true,
         pong: true,
         debug: {
-          build: 'PING_NARRATIVE_DEBUG_2026_02_12',
+          build,
+          mode: useLegacyPath ? 'legacy' : 'new',
           now: new Date().toISOString()
         }
       };
-      
       return new Response(JSON.stringify(pingResponse), {
         headers: {
           ...corsHeaders,
           'Content-Type': 'application/json',
-          'x-aulaplus-build-probe': 'PING_NARRATIVE_DEBUG_2026_02_12'
+          'x-aulaplus-build-probe': build
         }
+      });
+    }
+    
+    if (!openAIApiKey) {
+      console.error('[V2_ERROR] OpenAI API key not configured');
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'OpenAI API key not configured',
+        warnings: [{ code: 'CONFIG_ERROR', message: 'El servicio no está configurado correctamente', severity: 'error' }]
+      }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
     
@@ -3693,7 +5424,14 @@ serve(async (req) => {
     const responseOptionCount = [2, 3].includes(responseOptions.optionCount)
       ? responseOptions.optionCount
       : 2;
-    
+    const targetDurationMinutesRaw = (designPlan as Record<string, unknown>)?.targetDurationMinutes;
+    const targetDurationMinutes = typeof targetDurationMinutesRaw === 'number' && targetDurationMinutesRaw > 0
+      ? Math.round(targetDurationMinutesRaw)
+      : null;
+    const materialsForExcerpt = Array.isArray((designPlan as Record<string, unknown>)?.materials)
+      ? ((designPlan as Record<string, unknown>).materials as Array<{ title?: string; focusText?: string; extractedText?: string }>)
+      : [];
+
     const studentsForVersioning = Array.isArray(groupContext?.students) ? groupContext.students : [];
     const declaredContentAdaptationByStudent = resolveDeclaredContentAdaptationByStudent(
       designPlan as Record<string, unknown>,
@@ -3736,7 +5474,8 @@ serve(async (req) => {
       groupContext || {},
       modification || '',
       instrumentDesignRules,
-      requestedVersions
+      requestedVersions,
+      targetDurationMinutes
     );
     
     // ADJUST MODE: Append current spec and adjustment instructions
@@ -3749,9 +5488,62 @@ serve(async (req) => {
       userPrompt = `${userPrompt}\n\n${adjustSection}`;
       timer.log(`Adjustment mode: spec appended to prompt (teacherText=${(modification || '').length}chars)`);
     }
-    
+    let materialsPromptPath: 'bundle' | 'legacy' = 'legacy';
+    let materialsPromptStats: {
+      materialsIndexCount: number;
+      passagesSelectedCount: number;
+      materialsCharsSent: number;
+      passagesRejectedCount?: Record<PassageRejectReason, number>;
+      topKeywordsUsedForSelection: string[];
+      keptBlocksCount: number;
+      finalK: number;
+      finalChars: number;
+      bundleShortfallReason?: string;
+    } = {
+      materialsIndexCount: 0,
+      passagesSelectedCount: 0,
+      materialsCharsSent: 0,
+      topKeywordsUsedForSelection: [],
+      keptBlocksCount: 0,
+      finalK: 0,
+      finalChars: 0,
+      bundleShortfallReason: undefined,
+    };
+    if (materialsForExcerpt.length > 0) {
+      const withUsableText = materialsForExcerpt.filter(
+        (m) => ((m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS)
+      ).length;
+      timer.log(`[PROMPT] materials: ${materialsForExcerpt.length} total, ${withUsableText} with extractedText >= ${MIN_EXCERPT_LENGTH_CHARS} chars`);
+      const selectionContext = [
+        modification || '',
+        groupContext?.subject || '',
+        ...(Array.isArray(groupContext?.content) ? groupContext.content : []),
+        ...(Array.isArray(groupContext?.competencies) ? groupContext.competencies : []),
+        ...(Array.isArray(groupContext?.criteriosLogro) ? groupContext.criteriosLogro : []),
+        instrumentDesignRules.join(' ')
+      ].join('\n');
+      const materialsBundle = buildMaterialsPromptBundle(materialsForExcerpt, selectionContext);
+      if (materialsBundle.promptSection) {
+        userPrompt += materialsBundle.promptSection;
+        materialsPromptPath = 'bundle';
+      }
+      materialsPromptStats = {
+        materialsIndexCount: materialsBundle.materialsIndexCount,
+        passagesSelectedCount: materialsBundle.passagesSelectedCount,
+        materialsCharsSent: materialsBundle.materialsCharsSent,
+        passagesRejectedCount: materialsBundle.passagesRejectedCount,
+        topKeywordsUsedForSelection: materialsBundle.topKeywordsUsedForSelection,
+        keptBlocksCount: materialsBundle.keptBlocksCount ?? 0,
+        finalK: materialsBundle.finalK ?? 0,
+        finalChars: materialsBundle.finalChars ?? 0,
+        bundleShortfallReason: materialsBundle.bundleShortfallReason,
+      };
+      timer.log(`[PROMPT] materialsPromptPath=${materialsPromptPath} index=${materialsPromptStats.materialsIndexCount} passages=${materialsPromptStats.passagesSelectedCount} chars=${materialsPromptStats.materialsCharsSent} keptBlocks=${materialsPromptStats.keptBlocksCount} finalK=${materialsPromptStats.finalK} finalChars=${materialsPromptStats.finalChars} shortfall=${materialsPromptStats.bundleShortfallReason || 'none'} rejected=${JSON.stringify(materialsPromptStats.passagesRejectedCount || {})}`);
+    }
+
     timer.mark('prompts_built');
     timer.log(`Prompts built: system=${systemPrompt.length}chars, user=${userPrompt.length}chars`);
+    if (!USE_LLM_REPAIRS) timer.log('[QUALITY_BY_CONSTRUCTION] USE_LLM_REPAIRS=false; only one OpenAI call + deterministic safeguards');
     
     // Generate evaluation (pass isAdjustMode for timeout tuning)
     const result = await generateEvaluationV2(
@@ -3762,11 +5554,13 @@ serve(async (req) => {
       timer,
       isAdjustMode  // Use shorter timeout for adjust mode
     );
-    
+    metrics.llmCallCount += 1;
     timer.mark('generation_complete');
     
     // Build response
     if (result.spec) {
+      let excerptStatsForDebug: ExcerptDebugStat[] = [];
+      let invalidItemCountsForDebug: Record<string, number> = {};
       // Synchronize requestedVersions with actual versionVariants (e.g. fast fallback generated only A)
       const effectiveRequestedVersions = getEffectiveRequestedVersions(result.spec.versionVariants);
       const studentsForRationale = Array.isArray(groupContext?.students) ? groupContext.students as Array<Record<string, unknown>> : [];
@@ -3796,50 +5590,300 @@ serve(async (req) => {
       );
 
       // Duration coherence: canonical target from designPlan, deterministic estimate from spec
-      const targetDurationMinutes = (designPlan as Record<string, unknown>)?.targetDurationMinutes as number | undefined;
       let estimatedMinutes = estimateDurationFromSpec(result.spec);
       if (!result.spec.meta.duration) result.spec.meta.duration = { minutes: 90 };
       result.spec.meta.duration.minutes = estimatedMinutes;
+      if (targetDurationMinutes !== null) {
+        result.spec.meta.duration.targetMinutes = targetDurationMinutes;
+      }
       timer.log(`[DURATION] target=${targetDurationMinutes ?? 'none'} estimated=${estimatedMinutes}`);
       console.log(`[DURATION] target=${targetDurationMinutes ?? 'none'} estimated=${estimatedMinutes}`);
 
-      // Auto-extend: one attempt if generated evaluation is materially shorter than target
-      if (targetDurationMinutes != null && targetDurationMinutes > 0 && estimatedMinutes < targetDurationMinutes * 0.85) {
-        const extended = await runDurationAutoExtend(
+      // NEW behavior (default): excerpt validation, delta filler, deterministic fill. Auto-extend/trim only when USE_DURATION_AUTO_EXTEND=true (reduces llmCallCount to 1).
+      if (!useLegacyPath) {
+      if (USE_DURATION_AUTO_EXTEND && targetDurationMinutes !== null && estimatedMinutes < targetDurationMinutes * 0.95) {
+        const low = Math.round(targetDurationMinutes * 0.95);
+        const deltaMinutesNeeded = computeDeltaMinutesNeeded(estimatedMinutes, low);
+        timer.log(`[DURATION_AUTO_EXTEND_LOOP] initial estimate=${estimatedMinutes} target=${targetDurationMinutes} low=${low} deltaMinutesNeeded=${deltaMinutesNeeded}`);
+        console.log(`[DURATION_AUTO_EXTEND_LOOP] initial estimate=${estimatedMinutes} target=${targetDurationMinutes} deltaMinutesNeeded=${deltaMinutesNeeded}`);
+        if (deltaMinutesNeeded > 8) {
+          timer.log(`[DURATION_AUTO_EXTEND_LOOP] using 3 attempts (deltaMinutesNeeded=${deltaMinutesNeeded} > 8)`);
+          console.log(`[DURATION_AUTO_EXTEND_LOOP] using 3 attempts (deltaMinutesNeeded=${deltaMinutesNeeded} > 8)`);
+        }
+
+        let bestSpec = result.spec;
+        let bestEstimate = estimatedMinutes;
+        let previousAttemptDidNotIncreaseHeuristic = false;
+        const maxExtendAttempts = deltaMinutesNeeded > 8 ? 3 : 2;
+        const MIN_MEANINGFUL_INCREASE = 1; // newEst must be > oldEst + MIN_MEANINGFUL_INCREASE to count
+
+        for (let extendAttempt = 1; extendAttempt <= maxExtendAttempts; extendAttempt++) {
+          timer.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} start current_estimated=${bestEstimate} target=${targetDurationMinutes}`);
+          console.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} start current_estimated=${bestEstimate} target=${targetDurationMinutes}`);
+          const extended = await runDurationAutoExtend(
+            bestSpec,
+            targetDurationMinutes,
+            requestedVersions,
+            requestId,
+            timer,
+            bestEstimate,
+            extendAttempt >= 2 && previousAttemptDidNotIncreaseHeuristic ? true : undefined
+          );
+          metrics.llmCallCount += 1;
+          result.warnings.push(...extended.warnings);
+          if (!extended.spec) {
+            timer.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} returned no spec`);
+            console.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} returned no spec`);
+            continue;
+          }
+
+          const newEst = estimateDurationFromSpec(extended.spec);
+          timer.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} oldEst=${bestEstimate} -> newEst=${newEst}`);
+          console.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} oldEst=${bestEstimate} -> newEst=${newEst}`);
+          const increasedMeaningfully = newEst > bestEstimate + MIN_MEANINGFUL_INCREASE;
+          if (!increasedMeaningfully) {
+            previousAttemptDidNotIncreaseHeuristic = true;
+            timer.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} rejected: heuristic estimate did not increase meaningfully`);
+            console.log(`[DURATION_AUTO_EXTEND_LOOP] attempt ${extendAttempt}/${maxExtendAttempts} rejected: heuristic estimate did not increase meaningfully`);
+          }
+          if (newEst > bestEstimate) {
+            bestSpec = extended.spec;
+            bestEstimate = newEst;
+          }
+          if (newEst >= targetDurationMinutes * 0.95) {
+            timer.log(`[DURATION_AUTO_EXTEND_LOOP] stopping early: reached >=95% target with estimate=${newEst}`);
+            console.log(`[DURATION_AUTO_EXTEND_LOOP] stopping early: reached >=95% target with estimate=${newEst}`);
+            break;
+          }
+        }
+
+        result.spec = bestSpec;
+        estimatedMinutes = bestEstimate;
+        if (!result.spec.meta.duration) result.spec.meta.duration = { minutes: 90 };
+        result.spec.meta.duration.minutes = estimatedMinutes;
+        if (targetDurationMinutes !== null) {
+          result.spec.meta.duration.targetMinutes = targetDurationMinutes;
+        }
+
+        if (estimatedMinutes < targetDurationMinutes * 0.95) {
+          result.warnings.push({
+            code: 'DURATION_EXTEND_FAILED',
+            message: `Tras los intentos de extensión, la duración estimada final (${estimatedMinutes} min) no alcanzó al menos el 95% del objetivo (${targetDurationMinutes} min).`,
+            severity: 'warning'
+          });
+        } else {
+          timer.log(`[DURATION] auto-extend accepted best_estimated=${estimatedMinutes}`);
+          console.log(`[DURATION] auto-extend accepted best_estimated=${estimatedMinutes}`);
+        }
+      }
+
+      // Excerpt validation (after generation and after auto-extend): source_analysis items must have source.content >= MIN_EXCERPT_LENGTH_CHARS.
+      const excerptValidation = validateExcerpts(result.spec);
+      if (!excerptValidation.valid) {
+        timer.log(`[EXCERPT_VALIDATION] failures: ${excerptValidation.failures.map(f => f.itemId + '(' + f.itemType + ')').join(', ')}`);
+        console.log(`[EXCERPT_VALIDATION] failures:`, excerptValidation.failures.map((f) => ({ itemId: f.itemId, itemType: f.itemType, sectionId: f.sectionId })));
+        const materialsWithUsableText = materialsForExcerpt.filter(
+          (m) => ((m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS)
+        ).length;
+        if (materialsForExcerpt.length > 0 && materialsWithUsableText === 0) {
+          result.warnings.push({
+            code: 'SOURCE_EXCERPT_MISSING',
+            message: 'Los materiales no incluyen texto extraído suficiente (mín. 200 caracteres); los ítems source_analysis pueden quedar sin fragmento.',
+            severity: 'warning'
+          });
+          console.log('[EXCERPT] materials provided but no usable extractedText (>=200 chars); excerpts may be missing');
+        }
+        if (materialsForExcerpt.length > 0 && materialsWithUsableText > 0 && USE_LLM_REPAIRS) {
+          timer.log('[EXCERPT_REPAIR] running LLM repair (USE_LLM_REPAIRS=true)');
+          const repaired = await runExcerptRepair(result.spec, materialsForExcerpt, requestedVersions, requestId, timer);
+          metrics.llmCallCount += 1;
+          result.warnings.push(...repaired.warnings);
+          result.spec = repaired.spec;
+          const afterRepair = validateExcerpts(repaired.spec);
+          timer.log(`[EXCERPT_REPAIR] after repair valid=${afterRepair.valid}`);
+          if (!afterRepair.valid) {
+            degradeItemsWithMissingExcerpt(result.spec, afterRepair.failures, result.warnings);
+            timer.log('[EXCERPT_VALIDATION] after repair still invalid; degraded remaining items');
+          }
+        } else {
+          if (materialsForExcerpt.length > 0 && materialsWithUsableText > 0 && !USE_LLM_REPAIRS) {
+            timer.log('[EXCERPT_VALIDATION] skipping LLM repair; using deterministic cleaning + degrade');
+          }
+          degradeItemsWithMissingExcerpt(result.spec, excerptValidation.failures, result.warnings);
+          timer.log('[EXCERPT_VALIDATION] degraded items with missing/invalid excerpt');
+        }
+      }
+
+      // Coherent excerpt cleaning: replace raw/metadata source_analysis content with 1–3 substantive paragraphs (when materials available)
+      const materialsWithUsableForCleaning = materialsForExcerpt.filter(
+        (m) => (m.extractedText || '').trim().length >= MIN_EXCERPT_LENGTH_CHARS
+      );
+      if (materialsWithUsableForCleaning.length > 0) {
+        const { excerptStats } = applyExcerptCleaningToSpec(
+          result.spec,
+          materialsForExcerpt,
+          result.warnings,
+          { collectDebugStats: true }
+        );
+        excerptStatsForDebug = excerptStats;
+      }
+
+      // Auto-trim: if estimate >120% of target, one attempt to reduce (only when USE_DURATION_AUTO_EXTEND=true).
+      if (USE_DURATION_AUTO_EXTEND && targetDurationMinutes !== null && estimatedMinutes > targetDurationMinutes * 1.2) {
+        const trimmed = await runDurationAutoTrim(
           result.spec,
           targetDurationMinutes,
           requestedVersions,
           requestId,
-          timer
+          timer,
+          estimatedMinutes
         );
-        result.warnings.push(...extended.warnings);
-        if (extended.spec) {
-          const newEst = estimateDurationFromSpec(extended.spec);
-          if (newEst >= targetDurationMinutes * 0.9) {
-            result.spec = extended.spec;
-            estimatedMinutes = newEst;
-            if (!result.spec.meta.duration) result.spec.meta.duration = { minutes: 90 };
-            result.spec.meta.duration.minutes = estimatedMinutes;
-            timer.log(`[DURATION] auto-extend applied new_estimated=${estimatedMinutes}`);
-            console.log(`[DURATION] auto-extend applied new_estimated=${estimatedMinutes}`);
-          } else {
-            result.warnings.push({
-              code: 'DURATION_EXTEND_FAILED',
-              message: `Tras extender, la duración estimada (${newEst} min) no alcanzó el objetivo (${targetDurationMinutes} min).`,
-              severity: 'warning'
-            });
-          }
+        metrics.llmCallCount += 1;
+        result.warnings.push(...trimmed.warnings);
+        if (trimmed.spec) {
+          result.spec = trimmed.spec;
+          estimatedMinutes = estimateDurationFromSpec(trimmed.spec);
+          timer.log(`[DURATION] auto-trim applied new_estimated=${estimatedMinutes}`);
+          console.log(`[DURATION] auto-trim applied new_estimated=${estimatedMinutes}`);
         } else {
           result.warnings.push({
-            code: 'DURATION_EXTEND_FAILED',
-            message: `No se pudo extender la evaluación para alcanzar ${targetDurationMinutes} min.`,
+            code: 'DURATION_TRIM_FAILED',
+            message: `No se pudo acortar la evaluación; la duración estimada (${estimatedMinutes} min) supera el objetivo (${targetDurationMinutes} min). Se devuelve la evaluación sin recortar.`,
             severity: 'warning'
           });
         }
       }
 
-      // Structure validation: deviation warning and optional section scaling (using final spec + estimate)
-      if (targetDurationMinutes != null && targetDurationMinutes > 0) {
+      // Delta filler: if still below 95% of target, add items deterministically (no OpenAI) until >= low
+      if (targetDurationMinutes !== null && estimatedMinutes < Math.round(targetDurationMinutes * 0.95)) {
+        const low = Math.round(targetDurationMinutes * 0.95);
+        const { spec: specAfterFiller, itemsAdded } = applyDeltaFiller(
+          result.spec,
+          targetDurationMinutes,
+          materialsForExcerpt,
+          result.warnings,
+          groupContext?.subject
+        );
+        if (itemsAdded > 0) {
+          result.spec = specAfterFiller;
+          estimatedMinutes = estimateDurationFromSpec(specAfterFiller);
+          timer.log(`[DURATION_DELTA_FILLER] added ${itemsAdded} items, new_estimated=${estimatedMinutes} targetLow=${low}`);
+          console.log(`[DURATION_DELTA_FILLER] added ${itemsAdded} items, new_estimated=${estimatedMinutes}`);
+        }
+      }
+
+      // Deterministic renderability completion for complex item types (no extra LLM calls).
+      fillMissingItemDataDeterministically(
+        result.spec,
+        materialsForExcerpt,
+        materialsPromptStats.topKeywordsUsedForSelection,
+        groupContext?.subject,
+        result.warnings
+      );
+
+      // Rubric + Version B completion: one LLM repair pass when USE_LLM_REPAIRS (else quality-by-construction only)
+      if (USE_LLM_REPAIRS) {
+        const rubricPromptBRepaired = await runRubricAndPromptBRepair(result.spec, requestedVersions, requestId, timer);
+        metrics.llmCallCount += 1;
+        result.warnings.push(...rubricPromptBRepaired.warnings);
+        if (rubricPromptBRepaired.spec) result.spec = rubricPromptBRepaired.spec;
+      } else {
+        timer.log('[RUBRIC_PROMPTB] skipped LLM repair (USE_LLM_REPAIRS=false)');
+      }
+
+      // Ensure Version B is reflected when requested and at least one item has promptB (avoid "not generated" after repair)
+      ensureVersionBVariantWhenRequested(result.spec, requestedVersions);
+      // When B is now present, drop stale warnings from earlier validation (no content / not generated)
+      if (requestedVersions.B && (result.spec.versionVariants as Record<string, unknown>)?.B) {
+        result.warnings = result.warnings.filter(
+          (w) => w.code !== 'VERSION_B_NO_CONTENT' && w.code !== 'VERSION_B_MISSING'
+        );
+      }
+      // Emit VERSION_B_PARTIAL_CONTENT once with final counts
+      if (requestedVersions.B) {
+        const { itemsWithPromptB, totalItems } = countPromptBCoverage(result.spec);
+        if (itemsWithPromptB > 0 && itemsWithPromptB < totalItems) {
+          result.warnings.push({
+            code: 'VERSION_B_PARTIAL_CONTENT',
+            message: `Solo ${itemsWithPromptB} de ${totalItems} ítems tienen versionedContent.promptB; el resto usa contenido base en B.`,
+            severity: 'info'
+          });
+        }
+      }
+
+      // Item validity: validate ordering/matching/MC/source_analysis; repair once or degrade
+      const validity = validateSpecItems(result.spec);
+      if (validity.invalid.length > 0) {
+        invalidItemCountsForDebug = validity.invalid.reduce((acc, i) => {
+          acc[i.type] = (acc[i.type] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        const answerLeakCount = validity.invalid.filter((i) => i.reason.includes('answer-leaking')).length;
+        if (answerLeakCount > 0) {
+          result.warnings.push({
+            code: 'SOURCE_EXCERPT_ANSWER_LEAK',
+            message: `${answerLeakCount} fragmento(s) de fuente parecen dar la respuesta (estilo resumen/abstract); se intentará reemplazar o degradar.`,
+            severity: 'warning'
+          });
+        }
+        if (USE_LLM_REPAIRS) {
+          const repaired = await runItemValidityRepair(
+            result.spec,
+            validity.invalid,
+            materialsForExcerpt,
+            groupContext || {},
+            requestedVersions,
+            requestId,
+            timer
+          );
+          metrics.llmCallCount += 1;
+          result.warnings.push(...repaired.warnings);
+          if (repaired.spec) {
+            result.spec = repaired.spec;
+            const recheck = validateSpecItems(result.spec);
+            if (recheck.invalid.length > 0) {
+              degradeInvalidItems(result.spec, recheck.invalid, result.warnings, buildFallbackRubric);
+              timer.log(`[ITEM_VALIDITY] repair left ${recheck.invalid.length} invalid; degraded`);
+            }
+          } else {
+            degradeInvalidItems(result.spec, validity.invalid, result.warnings, buildFallbackRubric);
+            timer.log(`[ITEM_VALIDITY] repair failed; degraded ${validity.invalid.length} items`);
+          }
+        } else {
+          degradeInvalidItems(result.spec, validity.invalid, result.warnings, buildFallbackRubric);
+          timer.log(`[ITEM_VALIDITY] skipped LLM repair; deterministic degradation of ${validity.invalid.length} items`);
+        }
+        estimatedMinutes = estimateDurationFromSpec(result.spec);
+        if (targetDurationMinutes !== null && estimatedMinutes < Math.round(targetDurationMinutes * 0.95)) {
+          const low = Math.round(targetDurationMinutes * 0.95);
+          const { spec: specAfterFiller, itemsAdded } = applyDeltaFiller(
+            result.spec,
+            targetDurationMinutes,
+            materialsForExcerpt,
+            result.warnings,
+            groupContext?.subject
+          );
+        if (itemsAdded > 0) {
+          result.spec = specAfterFiller;
+          estimatedMinutes = estimateDurationFromSpec(specAfterFiller);
+          timer.log(`[DURATION_DELTA_FILLER] post-degradation filler added ${itemsAdded} items, new_estimated=${estimatedMinutes}`);
+        }
+      }
+
+      // Deterministic item fill runs LAST so table/matching/ordering/MC are always renderable (including filler-added items).
+      fillMissingItemDataDeterministically(
+        result.spec,
+        materialsForExcerpt,
+        materialsPromptStats.topKeywordsUsedForSelection,
+        groupContext?.subject,
+        result.warnings
+      );
+      enforceFinalItemInvariants(result.spec, result.warnings, groupContext?.subject);
+      }
+      } // end !useLegacyPath (NEW behavior: extend, excerpt, trim, delta filler, rubric+promptB repair, item validity)
+
+      // Structure validation: warning only (no metadata-only scaling).
+      if (targetDurationMinutes !== null) {
         const deviation = Math.abs(estimatedMinutes - targetDurationMinutes) / targetDurationMinutes;
         if (estimatedMinutes > targetDurationMinutes * 1.2) {
           result.warnings.push({
@@ -3854,18 +5898,14 @@ serve(async (req) => {
             message: `La duración estimada (${estimatedMinutes} min) se desvía más del 15% del objetivo (${targetDurationMinutes} min). Considere revisar los tiempos por sección.`,
             severity: 'warning'
           });
-          const scale = targetDurationMinutes / estimatedMinutes;
-          if (result.spec.sections?.length && scale > 0 && scale !== 1) {
-            for (const section of result.spec.sections) {
-              if (typeof section.duration === 'number') {
-                section.duration = Math.round(section.duration * scale);
-              }
-            }
-            if (result.spec.meta?.duration) {
-              result.spec.meta.duration.minutes = targetDurationMinutes;
-            }
-          }
         }
+      }
+      const timeBreakdown = buildDurationBreakdownFromSpec(result.spec);
+      if (!result.spec.meta.duration) result.spec.meta.duration = { minutes: estimatedMinutes };
+      result.spec.meta.duration.minutes = estimatedMinutes;
+      result.spec.meta.duration.breakdown = timeBreakdown;
+      if (targetDurationMinutes !== null) {
+        result.spec.meta.duration.targetMinutes = targetDurationMinutes;
       }
 
       // Success - build base aiReport first (use effectiveRequestedVersions for coherence)
@@ -3972,10 +6012,10 @@ serve(async (req) => {
         }
       }
       
-      // If narrative is present but too short (<200 chars), try narrative-only OpenAI call (openai or local source)
+      // If narrative is present but too short (<200 chars), try narrative-only OpenAI call only when USE_NARRATIVE_LLM_CALLS=true (default: single-call flow).
       if (narrativeText && typeof narrativeText === 'string') {
         const len = narrativeText.trim().length;
-        if (len > 0 && len < MIN_NARRATIVE_LENGTH) {
+        if (len > 0 && len < MIN_NARRATIVE_LENGTH && USE_NARRATIVE_LLM_CALLS) {
           timer.log('[AI_REPORT] Narrative too short (any source), requesting narrative-only OpenAI call...');
           const enhanced = await generateNarrativeOnlyCall(
             result.spec,
@@ -3985,6 +6025,7 @@ serve(async (req) => {
             requestId,
             timer
           );
+          metrics.llmCallCount += 1;
           if (enhanced && enhanced.length >= MIN_NARRATIVE_LENGTH) {
             narrativeText = enhanced;
             narrativeSource = 'openai';
@@ -4022,10 +6063,10 @@ serve(async (req) => {
       if (!baseAiReport.byVersion.A?.narrative?.trim()) {
         baseAiReport.byVersion.A = { narrative: baseAiReport.narrative?.trim() || FALLBACK_A_NARRATIVE };
       }
-      // When B/C are effective but narratives missing, attempt one fast secondary OpenAI call (no minimum A length)
+      // When B/C are effective but narratives missing, attempt one fast secondary OpenAI call only when USE_NARRATIVE_LLM_CALLS=true (default: deterministic ensureByVersionNarratives only).
       const needsB = effectiveRequestedVersions.B && (!baseAiReport.byVersion?.B?.narrative?.trim());
       const needsC = effectiveRequestedVersions.C && (!baseAiReport.byVersion?.C?.narrative?.trim());
-      if ((needsB || needsC) && baseAiReport.byVersion) {
+      if (USE_NARRATIVE_LLM_CALLS && (needsB || needsC) && baseAiReport.byVersion) {
         const existingA = baseAiReport.byVersion.A?.narrative?.trim() || baseAiReport.narrative?.trim() || '';
         const filled = await generateMissingByVersionNarrativesCall(
           result.spec,
@@ -4036,6 +6077,7 @@ serve(async (req) => {
           requestId,
           timer
         );
+        metrics.llmCallCount += 1;
         if (filled) {
           if (filled.A?.narrative && !baseAiReport.byVersion.A?.narrative?.trim()) baseAiReport.byVersion.A = { narrative: filled.A.narrative };
           if (filled.B?.narrative && !baseAiReport.byVersion?.B?.narrative?.trim()) baseAiReport.byVersion!.B = { narrative: filled.B.narrative };
@@ -4139,21 +6181,25 @@ serve(async (req) => {
       if (effectiveRequestedVersions.C && !(byVersionOut?.C?.narrative?.trim?.())) {
         console.warn('[AI_REPORT] effective C but C.narrative missing (should not happen after fixes)');
       }
-      console.log('[BUILD_FINGERPRINT]', DEBUG_BUILD, 'requestId=', requestId);
+      console.log('[BUILD_FINGERPRINT]', currentBuildMarker, 'requestId=', requestId);
       const response: V2Response = {
         success: true,
         evaluationSpec: evaluationSpecForResponse as typeof result.spec,
+        targetDurationMinutes: targetDurationMinutes ?? null,
+        estimatedTotalMinutes: estimatedMinutes,
+        timeBreakdown,
         requestedVersions: effectiveRequestedVersions,
         instrumentDesignRulesApplied: instrumentDesignRules,
         teacherRemindersByStudent: teacherReminders,
         aiReport: normalizedAiReport, // Normalized to match AIDesignReportData contract
-        warnings: [
+        warnings: dedupeWarningsByCode([
           ...result.warnings,
           ...(narrativeWarning ? [narrativeWarning] : [])
-        ],
+        ]),
         debug: {
-          build: DEBUG_BUILD,
+          build: currentBuildMarker,
           model: result.attempts?.[result.attempts.length - 1]?.model ?? OPENAI_MODEL_PRIMARY,
+          llmCallCount: metrics.llmCallCount,
           promptTokensEstimate: Math.ceil(result.debug.promptLength / 4),
           completionTokensEstimate: Math.ceil(result.debug.responseLength / 4),
           attempt: result.attempt,
@@ -4177,11 +6223,23 @@ serve(async (req) => {
             triggersUsed: versionCDecision.triggersUsed
           },
           declaredContentAdaptationCount,
-          semanticMap: { A: 'universal', B: 'content_adaptation_declared', C: 'equivalent_accessibility' }
+          semanticMap: { A: 'universal', B: 'content_adaptation_declared', C: 'equivalent_accessibility' },
+          materialsPromptPath: materialsPromptPath,
+          materialsIndexCount: materialsPromptStats.materialsIndexCount,
+          passagesSelectedCount: materialsPromptStats.passagesSelectedCount,
+          materialsCharsSent: materialsPromptStats.materialsCharsSent,
+          passagesRejectedCount: materialsPromptStats.passagesRejectedCount ?? undefined,
+          keptBlocksCount: materialsPromptStats.keptBlocksCount,
+          finalK: materialsPromptStats.finalK,
+          finalChars: materialsPromptStats.finalChars,
+          bundleShortfallReason: materialsPromptStats.bundleShortfallReason,
+          topKeywordsUsedForSelection: materialsPromptStats.topKeywordsUsedForSelection,
+          ...(excerptStatsForDebug?.length ? { excerptStats: excerptStatsForDebug } : {}),
+          ...(invalidItemCountsForDebug && Object.keys(invalidItemCountsForDebug).length ? { invalidItemCountsByType: invalidItemCountsForDebug } : {})
         }
       };
       
-      timer.log(`[DEPLOY_CHECK] ${DEBUG_BUILD} SUCCESS: sections=${result.spec.sections.length}, totalTime=${timer.elapsed()}ms`);
+      timer.log(`[DEPLOY_CHECK] ${currentBuildMarker} SUCCESS: sections=${result.spec.sections.length}, totalTime=${timer.elapsed()}ms`);
       
       return new Response(JSON.stringify(response), {
         headers: { 
@@ -4253,14 +6311,18 @@ serve(async (req) => {
         const response: V2Response = {
           success: true, // CRITICAL: Must be true to prevent V1 fallback
           evaluationSpec: emergencySpec,
+          targetDurationMinutes: targetDurationMinutes ?? null,
+          estimatedTotalMinutes: estimateDurationFromSpec(emergencySpec),
+          timeBreakdown: buildDurationBreakdownFromSpec(emergencySpec),
           requestedVersions,
           instrumentDesignRulesApplied: instrumentDesignRules,
           teacherRemindersByStudent: teacherReminders,
           aiReport: contingencyAiReport,
           warnings: emergencyWarnings,
           debug: {
-            build: DEBUG_BUILD,
+            build: currentBuildMarker,
             model: 'emergency_template',
+            llmCallCount: metrics.llmCallCount,
             promptTokensEstimate: 0,
             completionTokensEstimate: 0,
             attempt: 3,
@@ -4300,10 +6362,11 @@ serve(async (req) => {
           teacherReminders
         );
         
-        // Add debug info with attempts
+        // Add debug info with attempts (excerptStats only when present)
         (response as V2Response & { debug?: unknown }).debug = {
-          build: DEBUG_BUILD,
+          build: currentBuildMarker,
           model: 'gpt-4.1-2025-04-14',
+          llmCallCount: metrics.llmCallCount,
           promptTokensEstimate: Math.ceil(result.debug.promptLength / 4),
           completionTokensEstimate: Math.ceil(result.debug.responseLength / 4),
           attempt: result.attempt,
@@ -4315,7 +6378,9 @@ serve(async (req) => {
           timeoutUsedMs: result.debug.timeoutUsedMs,
           retryReason: result.debug.retryReason,
           promptSizeKB: (result.debug.promptLength / 1024).toFixed(1),
-          attempts: result.attempts || []
+          attempts: result.attempts || [],
+          ...(excerptStatsForDebug?.length ? { excerptStats: excerptStatsForDebug } : {}),
+          ...(invalidItemCountsForDebug && Object.keys(invalidItemCountsForDebug).length ? { invalidItemCountsByType: invalidItemCountsForDebug } : {})
         };
         
         return new Response(JSON.stringify(response), {
@@ -4339,6 +6404,9 @@ serve(async (req) => {
     const response: V2Response = {
       success: false,
       evaluationSpec: null,
+      targetDurationMinutes: null,
+      estimatedTotalMinutes: 0,
+      timeBreakdown: null,
       requestedVersions: { A: true, B: false, C: false },
       instrumentDesignRulesApplied: [],
       teacherRemindersByStudent: [],
@@ -4349,8 +6417,9 @@ serve(async (req) => {
         severity: 'error'
       }],
       debug: {
-        build: DEBUG_BUILD,
+        build: currentBuildMarker,
         model: 'gpt-4.1-2025-04-14',
+        llmCallCount: metrics.llmCallCount,
         promptTokensEstimate: 0,
         completionTokensEstimate: 0,
         attempt: 0,
