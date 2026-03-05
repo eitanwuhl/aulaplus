@@ -74,14 +74,24 @@ export function PlanningAIDesignReport({
   sessionTitle
 }: PlanningAIDesignReportProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // report_technical is for debug/admin only; never shown to teachers unless explicitly enabled
+  const SHOW_RAW_TECHNICAL = typeof window !== 'undefined' && (window as any).__PLAN_REPORT_DEBUG__ === true;
   
   if (!reportData) return null;
+
+  const stripHtmlToText = (input: string): string =>
+    input
+      .replace(/<\/p>\s*<p>/gi, '\n\n')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   
   const narrativeText = useMemo(() => {
     const directNarrative = typeof reportData.report_narrative === 'string'
       ? reportData.report_narrative.trim()
       : (typeof reportData.narrative === 'string' ? reportData.narrative.trim() : '');
-    if (directNarrative.length > 0) return directNarrative;
+    if (directNarrative.length > 0) return stripHtmlToText(directNarrative);
 
     // Fallback amigable para docentes cuando falta narrative
     const competencias = sessionCompetencies.filter(Boolean);
@@ -111,7 +121,28 @@ export function PlanningAIDesignReport({
     ].join('\n\n');
   }, [reportData, sessionCompetencies, sessionTitle]);
 
-  // Check for narrative - it should always be visible if present
+  const teacherNarrativeText = useMemo(() => {
+    const sections: string[] = [narrativeText];
+    const coverage = reportData.contentCoverage?.[0];
+    const competency = reportData.competencyDevelopment?.[0];
+    const adaptation = reportData.teacherRequirementsApplied?.[0];
+    const sourceNote = reportData.inputsUsed?.materials
+      ? 'Se utilizaron materiales aportados por el docente como base de trabajo.'
+      : (reportData.inputsUsed?.anepContent ? 'Se priorizó alineación con contenidos ANEP de la sesión.' : '');
+
+    if (coverage?.coveredPart) sections.push(`**Propósito y foco**\n${coverage.coveredPart}`);
+    if (coverage?.whyThisPartInThisClass) sections.push(`**Secuencia didáctica**\n${coverage.whyThisPartInThisClass}`);
+    if (competency?.howDevelopedInThisClass) sections.push(`**Competencias**\n${competency.howDevelopedInThisClass}`);
+    if (coverage?.assessmentOrEvidence || coverage?.evidenceOrCheck) {
+      sections.push(`**Evidencia esperada**\n${coverage.assessmentOrEvidence || coverage.evidenceOrCheck}`);
+    }
+    if (adaptation?.howItWasSatisfied) sections.push(`**Adaptaciones**\n${adaptation.howItWasSatisfied}`);
+    if (sourceNote) sections.push(`**Materiales y fuentes**\n${sourceNote}`);
+
+    return sections.filter((s) => s && s.trim().length > 0).join('\n\n');
+  }, [narrativeText, reportData]);
+
+  // Narrative remains available, but is shown only inside pedagogical details (not as top block).
   const hasNarrative = narrativeText.length > 0;
   
   // Check if there are structured details to show
@@ -146,42 +177,38 @@ export function PlanningAIDesignReport({
                 {detailsOpen ? (
                 <>
                   <ChevronUp className="h-4 w-4 mr-1" />
-                  Ocultar detalle técnico
+                  Ocultar detalles pedagógicos
                 </>
               ) : (
                 <>
                   <ChevronDown className="h-4 w-4 mr-1" />
-                  Ver detalle técnico
+                  Ver detalles pedagógicos
                 </>
               )}
             </Button>
           )}
         </div>
         <p className="text-sm text-muted-foreground mt-1">
-          {hasNarrative 
-            ? 'Explicación narrativa del diseño del plan de clase'
-            : 'Explicación del diseño del plan de clase'}
+          Detalles pedagógicos del diseño del plan de clase
         </p>
       </CardHeader>
       
       <CardContent className="space-y-6">
-        {/* PART B: Narrative report - ALWAYS VISIBLE if present (primary content) */}
-        {hasNarrative && (
-          <div className="space-y-2">
-            <div className="prose prose-sm max-w-none">
-              <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
-                {narrativeText}
-              </p>
-            </div>
-          </div>
-        )}
-        
         {/* PART B: Details accordion - structured legacy sections + new arrays */}
         {hasStructuredDetails && (
           <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
             <CollapsibleContent>
               <div className="space-y-6 border-t pt-4">
-                {reportData.report_technical && (
+                {hasNarrative && (
+                  <div className="space-y-2">
+                    <h4 className="font-semibold text-sm">Narrativa pedagógica</h4>
+                    <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                      {teacherNarrativeText}
+                    </p>
+                  </div>
+                )}
+
+                {SHOW_RAW_TECHNICAL && reportData.report_technical && (
                   <div className="space-y-2">
                     <h4 className="font-semibold text-sm">Detalle técnico (raw)</h4>
                     <pre className="text-xs rounded bg-muted p-3 overflow-auto whitespace-pre-wrap">
@@ -332,11 +359,13 @@ export function PlanningAIDesignReport({
                   </div>
                 )}
                 
-                {reportData.assumptions && reportData.assumptions.length > 0 && (
+                {reportData.assumptions && reportData.assumptions.some((assumption) => !/conocimientos previos/i.test(assumption)) && (
                   <div className="space-y-2 border-t pt-4">
                     <h4 className="font-semibold text-sm">Supuestos</h4>
                     <ul className="list-disc pl-5 text-sm text-gray-700 dark:text-gray-300">
-                      {reportData.assumptions.map((assumption, idx) => (
+                      {reportData.assumptions
+                        .filter((assumption) => !/conocimientos previos/i.test(assumption))
+                        .map((assumption, idx) => (
                         <li key={idx}>{assumption}</li>
                       ))}
                     </ul>
@@ -345,12 +374,6 @@ export function PlanningAIDesignReport({
               </div>
             </CollapsibleContent>
           </Collapsible>
-        )}
-        
-        {!hasNarrative && (
-          <div className="text-sm text-muted-foreground italic p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
-            No hay narrativa disponible para esta sesión.
-          </div>
         )}
       </CardContent>
     </Card>
