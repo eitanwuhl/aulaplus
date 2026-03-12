@@ -595,6 +595,8 @@ const generarPlanesAutomaticamente = async (
             instruccionesDocente: planificacion.requerimientos_docente || undefined, // PHASE 2: Incluir requerimientos del docente
             // PHASE 2: Incluir unitContext para generación progresiva
             unitContext: unitContext,
+            // Multi-session: total slots so backend coverage plan matches all sessions (fixes session 3+ generic content)
+            totalSlots: sesiones.length,
             // PHASE 3: Include sessionBrief if provided (non-empty, trimmed)
             ...(sessionBrief?.trim() && { sessionBrief: sessionBrief.trim() }),
             // PHASE 3 (Profile Usage): Include group profile and student adjustments if available

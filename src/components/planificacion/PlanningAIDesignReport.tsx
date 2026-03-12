@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ChevronDown, ChevronUp, Lightbulb } from 'lucide-react';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
+import { stripForbiddenNarrativeSections } from '@/services/planning/teacherSafeAiReport';
 
 export interface PlanningAIDesignReportData {
   narrative?: string;  // Teacher-friendly narrative report (new)
@@ -103,7 +104,9 @@ export function PlanningAIDesignReport({
     const directNarrative = typeof safeReport.report_narrative === 'string'
       ? safeReport.report_narrative.trim()
       : (typeof safeReport.narrative === 'string' ? safeReport.narrative.trim() : '');
-    if (directNarrative.length > 0) return stripHtmlToText(directNarrative);
+    if (directNarrative.length > 0) {
+      return stripForbiddenNarrativeSections(stripHtmlToText(directNarrative));
+    }
 
     // Fallback amigable para docentes cuando falta narrative
     const competencias = sessionCompetencies.filter(Boolean);
@@ -133,26 +136,10 @@ export function PlanningAIDesignReport({
     ].join('\n\n');
   }, [safeReport, sessionCompetencies, sessionTitle]);
 
-  const teacherNarrativeText = useMemo(() => {
-    const sections: string[] = [narrativeText];
-    const coverage = safeReport.contentCoverage?.[0];
-    const competency = safeReport.competencyDevelopment?.[0];
-    const adaptation = safeReport.teacherRequirementsApplied?.[0];
-    const sourceNote = safeReport.inputsUsed?.materials
-      ? 'Se utilizaron materiales aportados por el docente como base de trabajo.'
-      : (safeReport.inputsUsed?.anepContent ? 'Se priorizó alineación con contenidos ANEP de la sesión.' : '');
-
-    if (coverage?.coveredPart) sections.push(`**Propósito y foco**\n${coverage.coveredPart}`);
-    if (coverage?.whyThisPartInThisClass) sections.push(`**Secuencia didáctica**\n${coverage.whyThisPartInThisClass}`);
-    if (competency?.howDevelopedInThisClass) sections.push(`**Competencias**\n${competency.howDevelopedInThisClass}`);
-    if (coverage?.assessmentOrEvidence || coverage?.evidenceOrCheck) {
-      sections.push(`**Evidencia esperada**\n${coverage.assessmentOrEvidence || coverage.evidenceOrCheck}`);
-    }
-    if (adaptation?.howItWasSatisfied) sections.push(`**Adaptaciones**\n${adaptation.howItWasSatisfied}`);
-    if (sourceNote) sections.push(`**Materiales y fuentes**\n${sourceNote}`);
-
-    return sections.filter((s) => s && s.trim().length > 0).join('\n\n');
-  }, [narrativeText, safeReport]);
+  // Teacher-facing narrative: ONLY the clean narrative. Do NOT append "Propósito y foco",
+  // "Secuencia didáctica", "Competencias", "Evidencia esperada", "Materiales y fuentes"
+  // (previously added here caused regression; those sections stay in structured details only).
+  const teacherNarrativeText = narrativeText;
 
   // Narrative remains available, but is shown only inside pedagogical details (not as top block).
   const hasNarrative = narrativeText.length > 0;

@@ -399,6 +399,7 @@ export default function PlanificacionWorkspace() {
         criterios: sesion.criterios_logro_anep || [],
         instruccionesDocente: planificacion.requerimientos_docente || undefined,
         unitContext,
+        totalSlots: sesiones.length,
         ...(sessionBrief && { sessionBrief }),
         ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
         ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes }),

@@ -199,10 +199,32 @@ function stripDebugFromPlanHtml(html: string): string {
   return out.trim() || html;
 }
 
+/** Section headings that must NOT appear in teacher-facing narrative. */
+const FORBIDDEN_NARRATIVE_HEADINGS = [
+  'Propósito y foco',
+  'Secuencia didáctica',
+  'Competencias',
+  'Evidencia esperada',
+  'Materiales y fuentes',
+];
+
+/** Strip forbidden section headings and their content, then HTML/whitespace. */
+function stripForbiddenNarrativeSectionsBackend(text: string): string {
+  if (!text || typeof text !== 'string') return '';
+  let out = text;
+  for (const heading of FORBIDDEN_NARRATIVE_HEADINGS) {
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?:\\*\\*${escaped}\\*\\*|${escaped})\\s*[\\n\\r]+[^\\n\\r]*(?=[\\n\\r]|$)`, 'gi');
+    out = out.replace(re, '\n\n');
+  }
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /** Strip HTML and prompt-instruction leakage from narrative for teacher-facing output. */
 function sanitizeReportNarrative(text: string): string {
   if (!text || typeof text !== 'string') return '';
-  return text
+  const noSections = stripForbiddenNarrativeSectionsBackend(text);
+  return noSections
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
@@ -662,6 +684,8 @@ serve(async (req) => {
       planActual,
       // PHASE 2: unitContext para generación progresiva (opcional para backward compatibility)
       unitContext,
+      // Multi-session: total slots in plan (so coverage plan and session index match all sessions)
+      totalSlots,
       // PHASE 3: Optional per-session focus override
       sessionBrief,
       // FIX: Materials context (includes extracted_text for materials-only generation)
@@ -878,14 +902,24 @@ No inventes una secuencia distinta si el docente ya la definió.
     const materialsCharsSent = passageFilterResult.materialsCharsSent;
 
     // TASK C: Build coverage plan BEFORE constructing prompt (for multi-session coherence); use filtered material
-    const totalSessions = unitContext?.totalClasesUnidad || 1;
+    // Use totalSlots (plan session count) when provided so session 3+ gets correct coverage; fallback to unit class count
+    const totalSessions = (typeof totalSlots === 'number' && totalSlots > 0)
+      ? totalSlots
+      : (unitContext?.totalClasesUnidad || 1);
     const coveragePlan = buildCoveragePlan(
       totalSessions,
       materialsContextForPrompt,
       contenidos,
       unitContext
     );
-    const coverageSessionIndexUsed = Number(unitContext?.claseEnUnidad) || Number(orden) || 1;
+    // CONTRACT: Frontend sends orden 1-based (Wizard/Workspace/Editors all use sesion.orden from DB = 1,2,3...).
+    // Use orden as 1-based session index when in [1, totalSessions]; else treat as 0-based for backward compatibility.
+    const ordenNum = Number(orden);
+    const coverageSessionIndexUsed = (typeof totalSlots === 'number' && totalSlots > 0)
+      ? (ordenNum >= 1 && ordenNum <= totalSessions
+          ? ordenNum
+          : Math.min(Math.max(ordenNum + 1, 1), totalSessions))
+      : (Number(unitContext?.claseEnUnidad) || (ordenNum >= 1 ? ordenNum : Math.max(ordenNum + 1, 1)) || 1);
     const sessionCoverage = coveragePlan.find(c => c.sessionNumber === coverageSessionIndexUsed) || coveragePlan[0];
     const materialSummary = extractMaterialSummary(materialsContextForPrompt);
     console.log('[GEN_PLAN] material_summary', {
@@ -1104,6 +1138,7 @@ El campo "ai_design_report.narrative" DEBE ser un texto narrativo continuo (no l
 REGLAS DEL REPORTE NARRATIVO:
 - Enfoca el narrativo en: (1) qué contenido se enseña a partir de los pasajes seleccionados, (2) cómo se operacionalizan las competencias en las actividades, (3) cómo el plan atiende contemplaciones/adaptaciones del grupo (no solo una lista genérica de "diferenciación"), (4) qué evidencia de aprendizaje se espera.
 - Escribe en tono amigable y pedagógico, como explicando a un colega docente.
+- NO incluyas en el narrativo secciones con estos títulos: "Propósito y foco", "Secuencia didáctica", "Competencias", "Evidencia esperada", "Materiales y fuentes". Escribe un texto continuo en párrafos, sin subencabezados con esos nombres.
 - NO incluyas volcados largos de material crudo ni JSON técnico. Salida en texto limpio o markdown; NO dejes etiquetas HTML visibles (<p>, <br>, etc.).
 - NO uses lenguaje técnico innecesario, ni diagnósticos médicos ni etiquetas de estudiantes, ni nombres de estudiantes.
 - Usa párrafos continuos (2-4 párrafos largos), 400-600 palabras.
@@ -1536,6 +1571,16 @@ Responde ÚNICAMENTE con el texto narrativo, sin formato JSON, sin code fences, 
     if (extractedTitle && !parsed.titulo) {
       parsed.titulo = extractedTitle;
       console.log('[generate-plan-completo] Extracted title:', extractedTitle);
+    }
+
+    // Guard: avoid generic placeholder titles when richer context is available
+    const title = (parsed.titulo || extractedTitle || '').trim();
+    const isGenericTitle = /^S\d+$/i.test(title) || /^Sesión\s*\d+$/i.test(title) || (title.length <= 4 && /^\d+$/.test(title));
+    const richerContext = sessionCoverage?.contentFocus || unitContext?.contenido;
+    if (isGenericTitle && richerContext && typeof richerContext === 'string' && richerContext.trim().length > 5) {
+      const fallback = richerContext.trim().length > 80 ? richerContext.trim().slice(0, 77) + '...' : richerContext.trim();
+      parsed.titulo = fallback;
+      console.log('[GEN_PLAN] Replaced generic title with context-based title');
     }
 
     // PHASE 3.2.1: Verify sessionBrief is reflected in generated content

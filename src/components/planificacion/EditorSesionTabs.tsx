@@ -413,6 +413,7 @@ REQUISITOS OBLIGATORIOS:
         criterios: sesion.criterios_logro_anep || [],
         instruccionesDocente: instruccionesModificacion || planificacionContext?.requerimientos_docente || undefined,
         unitContext,
+        totalSlots: planificacionContext?.cantidad_sesiones ?? 1,
         ...(sessionBrief && { sessionBrief }),
         ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
         ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes }),
@@ -529,6 +530,7 @@ REQUISITOS OBLIGATORIOS:
         criterios: sesion.criterios_logro_anep || [],
         instruccionesDocente: instruccionesIA || planificacionContext?.requerimientos_docente || undefined,
         unitContext,
+        totalSlots: planificacionContext?.cantidad_sesiones ?? 1,
         ...(sessionBrief && { sessionBrief }),
         ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
         ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes })

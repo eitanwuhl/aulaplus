@@ -402,6 +402,7 @@ export function EditorSesionNuevo({
         criterios: sesion.criterios_logro_anep || [],
         instruccionesDocente: instruccionesModificacion || planificacionContext?.requerimientos_docente || undefined,
         unitContext,
+        totalSlots: planificacionContext?.cantidad_sesiones ?? 1,
         ...(sessionBrief && { sessionBrief }),
         ...(groupContext.perfilGrupo && { perfilGrupo: groupContext.perfilGrupo }),
         ...(groupContext.estudiantes && { estudiantes: groupContext.estudiantes }),
@@ -540,6 +541,7 @@ export function EditorSesionNuevo({
         criterios: sesion.criterios_logro_anep || [],
         instruccionesDocente: planificacionContext?.requerimientos_docente || undefined,
         unitContext,
+        totalSlots: planificacionContext?.cantidad_sesiones ?? 1,
         ...(sessionBrief && { sessionBrief }),
         // Include group profile and student adjustments from unified provider
         ...(groupContext.groupProfile && { 
