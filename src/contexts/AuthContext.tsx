@@ -1,8 +1,13 @@
 import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { User as SupabaseUser, Session } from '@supabase/supabase-js';
+import type { Session } from '@supabase/supabase-js';
+import { resolveTeacherAuthEmail, verifyStudentLoginRemote, formatRpcError } from '@/services/auth/remoteLogin';
 
 type UserRole = 'teacher' | 'student';
+
+export type LoginResult =
+  | { ok: true }
+  | { ok: false; message: string };
 
 interface User {
   id: string;
@@ -13,7 +18,7 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  login: (role: UserRole, credentials: { username: string; password: string }) => Promise<boolean>;
+  login: (role: UserRole, credentials: { username: string; password: string }) => Promise<LoginResult>;
   logout: () => Promise<void>;
   isAuthenticated: boolean;
   session: Session | null;
@@ -33,158 +38,141 @@ interface AuthProviderProps {
   children: ReactNode;
 }
 
-// Demo credentials - real emails for Supabase Auth
-const DEMO_TEACHER_EMAIL = 'demo.teacher@example.com';
-const DEMO_TEACHER_PASSWORD = 'DemoPassword2024!';
-
-// Mock teacher names for random rotation
-const teacherNames = ['Ana García', 'Carlos Rodríguez', 'María López', 'Juan Martínez', 'Laura Fernández', 'Miguel Torres'];
+/** Creates auth user + profile in Supabase if missing (no client sign-in). Requires Edge Function + verify_jwt=false for anon. */
+async function seedDemoAuthUsers(): Promise<{ errorMessage?: string }> {
+  try {
+    const { data, error } = await supabase.functions.invoke('ensure-demo-users');
+    if (error) {
+      const msg = error.message || formatRpcError(error);
+      return {
+        errorMessage: `ensure-demo-users falló (${msg}). ¿Función desplegada en este proyecto? En la nube el runtime inyecta SUPABASE_SERVICE_ROLE_KEY; si agregaste un secreto manual, puede llamarse SERVICE_ROLE_KEY. En local: otra terminal con npm run functions:local (con supabase start).`,
+      };
+    }
+    if (data && typeof data === 'object' && 'error' in data && (data as { error?: unknown }).error) {
+      const err = (data as { error: unknown }).error;
+      const detail = typeof err === 'string' ? err : JSON.stringify(err);
+      return { errorMessage: `ensure-demo-users respondió error: ${detail}` };
+    }
+  } catch (e) {
+    return { errorMessage: `ensure-demo-users: ${formatRpcError(e)}` };
+  }
+  return {};
+}
 
 export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const profileUpsertInProgress = useRef<Set<string>>(new Set());
-  const signOutRecoveryInProgress = useRef(false);
-
-  // Function to ensure demo user exists and login silently in background
-  const ensureSupabaseAuth = async () => {
-    try {
-      // First, ensure demo users exist via edge function
-      const { error: ensureError } = await supabase.functions.invoke('ensure-demo-users');
-      
-      if (ensureError) {
-        console.error('Error ensuring demo users:', ensureError);
-      }
-
-      // Then sign in with demo user
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: DEMO_TEACHER_EMAIL,
-        password: DEMO_TEACHER_PASSWORD
-      });
-
-      if (signInError) {
-        console.error('Background auth error:', signInError);
-      } else {
-        console.log('Demo user authenticated successfully');
-      }
-    } catch (error) {
-      console.error('Demo user setup error:', error);
-    }
-  };
 
   useEffect(() => {
-    // Set up auth state listener
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        setSession(session);
+    void seedDemoAuthUsers();
 
-        // When session is lost (e.g. invalid refresh token cleared by edgeFunctionAuth),
-        // re-establish demo session so next Edge Function call has a valid JWT.
-        if (event === 'SIGNED_OUT' && !signOutRecoveryInProgress.current) {
-          signOutRecoveryInProgress.current = true;
-          ensureSupabaseAuth().finally(() => {
-            signOutRecoveryInProgress.current = false;
-          });
-        }
-        
-        // Create or update profile silently in background when authenticated
-        // Use idempotent upsert with conflict handling to avoid 409 spam
-        if (session?.user) {
-          const userId = session.user.id;
-          
-          // Prevent multiple concurrent upserts for the same user
-          if (profileUpsertInProgress.current.has(userId)) {
-            if (import.meta.env.DEV) {
-              console.log(`[AuthContext] Profile upsert already in progress for user ${userId}, skipping`);
-            }
-            return;
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+      setSession(nextSession);
+
+      if (nextSession?.user) {
+        const userId = nextSession.user.id;
+
+        if (profileUpsertInProgress.current.has(userId)) {
+          if (import.meta.env.DEV) {
+            console.log(`[AuthContext] Profile upsert already in progress for user ${userId}, skipping`);
           }
-          
+        } else {
           profileUpsertInProgress.current.add(userId);
-          
-          // Use upsert with onConflict to handle existing profiles gracefully
-          supabase.from('profiles').upsert({
-            user_id: userId,
-            display_name: 'Profesor Demo',
-            role: 'teacher'
-          }, {
-            onConflict: 'user_id'
-          }).then(({ error }) => {
-            if (error) {
-              // Treat 409 (Conflict) as success - profile already exists
-              if (error.code === '23505' || error.code === 'PGRST116' || error.message?.includes('duplicate') || error.message?.includes('unique')) {
-                if (import.meta.env.DEV) {
-                  console.log(`[AuthContext] Profile already exists for user ${userId} (this is OK)`);
-                }
-              } else {
-                // Only log non-409 errors
-                console.error(`[AuthContext] Error upserting profile for user ${userId}:`, error);
-              }
-            } else {
-              if (import.meta.env.DEV) {
-                console.log(`[AuthContext] Profile upserted successfully for user ${userId}`);
-              }
-            }
-          }).catch((error) => {
-            // Handle unexpected errors
-            if (error.code === '23505' || error.code === 'PGRST116' || error.message?.includes('duplicate') || error.message?.includes('unique')) {
-              // 409-like error - treat as success
-              if (import.meta.env.DEV) {
-                console.log(`[AuthContext] Profile conflict (already exists) for user ${userId} (this is OK)`);
-              }
-            } else {
-              console.error(`[AuthContext] Unexpected error upserting profile for user ${userId}:`, error);
-            }
-          }).finally(() => {
-            // Remove from in-progress set after a short delay to prevent rapid re-execution
-            setTimeout(() => {
-              profileUpsertInProgress.current.delete(userId);
-            }, 1000);
-          });
-        }
 
-        if (!isInitialized) {
-          setIsInitialized(true);
+          void (async () => {
+            try {
+              const { error } = await supabase.from('profiles').upsert(
+                {
+                  user_id: userId,
+                  display_name: nextSession.user.user_metadata?.display_name ?? 'Docente',
+                  role: 'teacher',
+                },
+                { onConflict: 'user_id' }
+              );
+              if (error) {
+                if (
+                  error.code === '23505' ||
+                  error.code === 'PGRST116' ||
+                  error.message?.includes('duplicate') ||
+                  error.message?.includes('unique')
+                ) {
+                  if (import.meta.env.DEV) {
+                    console.log(`[AuthContext] Profile already exists for user ${userId} (OK)`);
+                  }
+                } else {
+                  console.error(`[AuthContext] Error upserting profile for user ${userId}:`, error);
+                }
+              } else if (import.meta.env.DEV) {
+                console.log(`[AuthContext] Profile upserted for user ${userId}`);
+              }
+            } catch (error) {
+              console.error(`[AuthContext] Unexpected error upserting profile for user ${userId}:`, error);
+            } finally {
+              setTimeout(() => profileUpsertInProgress.current.delete(userId), 1000);
+            }
+          })();
         }
       }
-    );
 
-    // Auto setup Supabase auth in background
-    ensureSupabaseAuth();
+      if (!isInitialized) {
+        setIsInitialized(true);
+      }
+    });
 
     return () => subscription.unsubscribe();
   }, [isInitialized]);
 
-
-  // Load user from localStorage on mount and sync with Supabase session
   useEffect(() => {
     const initializeUser = async () => {
-      // First, check if there's a Supabase session
-      const { data: { session: currentSession } } = await supabase.auth.getSession();
-      
+      const {
+        data: { session: currentSession },
+      } = await supabase.auth.getSession();
+
       if (currentSession?.user) {
         setSession(currentSession);
-        // If we have a session but no user in state, restore from localStorage or create
         const savedUser = localStorage.getItem('auth_user');
+        let restored = false;
         if (savedUser) {
           try {
-            const parsedUser = JSON.parse(savedUser);
-            // Only restore if it's a teacher (students don't use Supabase auth)
+            const parsedUser = JSON.parse(savedUser) as User;
             if (parsedUser.role === 'teacher' && parsedUser.id === currentSession.user.id) {
               setUser(parsedUser);
+              restored = true;
             }
           } catch (e) {
             console.error('Error parsing saved user:', e);
           }
         }
+        if (!restored) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('display_name')
+            .eq('user_id', currentSession.user.id)
+            .maybeSingle();
+          const name =
+            profile?.display_name ??
+            (typeof currentSession.user.user_metadata?.display_name === 'string'
+              ? currentSession.user.user_metadata.display_name
+              : null) ??
+            currentSession.user.email?.split('@')[0] ??
+            'Docente';
+          const teacherUser: User = {
+            id: currentSession.user.id,
+            role: 'teacher',
+            name,
+          };
+          setUser(teacherUser);
+          localStorage.setItem('auth_user', JSON.stringify(teacherUser));
+        }
       } else {
-        // No Supabase session, check localStorage for student users
         const savedUser = localStorage.getItem('auth_user');
         if (savedUser) {
           try {
-            const parsedUser = JSON.parse(savedUser);
-            // Only restore student users (teachers need Supabase session)
+            const parsedUser = JSON.parse(savedUser) as User;
             if (parsedUser.role === 'student') {
               setUser(parsedUser);
             }
@@ -195,107 +183,148 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       }
     };
 
-    initializeUser();
+    void initializeUser();
   }, []);
 
-  // Login function - accepts ANY credentials (no validation)
-  const login = async (role: UserRole, credentials: { username: string; password: string }): Promise<boolean> => {
-    // NO VALIDATION - any credentials are accepted, even empty ones
+  const login = async (role: UserRole, credentials: { username: string; password: string }): Promise<LoginResult> => {
+    const username = credentials.username.trim();
+    const password = credentials.password;
+
+    if (role === 'teacher') {
+      if (!username || !password) {
+        return { ok: false, message: 'Ingresá usuario o correo y contraseña.' };
+      }
+
+      const ensure = await seedDemoAuthUsers();
+      if (ensure.errorMessage) {
+        console.warn('[Auth]', ensure.errorMessage);
+      }
+
+      let authEmail: string | null;
+      try {
+        authEmail = await resolveTeacherAuthEmail(supabase, username);
+      } catch (e) {
+        const detail = formatRpcError(e);
+        console.error('[Auth] resolve teacher email:', e);
+        let msg = `No se pudo validar el usuario: ${detail}. Si administrás el entorno, comprobá la migración de login, el seed y que la app apunte al proyecto Supabase correcto.`;
+        if (detail.toLowerCase().includes('invalid api key')) {
+          const url = import.meta.env.VITE_SUPABASE_URL || '';
+          if (url.includes('127.0.0.1') || url.includes('localhost')) {
+            msg +=
+              ' Con URL local, VITE_SUPABASE_ANON_KEY debe ser la anon key de `npx supabase status` (no la del proyecto en la nube). Reiniciá `npm run dev` tras editar `.env.local`.';
+          } else {
+            msg +=
+              ' Revisá VITE_SUPABASE_ANON_KEY en `.env` / `.env.local` (Supabase Dashboard → Settings → API → anon public).';
+          }
+        }
+        return { ok: false, message: msg };
+      }
+
+      if (!authEmail) {
+        return {
+          ok: false,
+          message: 'Usuario o código no reconocido. Verificá los datos o pedí acceso a tu institución.',
+        };
+      }
+
+      const { data: signData, error: signError } = await supabase.auth.signInWithPassword({
+        email: authEmail,
+        password,
+      });
+
+      if (signError || !signData.session?.user) {
+        if (import.meta.env.DEV) {
+          console.warn('[Auth] teacher signIn failed:', signError?.message);
+        }
+        let message = 'Correo o contraseña incorrectos.';
+        if (authEmail.toLowerCase() === 'demo.teacher@example.com') {
+          const hint: string[] = [];
+          if (ensure.errorMessage) hint.push(ensure.errorMessage);
+          hint.push(
+            'El usuario demo tiene que existir en Supabase → Authentication → Users. Opción rápida: Add user → email demo.teacher@example.com → contraseña DemoPassword2024! → marcar email como confirmado.',
+          );
+          hint.push(
+            'Opción automática: `npx supabase functions deploy ensure-demo-users` en el mismo proyecto que usa el front, recargá la página e intentá de nuevo.',
+          );
+          message += ' ' + hint.join(' ');
+        }
+        return { ok: false, message };
+      }
+
+      const uid = signData.session.user.id;
+      const { data: profile } = await supabase.from('profiles').select('display_name').eq('user_id', uid).maybeSingle();
+
+      const name =
+        profile?.display_name ??
+        (typeof signData.session.user.user_metadata?.display_name === 'string'
+          ? signData.session.user.user_metadata.display_name
+          : null) ??
+        signData.session.user.email?.split('@')[0] ??
+        'Docente';
+
+      const newUser: User = { id: uid, role: 'teacher', name };
+      setSession(signData.session);
+      setUser(newUser);
+      localStorage.setItem('auth_user', JSON.stringify(newUser));
+      return { ok: true };
+    }
+
+    if (!username || !password) {
+      return { ok: false, message: 'Ingresá código y contraseña.' };
+    }
+
     try {
-      if (role === 'teacher') {
-        // Ensure Supabase is authenticated with demo teacher account
-        if (!session) {
-          await ensureSupabaseAuth();
-        }
-        
-        // Wait a bit for session to be set
-        await new Promise(resolve => setTimeout(resolve, 100));
-        
-        // Get current session after auth
-        const { data: { session: currentSession } } = await supabase.auth.getSession();
-        
-        if (currentSession?.user) {
-          // Random teacher name for demo
-          const randomName = teacherNames[Math.floor(Math.random() * teacherNames.length)];
-          const newUser: User = {
-            id: currentSession.user.id,
-            role: 'teacher',
-            name: randomName
-          };
-          setUser(newUser);
-          localStorage.setItem('auth_user', JSON.stringify(newUser));
-          return true;
-        } else {
-          // Even if Supabase auth fails, create a mock teacher user
-          const randomName = teacherNames[Math.floor(Math.random() * teacherNames.length)];
-          const newUser: User = {
-            id: `teacher_${Date.now()}`,
-            role: 'teacher',
-            name: randomName
-          };
-          setUser(newUser);
-          localStorage.setItem('auth_user', JSON.stringify(newUser));
-          return true;
-        }
-      } else {
-        // For students, create a mock user (any credentials accepted)
-        const username = credentials.username || `student_${Date.now()}`;
-        const newUser: User = {
-          id: `student_${username}`,
-          role: 'student', 
-          name: `Estudiante ${username}`,
-          username: username
+      await supabase.auth.signOut();
+    } catch {
+      // No bloquear login de estudiante si signOut falla (red / sesión ya vacía).
+    }
+    setSession(null);
+
+    try {
+      const result = await verifyStudentLoginRemote(supabase, username, password);
+      if (!result.ok) {
+        return {
+          ok: false,
+          message:
+            'Código o contraseña incorrectos. Ejemplo seed: código EST2024001 y contraseña EstudianteDemo2024! (incluye el signo al final). Si administrás el entorno: `npm run seed:login` contra la misma base que usa el front.',
         };
-        setUser(newUser);
-        localStorage.setItem('auth_user', JSON.stringify(newUser));
-        return true;
       }
-    } catch (error) {
-      console.error('Login error:', error);
-      // Even on error, create a user to ensure login always succeeds
-      if (role === 'teacher') {
-        const randomName = teacherNames[Math.floor(Math.random() * teacherNames.length)];
-        const newUser: User = {
-          id: `teacher_${Date.now()}`,
-          role: 'teacher',
-          name: randomName
-        };
-        setUser(newUser);
-        localStorage.setItem('auth_user', JSON.stringify(newUser));
-      } else {
-        const username = credentials.username || `student_${Date.now()}`;
-        const newUser: User = {
-          id: `student_${username}`,
-          role: 'student', 
-          name: `Estudiante ${username}`,
-          username: username
-        };
-        setUser(newUser);
-        localStorage.setItem('auth_user', JSON.stringify(newUser));
-      }
-      return true;
+      const newUser: User = {
+        id: result.studentId,
+        role: 'student',
+        name: result.displayName,
+        username,
+      };
+      setUser(newUser);
+      localStorage.setItem('auth_user', JSON.stringify(newUser));
+      return { ok: true };
+    } catch (e) {
+      const detail = formatRpcError(e);
+      console.error('[Auth] student login:', e);
+      return {
+        ok: false,
+        message: `No se pudo validar el acceso: ${detail}. Si administrás el entorno, comprobá migración y seed de estudiantes.`,
+      };
     }
   };
 
-  // Logout function
   const logout = async (): Promise<void> => {
+    const wasTeacher = user?.role === 'teacher';
     setUser(null);
     localStorage.removeItem('auth_user');
-    // Keep Supabase session active for seamless demo experience
+    if (wasTeacher) {
+      await supabase.auth.signOut();
+      setSession(null);
+    }
   };
 
-  // Context value - updates when state changes
   const contextValue: AuthContextType = {
     user,
     login,
     logout,
     isAuthenticated: !!user,
-    session
+    session,
   };
 
-  return (
-    <AuthContext.Provider value={contextValue}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>;
 };

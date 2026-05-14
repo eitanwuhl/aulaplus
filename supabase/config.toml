@@ -1,4 +1,12 @@
-project_id = "srlrbuphsogwgymqywhe"
+project_id = "bbzikjvrehfooaumkmui"
+
+[db.seed]
+enabled = true
+sql_paths = ["./seeds/login_demo.sql"]
+
+# Invoked from the app before login (anon) to create the demo Auth user + profile.
+[functions.ensure-demo-users]
+verify_jwt = false
 
 [functions.generate-bulletin-text]
 verify_jwt = false

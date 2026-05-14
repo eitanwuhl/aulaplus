@@ -14,10 +14,21 @@ serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    // Note: Using SERVICE_ROLE_KEY instead of SUPABASE_SERVICE_ROLE_KEY
-    // because Supabase reserves the SUPABASE_* prefix for system secrets
-    const supabaseServiceKey = Deno.env.get('SERVICE_ROLE_KEY')!;
-    
+    // Local CLI injects SUPABASE_SERVICE_ROLE_KEY. For hosted deploys you can set SERVICE_ROLE_KEY
+    // as a custom secret (dashboard) if you avoid the reserved SUPABASE_* name in manual secrets.
+    const supabaseServiceKey =
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY');
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return new Response(
+        JSON.stringify({
+          error: 'Missing Supabase configuration',
+          details:
+            'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (local) or SERVICE_ROLE_KEY (custom secret) are required.',
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
     // Create admin client
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
       auth: {
@@ -83,43 +94,58 @@ serve(async (req) => {
       });
       if (updateError) {
         console.error('Error updating demo user:', updateError);
+        return new Response(
+          JSON.stringify({
+            error: 'Failed to update demo user',
+            details: updateError.message,
+          }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
       }
     }
 
-    if (userId) {
-      // Ensure profile exists/updated
-      const { data: profileData, error: profileCheckError } = await supabaseAdmin
-        .from('profiles')
-        .select('user_id')
-        .eq('user_id', userId)
-        .maybeSingle();
+    if (!userId) {
+      return new Response(
+        JSON.stringify({
+          error: 'Demo teacher user missing',
+          details: 'No user id after create or lookup; check Auth logs.',
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
 
-      if (profileCheckError) {
-        console.error('Error checking profile:', profileCheckError);
-      } else if (!profileData) {
-        const { error: profileInsertError } = await supabaseAdmin
-          .from('profiles')
-          .insert({
-            user_id: userId,
-            display_name: 'Profesor Demo',
-            role: 'teacher'
-          });
-        if (profileInsertError) {
-          console.error('Error creating profile:', profileInsertError);
-        } else {
-          console.log('Profile created successfully');
-        }
+    // Ensure profile exists/updated
+    const { data: profileData, error: profileCheckError } = await supabaseAdmin
+      .from('profiles')
+      .select('user_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (profileCheckError) {
+      console.error('Error checking profile:', profileCheckError);
+    } else if (!profileData) {
+      const { error: profileInsertError } = await supabaseAdmin
+        .from('profiles')
+        .insert({
+          user_id: userId,
+          display_name: 'Profesor Demo',
+          role: 'teacher',
+        });
+      if (profileInsertError) {
+        console.error('Error creating profile:', profileInsertError);
       } else {
-        const { error: profileUpdateError } = await supabaseAdmin
-          .from('profiles')
-          .update({
-            display_name: 'Profesor Demo',
-            role: 'teacher'
-          })
-          .eq('user_id', userId);
-        if (profileUpdateError) {
-          console.error('Error updating profile:', profileUpdateError);
-        }
+        console.log('Profile created successfully');
+      }
+    } else {
+      const { error: profileUpdateError } = await supabaseAdmin
+        .from('profiles')
+        .update({
+          display_name: 'Profesor Demo',
+          role: 'teacher',
+        })
+        .eq('user_id', userId);
+      if (profileUpdateError) {
+        console.error('Error updating profile:', profileUpdateError);
       }
     }
 

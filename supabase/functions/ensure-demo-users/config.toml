@@ -1,6 +1,6 @@
 # Edge Function Configuration for ensure-demo-users
 # This function is a bootstrap/admin helper that runs BEFORE user authentication.
-# It uses the SERVICE_ROLE_KEY internally to create/update demo users.
+# It uses SUPABASE_SERVICE_ROLE_KEY (local) or SERVICE_ROLE_KEY (custom hosted secret) for admin Auth/DB.
 # Therefore, it must NOT require a JWT from the caller.
 
 [functions]

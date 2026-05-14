@@ -20,24 +20,28 @@ const TeacherLogin = () => {
     setIsLoading(true);
 
     try {
-      // Always succeeds - no validation
-      const success = await login('teacher', credentials);
-      
-      if (success) {
+      const result = await login('teacher', credentials);
+
+      if (result.ok) {
         toast({
           title: "¡Bienvenido!",
           description: "Has ingresado exitosamente como docente.",
         });
         navigate('/teacher-dashboard');
+      } else {
+        toast({
+          variant: "destructive",
+          title: "No se pudo ingresar",
+          description: result.message,
+        });
       }
     } catch (error) {
-      // Even on error, try to navigate (login always succeeds)
       console.error('Login error:', error);
       toast({
-        title: "¡Bienvenido!",
-        description: "Has ingresado exitosamente como docente.",
+        variant: "destructive",
+        title: "Error de conexión",
+        description: "No pudimos validar tus credenciales. Revisa tu red e intenta de nuevo.",
       });
-      navigate('/teacher-dashboard');
     } finally {
       setIsLoading(false);
     }
@@ -62,11 +66,11 @@ const TeacherLogin = () => {
 
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
-              <Label htmlFor="username">Número de Usuario</Label>
+              <Label htmlFor="username">Código o correo</Label>
               <Input
                 id="username"
                 type="text"
-                placeholder="Ej: DOC001"
+                placeholder="Correo o código de acceso"
                 value={credentials.username}
                 onChange={(e) => setCredentials(prev => ({ ...prev, username: e.target.value }))}
                 className="h-12"
@@ -95,10 +99,13 @@ const TeacherLogin = () => {
           </form>
 
           <div className="mt-6 text-center">
-            <p className="text-sm text-foreground-subtle mb-4">
-              Demo: Cualquier usuario y contraseña son válidos
-            </p>
-            
+            {import.meta.env.DEV && (
+              <p className="text-xs text-muted-foreground mb-4 text-left rounded-md border border-dashed p-3">
+                Modo desarrollo: credenciales de prueba y seed están en la documentación del repo / scripts (no se
+                muestran en pantalla).
+              </p>
+            )}
+
             <Button
               variant="ghost"
               size="sm"

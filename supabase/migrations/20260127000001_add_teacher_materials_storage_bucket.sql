@@ -56,21 +56,8 @@ USING (
   AND auth.uid()::text = (storage.foldername(name))[1]
 );
 
--- ============================================================================
--- COMMENTS (Documentation)
--- ============================================================================
-
-COMMENT ON POLICY "Users can view their own teacher materials files" ON storage.objects IS 
-  'Allows authenticated users to view/list only files stored under their own userId prefix in the teacher-materials bucket.';
-
-COMMENT ON POLICY "Users can upload their own teacher materials files" ON storage.objects IS 
-  'Allows authenticated users to upload files only to paths starting with their userId in the teacher-materials bucket.';
-
-COMMENT ON POLICY "Users can update their own teacher materials files" ON storage.objects IS 
-  'Allows authenticated users to update (replace) only files stored under their own userId prefix in the teacher-materials bucket.';
-
-COMMENT ON POLICY "Users can delete their own teacher materials files" ON storage.objects IS 
-  'Allows authenticated users to delete only files stored under their own userId prefix in the teacher-materials bucket.';
+-- Note: COMMENT ON POLICY for storage.objects is omitted — local Supabase runs migrations
+-- as a role that is not owner of storage.objects (42501). Policy names above are self-explanatory.
 
 COMMIT;
 

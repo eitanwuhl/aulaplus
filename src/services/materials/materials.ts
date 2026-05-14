@@ -7,7 +7,7 @@
  * Soft delete pattern: set deleted_at instead of hard delete.
  */
 
-import { supabase } from '@/integrations/supabase/client';
+import { supabase, resolvedSupabaseAnonKey } from '@/integrations/supabase/client';
 import type { Database } from '@/integrations/supabase/types';
 
 type TeacherMaterial = Database['public']['Tables']['teacher_materials']['Row'];
@@ -336,7 +336,7 @@ export async function extractMaterialText(materialId: string): Promise<{
 
     // Use fetch directly to guarantee a real body is sent
     const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/extract-material-text`;
-    const anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    const anon = resolvedSupabaseAnonKey;
     const bodyJson = JSON.stringify({ materialId });
 
     const res = await fetch(url, {

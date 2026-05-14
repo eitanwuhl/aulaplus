@@ -20,24 +20,28 @@ const StudentLogin = () => {
     setIsLoading(true);
 
     try {
-      // Always succeeds - no validation
-      const success = await login('student', credentials);
-      
-      if (success) {
+      const result = await login('student', credentials);
+
+      if (result.ok) {
         toast({
           title: "¡Bienvenido!",
           description: "Has ingresado exitosamente. Comenzando diagnóstico...",
         });
         navigate('/student-diagnostic');
+      } else {
+        toast({
+          variant: "destructive",
+          title: "No se pudo ingresar",
+          description: result.message,
+        });
       }
     } catch (error) {
-      // Even on error, try to navigate (login always succeeds)
       console.error('Login error:', error);
       toast({
-        title: "¡Bienvenido!",
-        description: "Has ingresado exitosamente. Comenzando diagnóstico...",
+        variant: "destructive",
+        title: "Error de conexión",
+        description: "No pudimos validar tus credenciales. Revisa tu red e intenta de nuevo.",
       });
-      navigate('/student-diagnostic');
     } finally {
       setIsLoading(false);
     }
@@ -66,7 +70,7 @@ const StudentLogin = () => {
               <Input
                 id="studentCode"
                 type="text"
-                placeholder="Ej: EST2024001"
+                placeholder="Código de acceso"
                 value={credentials.username}
                 onChange={(e) => setCredentials(prev => ({ ...prev, username: e.target.value }))}
                 className="h-12"
@@ -96,10 +100,12 @@ const StudentLogin = () => {
           </form>
 
           <div className="mt-6 text-center">
-            <p className="text-sm text-foreground-subtle mb-4">
-              Demo: Cualquier código y contraseña son válidos
-            </p>
-            
+            {import.meta.env.DEV && (
+              <p className="text-xs text-muted-foreground mb-4 text-left rounded-md border border-dashed p-3">
+                Modo desarrollo: datos de prueba vía seed de login (ver repo / scripts).
+              </p>
+            )}
+
             <Button
               variant="ghost"
               size="sm"

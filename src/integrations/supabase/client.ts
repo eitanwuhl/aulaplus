@@ -1,8 +1,19 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
+/** Dashboard "anon" / "Publishable" key; placeholder from .env.example is ignored. */
+const IGNORED_ANON_PLACEHOLDERS = new Set(['', 'your-anon-key-here', 'replace-me']);
+
+function resolveSupabaseAnonKey(): string {
+  const anon = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? '').trim();
+  const publishable = (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? '').trim();
+  if (anon && !IGNORED_ANON_PLACEHOLDERS.has(anon)) return anon;
+  if (publishable) return publishable;
+  return anon;
+}
+
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_ANON_KEY = resolveSupabaseAnonKey();
 
 // Dev-time diagnostics
 if (import.meta.env.DEV) {
@@ -18,9 +29,10 @@ if (!SUPABASE_URL) {
   );
 }
 
-if (!SUPABASE_ANON_KEY) {
+if (!SUPABASE_ANON_KEY || IGNORED_ANON_PLACEHOLDERS.has(SUPABASE_ANON_KEY.trim())) {
   throw new Error(
-    'Missing VITE_SUPABASE_ANON_KEY environment variable. Check your .env file at the project root.'
+    'Missing Supabase anon/publishable key. Set VITE_SUPABASE_ANON_KEY (Dashboard → Settings → API) ' +
+      'or VITE_SUPABASE_PUBLISHABLE_KEY with the same value. Check your .env at the project root.'
   );
 }
 
@@ -60,3 +72,6 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, 
     autoRefreshToken: true,
   }
 });
+
+/** Resolved anon / publishable key (same value passed to createClient). Use for fetch() to Edge Functions. */
+export const resolvedSupabaseAnonKey = SUPABASE_ANON_KEY;
