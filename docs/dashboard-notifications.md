@@ -139,7 +139,7 @@ Las entradas bajo `Database['public']['Tables'][...]` describen las tablas para 
 
 - PK compuesta **`(user_id, id)`** donde `id` = `school_groups.id` (ej. `"1"` = 9no 1).
 - Varios docentes pueden tener el mismo `id` con distinto `user_id`.
-- Seed demo: `npm run seed:teacher-grupos` (requiere usuario `demo.teacher@example.com`).
+- Seed demo: `npm run seed:demo` (login + catálogo + asignación `grupos` para DOC001–DOC003).
 
 ## 10. Checklist rápido al desplegar
 

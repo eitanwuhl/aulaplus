@@ -13,6 +13,7 @@
     "seed:login": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/seed-login.mjs",
     "seed:school-catalog": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/seed-school-catalog.mjs",
     "seed:teacher-grupos": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/seed-teacher-grupos.mjs",
+    "seed:demo": "npm run seed:login && npm run seed:school-catalog && npm run seed:teacher-grupos",
     "db:local:start": "npx supabase start",
     "db:local:stop": "npx supabase stop",
     "db:local:reset": "npx supabase db reset",

@@ -6,16 +6,21 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const DEMO_TEACHER_PASSWORD = 'DemoPassword2024!';
+
+const DEMO_TEACHERS = [
+  { email: 'demo.teacher@example.com', displayName: 'Profesor Demo (9no 1 y 2)' },
+  { email: 'demo.teacher2@example.com', displayName: 'Profesor Demo 2 (9no 2 y 3)' },
+  { email: 'demo.teacher3@example.com', displayName: 'Profesor Demo 3 (9no 1 y 3)' },
+] as const;
+
 serve(async (req) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    // Local CLI injects SUPABASE_SERVICE_ROLE_KEY. For hosted deploys you can set SERVICE_ROLE_KEY
-    // as a custom secret (dashboard) if you avoid the reserved SUPABASE_* name in manual secrets.
     const supabaseServiceKey =
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY');
     if (!supabaseUrl || !supabaseServiceKey) {
@@ -29,143 +34,113 @@ serve(async (req) => {
       );
     }
 
-    // Create admin client
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
+      auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // Demo user credentials
-    const demoTeacherEmail = 'demo.teacher@example.com';
-    const demoTeacherPassword = 'DemoPassword2024!';
-
-    console.log('Ensuring demo teacher user exists...');
-
-    // Find existing user by listing users (getUserByEmail not available in v2 web)
-    const { data: listData, error: listError } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    const { data: listData, error: listError } = await supabaseAdmin.auth.admin.listUsers({
+      page: 1,
+      perPage: 1000,
+    });
     if (listError) {
-      console.error('Error listing users:', listError);
       return new Response(
         JSON.stringify({ error: 'Failed to list users', details: listError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const existingUser = listData.users.find((u: any) => (u.email || '').toLowerCase() === demoTeacherEmail.toLowerCase());
-    let userId: string | undefined = existingUser?.id;
-
-    if (!userId) {
-      console.log('Creating new demo teacher user...');
-      // Create user with admin API (bypasses email confirmation)
-      const { data: created, error: createError } = await supabaseAdmin.auth.admin.createUser({
-        email: demoTeacherEmail,
-        password: demoTeacherPassword,
-        email_confirm: true, // Auto-confirm email
-        user_metadata: {
-          role: 'teacher',
-          display_name: 'Profesor Demo'
-        }
-      });
-
-      if (createError) {
-        console.error('Error creating demo user:', createError);
-        return new Response(
-          JSON.stringify({ error: 'Failed to create demo user', details: createError.message }),
-          { 
-            status: 500, 
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-          }
-        );
-      }
-
-      userId = created.user?.id;
-      console.log('Demo teacher user created successfully:', userId);
-    } else {
-      console.log('Demo teacher user already exists:', userId, ' - ensuring password and metadata');
-      // Ensure password and metadata are set so password login works
-      const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
-        password: demoTeacherPassword,
-        user_metadata: {
-          role: 'teacher',
-          display_name: 'Profesor Demo'
-        }
-      });
-      if (updateError) {
-        console.error('Error updating demo user:', updateError);
-        return new Response(
-          JSON.stringify({
-            error: 'Failed to update demo user',
-            details: updateError.message,
-          }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-        );
-      }
-    }
-
-    if (!userId) {
-      return new Response(
-        JSON.stringify({
-          error: 'Demo teacher user missing',
-          details: 'No user id after create or lookup; check Auth logs.',
-        }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    // Ensure profile exists/updated
-    const { data: profileData, error: profileCheckError } = await supabaseAdmin
-      .from('profiles')
-      .select('user_id')
-      .eq('user_id', userId)
-      .maybeSingle();
+    const usersByEmail = new Map(
+      listData.users.map((u: { id: string; email?: string }) => [
+        (u.email || '').toLowerCase(),
+        u.id,
+      ]),
+    );
 
-    if (profileCheckError) {
-      console.error('Error checking profile:', profileCheckError);
-    } else if (!profileData) {
-      const { error: profileInsertError } = await supabaseAdmin
+    const ensured: string[] = [];
+
+    for (const teacher of DEMO_TEACHERS) {
+      const emailKey = teacher.email.toLowerCase();
+      let userId = usersByEmail.get(emailKey);
+
+      if (!userId) {
+        const { data: created, error: createError } = await supabaseAdmin.auth.admin.createUser({
+          email: teacher.email,
+          password: DEMO_TEACHER_PASSWORD,
+          email_confirm: true,
+          user_metadata: { role: 'teacher', display_name: teacher.displayName },
+        });
+        if (createError) {
+          return new Response(
+            JSON.stringify({
+              error: `Failed to create ${teacher.email}`,
+              details: createError.message,
+            }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+          );
+        }
+        userId = created.user?.id;
+      } else {
+        const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+          password: DEMO_TEACHER_PASSWORD,
+          user_metadata: { role: 'teacher', display_name: teacher.displayName },
+        });
+        if (updateError) {
+          return new Response(
+            JSON.stringify({
+              error: `Failed to update ${teacher.email}`,
+              details: updateError.message,
+            }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+          );
+        }
+      }
+
+      if (!userId) {
+        return new Response(
+          JSON.stringify({ error: 'Demo teacher user missing', details: teacher.email }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const { data: profile } = await supabaseAdmin
         .from('profiles')
-        .insert({
+        .select('user_id')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!profile) {
+        const { error: profileInsertError } = await supabaseAdmin.from('profiles').insert({
           user_id: userId,
-          display_name: 'Profesor Demo',
+          display_name: teacher.displayName,
           role: 'teacher',
         });
-      if (profileInsertError) {
-        console.error('Error creating profile:', profileInsertError);
+        if (profileInsertError) {
+          console.error('Error creating profile:', profileInsertError);
+        }
       } else {
-        console.log('Profile created successfully');
+        await supabaseAdmin
+          .from('profiles')
+          .update({ display_name: teacher.displayName, role: 'teacher' })
+          .eq('user_id', userId);
       }
-    } else {
-      const { error: profileUpdateError } = await supabaseAdmin
-        .from('profiles')
-        .update({
-          display_name: 'Profesor Demo',
-          role: 'teacher',
-        })
-        .eq('user_id', userId);
-      if (profileUpdateError) {
-        console.error('Error updating profile:', profileUpdateError);
-      }
+
+      ensured.push(teacher.email);
     }
 
     return new Response(
-      JSON.stringify({ success: true, message: 'Demo users ensured' }),
-      { 
-        status: 200, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      }
+      JSON.stringify({
+        success: true,
+        message: 'Demo teachers ensured',
+        teachers: ensured,
+        password: DEMO_TEACHER_PASSWORD,
+      }),
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
-
   } catch (error) {
-    console.error('Unexpected error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return new Response(
       JSON.stringify({ error: 'Internal server error', details: errorMessage }),
-      { 
-        status: 500, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      }
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
 });

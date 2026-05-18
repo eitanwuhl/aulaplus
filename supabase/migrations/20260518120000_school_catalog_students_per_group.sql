@@ -1,15 +1,4 @@
--- Catálogo escolar (grupos + alumnos). Re-run: npm run seed:school-catalog
--- 10 alumnos repartidos en los 3 grupos (ya no solo 9no 1).
-
-INSERT INTO public.school_groups (id, name, year, section)
-VALUES
-  ('1', '9no 1', '9º Año', '1'),
-  ('2', '9no 2', '9º Año', '2'),
-  ('3', '9no 3', '9º Año', '3')
-ON CONFLICT (id) DO UPDATE SET
-  name = EXCLUDED.name,
-  year = EXCLUDED.year,
-  section = EXCLUDED.section;
+-- Align catalog with seeds: students in groups 1, 2 and 3 (idempotent).
 
 INSERT INTO public.school_students (id, school_group_id, display_name, perfil)
 VALUES

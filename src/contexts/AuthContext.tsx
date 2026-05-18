@@ -237,14 +237,14 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
           console.warn('[Auth] teacher signIn failed:', signError?.message);
         }
         let message = 'Correo o contraseña incorrectos.';
-        if (authEmail.toLowerCase() === 'demo.teacher@example.com') {
+        if (authEmail.toLowerCase().includes('demo.teacher')) {
           const hint: string[] = [];
           if (ensure.errorMessage) hint.push(ensure.errorMessage);
           hint.push(
-            'El usuario demo tiene que existir en Supabase → Authentication → Users. Opción rápida: Add user → email demo.teacher@example.com → contraseña DemoPassword2024! → marcar email como confirmado.',
+            'Docentes demo: códigos DOC001, DOC002 o DOC003 con contraseña DemoPassword2024! (emails demo.teacher@example.com, demo.teacher2@example.com, demo.teacher3@example.com).',
           );
           hint.push(
-            'Opción automática: `npx supabase functions deploy ensure-demo-users` en el mismo proyecto que usa el front, recargá la página e intentá de nuevo.',
+            'Ejecutá `npm run seed:login`, desplegá `ensure-demo-users` y recargá la página.',
           );
           message += ' ' + hint.join(' ');
         }
@@ -286,7 +286,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         return {
           ok: false,
           message:
-            'Código o contraseña incorrectos. Ejemplo seed: código EST2024001 y contraseña EstudianteDemo2024! (incluye el signo al final). Si administrás el entorno: `npm run seed:login` contra la misma base que usa el front.',
+            'Código o contraseña incorrectos. Estudiantes demo: EST2024001–EST2024006, contraseña EstudianteDemo2024! Ejecutá `npm run seed:login` contra la misma base que usa el front.',
         };
       }
       const newUser: User = {
