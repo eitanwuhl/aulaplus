@@ -13,6 +13,8 @@ This document contains:
 - Guardrails (top 10 things that must not break)
 - "Where to change things" guide
 
+**Notificaciones del dashboard (persistencia, tablas, RLS, seeds):** [docs/dashboard-notifications.md](docs/dashboard-notifications.md)
+
 ## Commands
 
 ### Development

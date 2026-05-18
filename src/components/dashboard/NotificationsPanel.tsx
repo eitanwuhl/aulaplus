@@ -1,109 +1,127 @@
-import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { AlertTriangle, Bell, Calendar, Check, User } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-
-type NotificationType = "info" | "urgent";
-
-type DashboardNotification = {
-  id: number;
-  type: NotificationType;
-  title: string;
-  message: string;
-  time: string;
-  studentId?: number;
-  groupId?: string;
-};
-
-const READ_STORAGE_KEY = "aulaplus.notifications.read";
-
-const notifications: DashboardNotification[] = [
-  {
-    id: 1,
-    type: "info",
-    title: "Comunicacion de la psicopedagoga",
-    message:
-      "Se actualizo el informe de Santiago Perez. Ver informe actualizado y sugerencias en el perfil del alumno",
-    time: "hace 30 min",
-    studentId: 9,
-  },
-  {
-    id: 2,
-    type: "urgent",
-    title: "Comunicacion del equipo directivo",
-    message:
-      "Ana Rodriguez sera sometida a cirugia de vegetaciones que incide en su audicion actual. Ubicarla en la primera fila",
-    time: "hace 2 horas",
-    studentId: 1,
-  },
-  {
-    id: 3,
-    type: "info",
-    title: "Mensaje del equipo directivo",
-    message:
-      "Carlos Martinez viajara representando a Uruguay a Brasil entre el 15-22 de diciembre. No marcar inasistencias ni evaluaciones en ese periodo",
-    time: "hace 4 horas",
-  },
-  {
-    id: 4,
-    type: "info",
-    title: "Comunicacion de grupo",
-    message: "Se actualizaron datos de seguimiento del grupo 9no 1",
-    time: "hace 1 dia",
-    groupId: "1",
-  },
-];
-
-function getReadIds(): number[] {
-  try {
-    const raw = localStorage.getItem(READ_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((id) => Number.isInteger(id));
-  } catch {
-    return [];
-  }
-}
-
-function persistReadIds(ids: number[]): void {
-  try {
-    localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(ids));
-  } catch {
-    // ignore localStorage failures
-  }
-}
+import { useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { Bell } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/hooks/use-toast';
+import { useNotifications } from '@/hooks/useNotifications';
+import { useMarkNotificationAsRead } from '@/hooks/useMarkNotificationAsRead';
+import { useCreateBroadcastNotification } from '@/hooks/useCreateBroadcastNotification';
+import { useNotificationLinkOptions } from '@/hooks/useNotificationLinkOptions';
+import {
+  createNotificationFormSchema,
+  type CreateNotificationFormData,
+} from '@/schemas/createNotificationFormSchema';
+import type { DashboardNotification, NotificationLinkTarget, NotificationType } from '@/services/notifications';
+import { NotificationCreateForm } from '@/components/dashboard/NotificationCreateForm';
+import { NotificationListItem } from '@/components/dashboard/NotificationListItem';
+import { notificationAudienceMessage } from '@/components/dashboard/notificationAudienceMessage';
 
 export function NotificationsPanel() {
   const navigate = useNavigate();
-  const [readIds, setReadIds] = useState<number[]>(() => getReadIds());
+  const location = useLocation();
+  const { session } = useAuth();
+  const { toast } = useToast();
 
-  const unreadCount = useMemo(
-    () => notifications.filter((n) => !readIds.includes(n.id)).length,
-    [readIds]
+  const userId = session?.user?.id;
+  const queryEnabled = location.pathname === '/teacher-dashboard' && Boolean(userId);
+
+  const { data, isLoading, isError, error } = useNotifications({
+    userId,
+    enabled: queryEnabled,
+  });
+
+  const markAsReadMutation = useMarkNotificationAsRead(userId);
+  const createNotificationMutation = useCreateBroadcastNotification(userId);
+  const linkOptionsQuery = useNotificationLinkOptions(queryEnabled);
+
+  const notifications = data?.notifications ?? [];
+  const readIds = useMemo(
+    () => new Set(data?.readNotificationIds ?? []),
+    [data?.readNotificationIds]
   );
 
-  const markAsRead = (id: number) => {
-    if (readIds.includes(id)) return;
-    const next = [...readIds, id];
-    setReadIds(next);
-    persistReadIds(next);
+  const unreadCount = useMemo(
+    () => notifications.filter((n) => !readIds.has(n.id)).length,
+    [notifications, readIds]
+  );
+
+  const form = useForm<CreateNotificationFormData>({
+    resolver: zodResolver(createNotificationFormSchema),
+    defaultValues: {
+      title: '',
+      message: '',
+      notificationType: 'info' as NotificationType,
+      linkTarget: 'none' as NotificationLinkTarget,
+      studentId: undefined,
+      groupId: '',
+    },
+  });
+
+  const handleMarkAsRead = (id: string) => {
+    if (readIds.has(id) || markAsReadMutation.isPending) return;
+    markAsReadMutation.mutate(id, {
+      onError: (e) => {
+        console.error('[NotificationsPanel] markAsRead', e);
+      },
+    });
   };
 
-  const handleRowClick = (notification: DashboardNotification) => {
-    if (notification.studentId) {
-      navigate("/teacher-groups", {
-        state: { studentId: notification.studentId },
+  const onSubmit = (formData: CreateNotificationFormData) => {
+    if (!userId) {
+      toast({
+        variant: 'destructive',
+        title: 'No autenticado',
+        description: 'Necesitás estar logueado para crear avisos.',
       });
       return;
     }
 
-    if (notification.groupId) {
-      navigate("/teacher-groups", { state: { groupId: notification.groupId } });
+    const studentId = formData.linkTarget === 'student' ? formData.studentId : undefined;
+    const groupId = formData.linkTarget === 'group' ? formData.groupId : undefined;
+
+    createNotificationMutation.mutate(
+      {
+        notificationType: formData.notificationType,
+        title: formData.title,
+        message: formData.message,
+        studentId,
+        groupId,
+      },
+      {
+        onSuccess: () => {
+          toast({
+            title: 'Aviso creado',
+            description: notificationAudienceMessage(formData.linkTarget),
+          });
+          form.reset();
+        },
+        onError: (e) => {
+          console.error('[NotificationsPanel] create', e);
+          toast({
+            variant: 'destructive',
+            title: 'No se pudo crear el aviso',
+            description: e instanceof Error ? e.message : undefined,
+          });
+        },
+      }
+    );
+  };
+
+  const handleNavigate = (notification: DashboardNotification) => {
+    if (notification.studentId != null) {
+      navigate('/teacher-groups', { state: { studentId: notification.studentId } });
       return;
     }
+    if (notification.groupId) {
+      navigate('/teacher-groups', { state: { groupId: notification.groupId } });
+    }
   };
+
+  const loadErrorMessage = isError && error instanceof Error ? error.message : null;
 
   return (
     <Card>
@@ -113,76 +131,40 @@ export function NotificationsPanel() {
             <Bell className="w-5 h-5 mr-2 text-primary" />
             Notificaciones
           </span>
-          {unreadCount > 0 && <Badge variant="secondary">{unreadCount} nuevas</Badge>}
+          {!isLoading && unreadCount > 0 && (
+            <Badge variant="secondary">{unreadCount} nuevas</Badge>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {notifications.map((notification) => {
-          const isRead = readIds.includes(notification.id);
-          const clickable = Boolean(notification.studentId || notification.groupId);
-          const Icon = notification.studentId
-            ? User
-            : notification.groupId
-            ? Calendar
-            : notification.type === "urgent"
-            ? AlertTriangle
-            : Bell;
-
-          return (
-            <div
+        {isLoading && <p className="text-sm text-foreground-subtle">Cargando…</p>}
+        {!isLoading && loadErrorMessage && (
+          <p className="text-sm text-destructive">{loadErrorMessage}</p>
+        )}
+        {!isLoading && !loadErrorMessage && notifications.length === 0 && (
+          <p className="text-sm text-foreground-subtle">No hay notificaciones.</p>
+        )}
+        {!isLoading &&
+          !loadErrorMessage &&
+          notifications.map((notification) => (
+            <NotificationListItem
               key={notification.id}
-              className={`flex items-start space-x-3 p-3 rounded-lg border transition-colors ${
-                isRead ? "opacity-65 bg-muted/20" : "hover:bg-card-hover"
-              } ${clickable ? "cursor-pointer" : ""}`}
-              onClick={clickable ? () => handleRowClick(notification) : undefined}
-            >
-              <div
-                className={`p-2 rounded-full ${
-                  notification.type === "urgent"
-                    ? "bg-warning-100 text-warning"
-                    : "bg-primary-100 text-primary"
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-              </div>
+              notification={notification}
+              isRead={readIds.has(notification.id)}
+              onMarkAsRead={handleMarkAsRead}
+              onNavigate={handleNavigate}
+            />
+          ))}
 
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between mb-1 gap-2">
-                  <h4 className="text-sm font-medium">{notification.title}</h4>
-                  <div className="flex items-center gap-2">
-                    {notification.type === "urgent" && (
-                      <Badge variant="destructive">Urgente</Badge>
-                    )}
-                    {isRead && (
-                      <Badge variant="secondary" className="whitespace-nowrap">
-                        Leida
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-
-                <p className="text-sm text-foreground-subtle">{notification.message}</p>
-                <div className="mt-2 flex items-center justify-between">
-                  <p className="text-xs text-foreground-subtle">{notification.time}</p>
-                  <button
-                    type="button"
-                    className="text-xs inline-flex items-center gap-1 text-primary hover:underline"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      markAsRead(notification.id);
-                    }}
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    Marcar como leido
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
+        <NotificationCreateForm
+          form={form}
+          onSubmit={onSubmit}
+          studentLinkOptions={linkOptionsQuery.data?.students ?? []}
+          groupLinkOptions={linkOptionsQuery.data?.groups ?? []}
+          linkOptionsLoadFailed={linkOptionsQuery.isError}
+          isSubmitting={createNotificationMutation.isPending}
+        />
       </CardContent>
     </Card>
   );
 }
-
-export { READ_STORAGE_KEY as notificationsReadStorageKey };

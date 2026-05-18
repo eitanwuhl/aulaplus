@@ -34,4 +34,5 @@ dist-ssr
 check-apikey.js`
 # Supabase temp
 supabase/.temp/
+supabase/.branches/
 

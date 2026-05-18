@@ -5,7 +5,7 @@ const root = repoRootFromImportMeta(import.meta.url);
 
 await runSqlSeed({
   repoRoot: root,
-  sqlRelativePath: 'supabase/seeds/login_demo.sql',
-  logPrefix: 'seed:login',
-  successMessage: 'OK — login demo seed applied from',
+  sqlRelativePath: 'supabase/seeds/teacher_grupos_demo.sql',
+  logPrefix: 'seed:teacher-grupos',
+  successMessage: 'OK — teacher grupos demo seed applied from',
 });
