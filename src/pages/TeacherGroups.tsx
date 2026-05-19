@@ -1,228 +1,132 @@
-import React, { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { 
-  Users, 
-  Search, 
-  ArrowLeft, 
-  BarChart3, 
+import {
+  Users,
+  Search,
+  ArrowLeft,
+  BarChart3,
   Eye,
   GraduationCap,
   TrendingUp,
   TrendingDown,
-  Minus
+  Minus,
+  Loader2,
 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { mockGroups } from "@/data/mockData";
-import type { Group as MockGroup, Student as MockStudent } from "@/data/mockData";
+import type { TeacherGroup } from "@/types/schoolCatalog";
 import GroupProfile from "@/components/GroupProfile";
 import StudentProfile from "@/components/StudentProfile";
+import { StudentProfileIncomplete } from "@/components/teacherGroups/StudentProfileIncomplete";
+import { CatalogEmptyState } from "@/components/teacherGroups/CatalogEmptyState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { useAuth } from "@/contexts/AuthContext";
+import { useTeacherGroups } from "@/hooks/useTeacherGroups";
+import { useTeacherGroupsDeepLink } from "@/hooks/teacherGroups/useTeacherGroupsDeepLink";
+import { getGroupCardStats } from "@/lib/teacherGroups/teacherGroupStats";
+import {
+  TEACHER_DASHBOARD_PATH,
+  type TeacherGroupsLocationState,
+} from "@/lib/navigation/teacherGroupsNavigation";
+import {
+  toGroupProfileViewModel,
+  toStudentProfileViewModel,
+} from "@/services/teacherGroups";
+
+function getProgressIcon(progress: number) {
+  if (progress >= 85) return <TrendingUp className="w-4 h-4 text-secondary" />;
+  if (progress < 70) return <TrendingDown className="w-4 h-4 text-warning" />;
+  return <Minus className="w-4 h-4 text-primary" />;
+}
 
 const TeacherGroups = () => {
-  console.log("[DEBUG] TeacherGroups component starting to render");
   const navigate = useNavigate();
   const location = useLocation();
-  const [searchTerm, setSearchTerm] = useState("");
-  const [selectedGroup, setSelectedGroup] = useState<MockGroup | null>(null);
-  const [selectedStudent, setSelectedStudent] = useState<MockStudent | null>(null);
-  const [viewingGroupProfile, setViewingGroupProfile] = useState(false);
-  const [viewingStudentProfile, setViewingStudentProfile] = useState(false);
-  const [invalidDeepLinkGroupId, setInvalidDeepLinkGroupId] = useState<string | null>(null);
+  const { session } = useAuth();
+  const userId = session?.user?.id;
 
-  const filteredGroups = mockGroups.filter(group =>
-    group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    group.year.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    group.section.toLowerCase().includes(searchTerm.toLowerCase())
+  const { data: groups = [], isLoading, isError, error } = useTeacherGroups({
+    userId,
+    enabled: Boolean(userId),
+  });
+
+  const locationState = location.state as TeacherGroupsLocationState | null;
+  const returnTo = locationState?.returnTo;
+
+  const {
+    selectedGroup,
+    selectedStudent,
+    viewingGroupProfile,
+    viewingStudentProfile,
+    invalidDeepLinkGroupId,
+    openGroup,
+    openStudent,
+    closeToList,
+    closeStudent,
+    dismissInvalidDeepLink,
+  } = useTeacherGroupsDeepLink(locationState, groups);
+
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const filteredGroups = useMemo(
+    () =>
+      groups.filter(
+        (group) =>
+          group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          group.year.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          group.section.toLowerCase().includes(searchTerm.toLowerCase())
+      ),
+    [groups, searchTerm]
   );
 
-  const handleGroupClick = (group: MockGroup) => {
-    setSelectedGroup(group);
-    setViewingGroupProfile(true);
-  };
-
-  const handleStudentClick = (student: MockStudent) => {
-    setSelectedStudent(student);
-    setViewingStudentProfile(true);
-  };
-
   const handleBackToGroups = () => {
-    setViewingGroupProfile(false);
-    setViewingStudentProfile(false);
-    setSelectedGroup(null);
-    setSelectedStudent(null);
-  };
-
-  const handleBackToGroup = () => {
-    setViewingStudentProfile(false);
-    setSelectedStudent(null);
-  };
-
-  useEffect(() => {
-    const state = location.state as { studentId?: number; groupId?: string } | null;
-    if (!state) return;
-
-    if (typeof state.studentId === "number") {
-      const groupWithStudent = mockGroups.find((group) =>
-        group.students.some((student) => student.id === state.studentId)
-      );
-      if (!groupWithStudent) return;
-      const student = groupWithStudent.students.find((s) => s.id === state.studentId);
-      if (!student) return;
-      setSelectedGroup(groupWithStudent);
-      setSelectedStudent(student);
-      setViewingGroupProfile(true);
-      setViewingStudentProfile(true);
+    if (returnTo) {
+      navigate(returnTo, { replace: true });
       return;
     }
+    closeToList();
+  };
 
-    if (state.groupId) {
-      const group = mockGroups.find((g) => g.id === state.groupId);
-      if (group) {
-        setInvalidDeepLinkGroupId(null);
-        setSelectedGroup(group);
-        setViewingGroupProfile(true);
-        setViewingStudentProfile(false);
-      } else {
-        setInvalidDeepLinkGroupId(state.groupId);
-      }
+  const handleBackFromStudent = () => {
+    if (returnTo) {
+      navigate(returnTo, { replace: true });
       return;
     }
-    setInvalidDeepLinkGroupId(null);
-  }, [location.state]);
-
-  // Helper function to check if a student requires adjustments (explicit flags only)
-  const studentRequiresAdjustments = (student: MockStudent): boolean => {
-    // Source of truth: explicit flags from localStorage or student.informeTecnico
-    // Check localStorage first (user-controlled values)
-    try {
-      const accesoKey = `adecuacionAcceso:${student.id}`;
-      const contenidoKey = `adecuacionContenido:${student.id}`;
-      
-      const accesoFromStorage = localStorage.getItem(accesoKey);
-      const contenidoFromStorage = localStorage.getItem(contenidoKey);
-      
-      if (accesoFromStorage !== null) {
-        const accesoValue = JSON.parse(accesoFromStorage);
-        if (accesoValue === true) return true;
-      }
-      
-      if (contenidoFromStorage !== null) {
-        const contenidoValue = JSON.parse(contenidoFromStorage);
-        if (contenidoValue === true) return true;
-      }
-    } catch (error) {
-      // If localStorage read fails, fall through to fallback
-    }
-    
-    // Fallback: check student.informeTecnico (if present in mock data)
-    if (student.informeTecnico) {
-      if (student.informeTecnico.requiereAdecuacionAcceso === true) return true;
-      if (student.informeTecnico.requiereAdecuacionContenido === true) return true;
-    }
-    
-    // Default: no adjustments required
-    return false;
+    closeStudent();
   };
 
-  const getGroupStats = (group: MockGroup) => {
-    const students = group.students;
-    // Convertir progreso a calificaciones (0-100 -> 1-12 scale)
-    const avgGrade = students.reduce((sum, student) => {
-      const grade = ((student.progreso || 0) / 100) * 11 + 1; // Convert to 1-12 scale
-      return sum + grade;
-    }, 0) / students.length;
-    
-    // Count students with explicit adjustment flags (source of truth)
-    const studentsWithAdjustments = students.filter(student => 
-      studentRequiresAdjustments(student)
-    ).length;
-    
-    return {
-      avgGrade: Math.round(avgGrade * 10) / 10, // Round to 1 decimal
-      adjustmentsNeeded: studentsWithAdjustments,
-      sufficientGrades: students.filter(student => {
-        const grade = ((student.progreso || 0) / 100) * 11 + 1;
-        return grade >= 6;
-      }).length,
-      insufficientGrades: students.filter(student => {
-        const grade = ((student.progreso || 0) / 100) * 11 + 1;
-        return grade < 6;
-      }).length
-    };
-  };
-
-  const getProgressIcon = (progress: number) => {
-    if (progress >= 85) return <TrendingUp className="w-4 h-4 text-secondary" />;
-    if (progress < 70) return <TrendingDown className="w-4 h-4 text-warning" />;
-    return <Minus className="w-4 h-4 text-primary" />;
-  };
-
-  // Convert MockStudent to Student for StudentProfile component
-  const convertToStudentProfile = (mockStudent: MockStudent) => ({
-    id: mockStudent.id,
-    name: mockStudent.name,
-    perfil: mockStudent.perfil,
-    avatar: mockStudent.avatar,
-    contemplaciones: mockStudent.contemplaciones,
-    anotaciones: mockStudent.anotaciones || "",
-    seguimiento: mockStudent.seguimiento || [],
-    historialAcademico: mockStudent.historialAcademico || [],
-    evaluacionesCualitativas: mockStudent.evaluacionesCualitativas || [],
-    informeTecnico: mockStudent.informeTecnico
-  });
-
-  // Convert MockGroup to Group for GroupProfile component
-  const convertToGroupProfile = (mockGroup: MockGroup) => ({
-    id: mockGroup.id,
-    name: mockGroup.name,
-    studentCount: mockGroup.studentCount,
-    year: mockGroup.year,
-    section: mockGroup.section,
-    students: mockGroup.students.map(student => ({
-      id: student.id,
-      name: student.name,
-      perfil: student.perfil,
-      ajustes: student.ajustes || "",
-      progreso: student.progreso || 0,
-      avatar: student.avatar
-    }))
-  });
-
-  // If viewing student profile
   if (viewingStudentProfile && selectedStudent) {
+    if (!selectedStudent.hasSeededProfile) {
+      return (
+        <StudentProfileIncomplete student={selectedStudent} onBack={handleBackFromStudent} />
+      );
+    }
     return (
-      <StudentProfile 
-        student={convertToStudentProfile(selectedStudent)} 
-        onBack={handleBackToGroup}
+      <StudentProfile
+        student={toStudentProfileViewModel(selectedStudent)}
+        onBack={handleBackFromStudent}
       />
     );
   }
 
-  // If viewing group profile
   if (viewingGroupProfile && selectedGroup) {
-    console.log("[DEBUG] Rendering GroupProfile component");
-    const convertedGroup = convertToGroupProfile(selectedGroup);
     return (
-      <GroupProfile 
-        group={convertedGroup} 
+      <GroupProfile
+        group={toGroupProfileViewModel(selectedGroup)}
         onBack={handleBackToGroups}
         onStudentClick={(student) => {
-          // Find the original student from mockData
-          const originalStudent = selectedGroup.students.find(s => s.id === student.id);
-          if (originalStudent) {
-            handleStudentClick(originalStudent);
-          }
+          const originalStudent = selectedGroup.students.find((s) => s.id === student.id);
+          if (originalStudent) openStudent(selectedGroup, originalStudent);
         }}
       />
     );
   }
 
   return (
-    <div className="space-y-6">
+    <motion.div className="space-y-6">
       {invalidDeepLinkGroupId && (
         <Alert variant="destructive" className="flex items-center justify-between gap-4">
           <div>
@@ -231,44 +135,43 @@ const TeacherGroups = () => {
               El grupo solicitado no existe o ya no está disponible. Mostrando la lista de grupos.
             </AlertDescription>
           </div>
-          <Button variant="outline" size="sm" onClick={() => setInvalidDeepLinkGroupId(null)}>
+          <Button variant="outline" size="sm" onClick={dismissInvalidDeepLink}>
             Cerrar
           </Button>
         </Alert>
       )}
-      {/* Header */}
+
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
         className="flex items-center justify-between"
       >
-        <div className="flex items-center space-x-4">
+        <motion.div className="flex items-center space-x-4">
           <Button
             variant="outline"
-            onClick={() => navigate('/teacher-dashboard')}
+            onClick={() => navigate(returnTo ?? TEACHER_DASHBOARD_PATH)}
             className="flex items-center gap-2"
           >
             <ArrowLeft className="w-4 h-4" />
             Volver al Dashboard
           </Button>
-          <div>
+          <motion.div>
             <h1 className="text-3xl font-bold">Mis Grupos</h1>
             <p className="text-foreground-subtle">
               Gestiona y visualiza el progreso de tus grupos de estudiantes
             </p>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       </motion.div>
 
-      {/* Search and Filters */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, delay: 0.1 }}
         className="flex items-center gap-4"
       >
-        <div className="relative flex-1 max-w-sm">
+        <motion.div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-foreground-subtle w-4 h-4" />
           <Input
             placeholder="Buscar grupos..."
@@ -276,115 +179,162 @@ const TeacherGroups = () => {
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"
           />
-        </div>
+        </motion.div>
       </motion.div>
 
-      {/* Groups Grid */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, delay: 0.2 }}
-        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
-      >
-        {filteredGroups.map((group, index) => {
-          const stats = getGroupStats(group);
-          
-          return (
-            <motion.div
-              key={group.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.1 * index }}
-            >
-              <Card 
-                className="hover:shadow-lg transition-all duration-200 cursor-pointer group"
-                onClick={() => handleGroupClick(group)}
-              >
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <div className="p-2 bg-primary/10 rounded-lg">
-                        <Users className="w-5 h-5 text-primary" />
-                      </div>
-                      <div>
-                        <CardTitle className="text-lg group-hover:text-primary transition-colors">
-                          {group.name}
-                        </CardTitle>
-                        <p className="text-sm text-foreground-subtle">
-                          {group.year} • {group.section}
-                        </p>
-                      </div>
-                    </div>
-                    <Eye className="w-4 h-4 text-foreground-subtle group-hover:text-primary transition-colors" />
-                  </div>
-                </CardHeader>
-                
-                <CardContent className="space-y-4">
-                  {/* Student Count */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <GraduationCap className="w-4 h-4 text-foreground-subtle" />
-                      <span className="text-sm font-medium">Estudiantes</span>
-                    </div>
-                    <Badge variant="secondary">{group.studentCount}</Badge>
-                  </div>
-
-                  {/* Grade Average */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <BarChart3 className="w-4 h-4 text-foreground-subtle" />
-                      <span className="text-sm font-medium">Promedio de calificación</span>
-                    </div>
-                    <div className="flex items-center space-x-1">
-                      {getProgressIcon(stats.avgGrade * 8.33)} {/* Convert back for icon */}
-                      <span className="text-sm font-bold">{stats.avgGrade}</span>
-                    </div>
-                  </div>
-
-                  {/* Grade Distribution */}
-                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border">
-                    <div className="text-center">
-                      <p className="text-xs text-foreground-subtle">Calificación suficiente</p>
-                      <p className="text-sm font-bold text-secondary">{stats.sufficientGrades}</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-xs text-foreground-subtle">Calificación insuficiente</p>
-                      <p className="text-sm font-bold text-warning">{stats.insufficientGrades}</p>
-                    </div>
-                  </div>
-
-                  {/* Adjustments Needed */}
-                  {stats.adjustmentsNeeded > 0 && (
-                    <div className="flex items-center justify-between pt-2 border-t border-border">
-                      <span className="text-xs text-foreground-subtle">Alumnos con ajustes necesarios</span>
-                      <Badge variant="secondary" className="text-xs">
-                        {stats.adjustmentsNeeded}
-                      </Badge>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </motion.div>
-          );
-        })}
-      </motion.div>
-
-      {filteredGroups.length === 0 && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.6 }}
-          className="text-center py-12"
-        >
-          <Users className="w-12 h-12 text-foreground-subtle mx-auto mb-4" />
-          <h3 className="text-lg font-medium mb-2">No se encontraron grupos</h3>
-          <p className="text-foreground-subtle">
-            {searchTerm ? 'Intenta con otros términos de búsqueda' : 'No tienes grupos asignados actualmente'}
-          </p>
+      {isLoading && (
+        <motion.div className="flex items-center justify-center py-16 text-foreground-subtle">
+          <Loader2 className="w-6 h-6 animate-spin mr-2" />
+          Cargando grupos…
         </motion.div>
       )}
-    </div>
+
+      {isError && (
+        <Alert variant="destructive">
+          <AlertTitle>Error al cargar grupos</AlertTitle>
+          <AlertDescription>
+            {error instanceof Error ? error.message : "Intentá recargar la página."}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {!isLoading && !isError && (
+        <GroupsGrid groups={filteredGroups} onGroupClick={openGroup} />
+      )}
+
+      {!isLoading && !isError && filteredGroups.length === 0 && (
+        <EmptyGroupsState hasSearch={Boolean(searchTerm)} />
+      )}
+    </motion.div>
   );
 };
+
+function GroupsGrid({
+  groups,
+  onGroupClick,
+}: {
+  groups: TeacherGroup[];
+  onGroupClick: (group: TeacherGroup) => void;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.6, delay: 0.2 }}
+      className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+    >
+      {groups.map((group, index) => (
+        <GroupCard key={group.id} group={group} index={index} onClick={() => onGroupClick(group)} />
+      ))}
+    </motion.div>
+  );
+}
+
+function GroupCard({
+  group,
+  index,
+  onClick,
+}: {
+  group: TeacherGroup;
+  index: number;
+  onClick: () => void;
+}) {
+  const stats = getGroupCardStats(group);
+  const hasGradeData = stats.studentsWithGrades > 0;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.6, delay: 0.1 * index }}
+    >
+      <Card
+        className="hover:shadow-lg transition-all duration-200 cursor-pointer group"
+        onClick={onClick}
+      >
+        <CardHeader className="pb-3">
+          <motion.div className="flex items-center justify-between">
+            <motion.div className="flex items-center space-x-2">
+              <motion.div className="p-2 bg-primary/10 rounded-lg">
+                <Users className="w-5 h-5 text-primary" />
+              </motion.div>
+              <motion.div>
+                <CardTitle className="text-lg group-hover:text-primary transition-colors">
+                  {group.name}
+                </CardTitle>
+                <p className="text-sm text-foreground-subtle">
+                  {group.year} • {group.section}
+                </p>
+              </motion.div>
+            </motion.div>
+            <Eye className="w-4 h-4 text-foreground-subtle group-hover:text-primary transition-colors" />
+          </motion.div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <motion.div className="flex items-center justify-between">
+            <motion.div className="flex items-center space-x-2">
+              <GraduationCap className="w-4 h-4 text-foreground-subtle" />
+              <span className="text-sm font-medium">Estudiantes</span>
+            </motion.div>
+            <Badge variant="secondary">{group.studentCount}</Badge>
+          </motion.div>
+          <motion.div className="flex items-center justify-between">
+            <motion.div className="flex items-center space-x-2">
+              <BarChart3 className="w-4 h-4 text-foreground-subtle" />
+              <span className="text-sm font-medium">Promedio de calificación</span>
+            </motion.div>
+            <motion.div className="flex items-center space-x-1">
+              {hasGradeData && stats.avgGrade !== null ? (
+                <>
+                  {getProgressIcon(stats.avgGrade * 8.33)}
+                  <span className="text-sm font-bold">{stats.avgGrade}</span>
+                </>
+              ) : (
+                <span className="text-sm text-foreground-subtle">Sin datos</span>
+              )}
+            </motion.div>
+          </motion.div>
+          <motion.div className="grid grid-cols-2 gap-2 pt-2 border-t border-border">
+            <motion.div className="text-center">
+              <p className="text-xs text-foreground-subtle">Calificación suficiente</p>
+              <p className="text-sm font-bold text-secondary">{stats.sufficientGrades}</p>
+            </motion.div>
+            <motion.div className="text-center">
+              <p className="text-xs text-foreground-subtle">Calificación insuficiente</p>
+              <p className="text-sm font-bold text-warning">{stats.insufficientGrades}</p>
+            </motion.div>
+          </motion.div>
+          {stats.adjustmentsNeeded > 0 && (
+            <motion.div className="flex items-center justify-between pt-2 border-t border-border">
+              <span className="text-xs text-foreground-subtle">Alumnos con ajustes necesarios</span>
+              <Badge variant="secondary" className="text-xs">
+                {stats.adjustmentsNeeded}
+              </Badge>
+            </motion.div>
+          )}
+        </CardContent>
+      </Card>
+    </motion.div>
+  );
+}
+
+function EmptyGroupsState({ hasSearch }: { hasSearch: boolean }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.6 }}
+      className="text-center py-12"
+    >
+      <Users className="w-12 h-12 text-foreground-subtle mx-auto mb-4" />
+      <h3 className="text-lg font-medium mb-2">No se encontraron grupos</h3>
+          <p className="text-foreground-subtle">
+            {hasSearch
+              ? "Intenta con otros términos de búsqueda"
+              : "No tienes grupos asignados. Si administrás el entorno, ejecutá npm run seed:teacher-grupos."}
+          </p>
+    </motion.div>
+  );
+}
 
 export default TeacherGroups;

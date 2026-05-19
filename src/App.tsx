@@ -23,28 +23,33 @@ import PlanificacionWorkspace from "./pages/PlanificacionWorkspace";
 import MisPlanificaciones from "./pages/MisPlanificaciones";
 import Comunicaciones from "./pages/Comunicaciones";
 import BibliotecaMateriales from "./pages/BibliotecaMateriales";
+import { AuthRouteFallback } from "./components/auth/AuthRouteFallback";
 
 const queryClient = new QueryClient();
 
 // Protected Route wrapper for teachers
 const ProtectedTeacherRoute = ({ children }: { children: React.ReactNode }) => {
-  const { user, isAuthenticated } = useAuth();
-  
-  if (!isAuthenticated) {
-    return <Navigate to="/" replace />;
+  const { user, isAuthenticated, authReady, session } = useAuth();
+
+  if (!authReady) {
+    return <AuthRouteFallback />;
   }
-  
-  if (user?.role !== 'teacher') {
-    return <Navigate to="/" replace />;
+
+  if (!isAuthenticated || user?.role !== 'teacher' || !session?.user) {
+    return <Navigate to="/teacher-login" replace />;
   }
-  
+
   return <AppLayout>{children}</AppLayout>;
 };
 
 // Protected Route wrapper for students  
 const ProtectedStudentRoute = ({ children }: { children: React.ReactNode }) => {
-  const { user, isAuthenticated } = useAuth();
-  
+  const { user, isAuthenticated, authReady } = useAuth();
+
+  if (!authReady) {
+    return <AuthRouteFallback />;
+  }
+
   if (!isAuthenticated) {
     return <Navigate to="/" replace />;
   }

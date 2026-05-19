@@ -116,7 +116,7 @@ Función pura que **adapta** una fila de `dashboard_notifications` al shape que 
 4. **Marcar como leída:** `upsert` en `dashboard_notification_reads` con `onConflict: 'notification_id,user_id'`, y actualización optimista del set en memoria.
 5. **Crear aviso (prueba):** formulario `<details>` que hace `insert` en `dashboard_notifications` con `recipient_user_id` NULL (broadcast).
 
-**Navegación:** igual que antes: si hay `studentId` o `groupId`, click navega a `/teacher-groups` con `state` adecuado.
+**Navegación:** click en aviso con `studentId` o `groupId` navega a `/teacher-groups` con `teacherGroupsNavState()` (`returnTo: '/teacher-dashboard'`) para que «atrás» vuelva al dashboard sin recorrer el stack intermedio. Ver `docs/teacher-groups.md`.
 
 ---
 

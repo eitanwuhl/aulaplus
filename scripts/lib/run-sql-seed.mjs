@@ -148,13 +148,10 @@ async function connectFirst(candidates, logPrefix) {
   throw lastErr ?? new Error('No connection candidates');
 }
 
-/**
- * @param {{ repoRoot: string; sqlRelativePath: string; logPrefix: string; successMessage: string }} opts
- */
-export async function runSqlSeed(opts) {
+export function loadMergedEnv(repoRoot) {
   const envPaths = [
-    resolve(opts.repoRoot, '.env'),
-    resolve(opts.repoRoot, '.env.local'),
+    resolve(repoRoot, '.env'),
+    resolve(repoRoot, '.env.local'),
     resolve(process.cwd(), '.env'),
     resolve(process.cwd(), '.env.local'),
   ];
@@ -162,7 +159,29 @@ export async function runSqlSeed(opts) {
   for (const p of envPaths) {
     Object.assign(fileEnv, parseEnvFile(p));
   }
-  const merged = { ...fileEnv, ...process.env };
+  return { ...fileEnv, ...process.env };
+}
+
+/** @returns {Promise<import('pg').Client>} */
+export async function connectPgClient(repoRoot, logPrefix = 'seed') {
+  const merged = loadMergedEnv(repoRoot);
+  const collected = collectPgCandidates(merged, repoRoot);
+  const candidates = collected.candidates ?? collected;
+
+  if (!candidates.length) {
+    printConnectionHelp(repoRoot, collected.ref);
+    process.exit(1);
+  }
+
+  const { client } = await connectFirst(candidates, logPrefix);
+  return client;
+}
+
+/**
+ * @param {{ repoRoot: string; sqlRelativePath: string; logPrefix: string; successMessage: string }} opts
+ */
+export async function runSqlSeed(opts) {
+  const merged = loadMergedEnv(opts.repoRoot);
   const collected = collectPgCandidates(merged, opts.repoRoot);
   const candidates = collected.candidates ?? collected;
 

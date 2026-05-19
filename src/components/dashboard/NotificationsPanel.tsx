@@ -19,6 +19,7 @@ import type { DashboardNotification, NotificationLinkTarget, NotificationType } 
 import { NotificationCreateForm } from '@/components/dashboard/NotificationCreateForm';
 import { NotificationListItem } from '@/components/dashboard/NotificationListItem';
 import { notificationAudienceMessage } from '@/components/dashboard/notificationAudienceMessage';
+import { teacherGroupsNavState } from '@/lib/navigation/teacherGroupsNavigation';
 
 export function NotificationsPanel() {
   const navigate = useNavigate();
@@ -113,11 +114,15 @@ export function NotificationsPanel() {
 
   const handleNavigate = (notification: DashboardNotification) => {
     if (notification.studentId != null) {
-      navigate('/teacher-groups', { state: { studentId: notification.studentId } });
+      navigate('/teacher-groups', {
+        state: teacherGroupsNavState({ studentId: notification.studentId }),
+      });
       return;
     }
     if (notification.groupId) {
-      navigate('/teacher-groups', { state: { groupId: notification.groupId } });
+      navigate('/teacher-groups', {
+        state: teacherGroupsNavState({ groupId: notification.groupId }),
+      });
     }
   };
 

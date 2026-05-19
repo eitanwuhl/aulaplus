@@ -15,6 +15,8 @@ This document contains:
 
 **Notificaciones del dashboard (persistencia, tablas, RLS, seeds):** [docs/dashboard-notifications.md](docs/dashboard-notifications.md)
 
+**Mis Grupos (Postgres + seeds):** [docs/teacher-groups.md](docs/teacher-groups.md)
+
 ## Commands
 
 ### Development

@@ -7,6 +7,7 @@ export default defineConfig({
     include: [
       "src/services/auth/**/*.test.ts",
       "src/services/notifications/**/*.test.ts",
+      "src/services/teacherGroups/**/*.test.ts",
     ],
   },
   resolve: {

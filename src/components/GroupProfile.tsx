@@ -15,7 +15,9 @@ import AnalisisGrupalAvanzado from "./AnalisisGrupalAvanzado";
 import ReporteGrupal from "./ReporteGrupal";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 import type { TeacherSugerencias } from "@/data/mockData";
+import { CatalogEmptyState } from "@/components/teacherGroups/CatalogEmptyState";
 
 interface Student {
   id: number;
@@ -43,9 +45,10 @@ interface GroupProfileProps {
 }
 
 const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
-  console.log("[DEBUG] GroupProfile component starting to render");
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { session } = useAuth();
+  const teacherUserId = session?.user?.id;
   const [isLoading, setIsLoading] = useState(false);
   const [teacherSugerencias, setTeacherSugerencias] = useState<TeacherSugerencias | null>(
     group.teacher_sugerencias || null
@@ -173,16 +176,15 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
 
   // Cargar sugerencias del docente desde Supabase
   useEffect(() => {
+    if (!teacherUserId) return;
+
     const loadTeacherSugerencias = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
-
         const { data, error } = await supabase
           .from('grupos')
           .select('teacher_sugerencias')
           .eq('id', group.id)
-          .eq('user_id', user.id)
+          .eq('user_id', teacherUserId)
           .single();
 
         if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
@@ -198,15 +200,14 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
       }
     };
 
-    loadTeacherSugerencias();
-  }, [group.id]);
+    void loadTeacherSugerencias();
+  }, [group.id, teacherUserId]);
 
   // Guardar sugerencias del docente en Supabase
   const saveTeacherSugerencias = async (section: 'aula' | 'evaluaciones' | 'otras', value: string) => {
     setIsSaving(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      if (!teacherUserId) {
         toast({
           title: "Error",
           description: "No estás autenticado. Por favor, inicia sesión.",
@@ -232,7 +233,7 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
         .from('grupos')
         .select('id')
         .eq('id', group.id)
-        .eq('user_id', user.id)
+        .eq('user_id', teacherUserId)
         .single();
 
       if (existingGroup) {
@@ -241,7 +242,7 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
           .from('grupos')
           .update({ teacher_sugerencias: updatedSugerencias })
           .eq('id', group.id)
-          .eq('user_id', user.id);
+          .eq('user_id', teacherUserId);
 
         if (error) throw error;
       } else {
@@ -253,7 +254,7 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
             name: group.name,
             year: group.year,
             section: group.section,
-            user_id: user.id,
+            user_id: teacherUserId,
             teacher_sugerencias: updatedSugerencias
           });
 
@@ -366,6 +367,11 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
                   <StudentCardSkeleton key={i} />
                 ))}
               </div>
+            ) : group.students.length === 0 ? (
+              <CatalogEmptyState
+                title="Sin alumnos en este grupo"
+                description="No hay estudiantes asignados a este curso en el catálogo escolar. Verificá npm run seed:school-catalog o la asignación en la base de datos."
+              />
             ) : (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {group.students.map((student, index) => (

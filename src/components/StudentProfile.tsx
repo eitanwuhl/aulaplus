@@ -65,7 +65,7 @@ interface StudentProfileProps {
       tipo: 'docente' | 'psicopedagogico';
     }[];
     informeTecnico?: {
-      sintesis: string;
+      sintesis: string | { title: string; bullets: string[] }[];
       estiloAprendizaje: string;
       objetivosPriorizados: string[];
       modalidadCursado: string;

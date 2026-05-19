@@ -1,6 +1,6 @@
-import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, ReactNode, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import type { Session } from '@supabase/supabase-js';
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { resolveTeacherAuthEmail, verifyStudentLoginRemote, formatRpcError } from '@/services/auth/remoteLogin';
 
 type UserRole = 'teacher' | 'student';
@@ -22,6 +22,11 @@ interface AuthContextType {
   logout: () => Promise<void>;
   isAuthenticated: boolean;
   session: Session | null;
+  authReady: boolean;
+}
+
+function clearTeacherAuthStorage() {
+  localStorage.removeItem('auth_user');
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -59,132 +64,154 @@ async function seedDemoAuthUsers(): Promise<{ errorMessage?: string }> {
   return {};
 }
 
+async function resolveTeacherDisplayName(session: Session): Promise<string> {
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('display_name')
+    .eq('user_id', session.user.id)
+    .maybeSingle();
+
+  return (
+    profile?.display_name ??
+    (typeof session.user.user_metadata?.display_name === 'string'
+      ? session.user.user_metadata.display_name
+      : null) ??
+    session.user.email?.split('@')[0] ??
+    'Docente'
+  );
+}
+
 export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [isInitialized, setIsInitialized] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
   const profileUpsertInProgress = useRef<Set<string>>(new Set());
 
-  useEffect(() => {
-    void seedDemoAuthUsers();
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      setSession(nextSession);
-
-      if (nextSession?.user) {
-        const userId = nextSession.user.id;
-
-        if (profileUpsertInProgress.current.has(userId)) {
-          if (import.meta.env.DEV) {
-            console.log(`[AuthContext] Profile upsert already in progress for user ${userId}, skipping`);
-          }
-        } else {
-          profileUpsertInProgress.current.add(userId);
-
-          void (async () => {
-            try {
-              const { error } = await supabase.from('profiles').upsert(
-                {
-                  user_id: userId,
-                  display_name: nextSession.user.user_metadata?.display_name ?? 'Docente',
-                  role: 'teacher',
-                },
-                { onConflict: 'user_id' }
-              );
-              if (error) {
-                if (
-                  error.code === '23505' ||
-                  error.code === 'PGRST116' ||
-                  error.message?.includes('duplicate') ||
-                  error.message?.includes('unique')
-                ) {
-                  if (import.meta.env.DEV) {
-                    console.log(`[AuthContext] Profile already exists for user ${userId} (OK)`);
-                  }
-                } else {
-                  console.error(`[AuthContext] Error upserting profile for user ${userId}:`, error);
-                }
-              } else if (import.meta.env.DEV) {
-                console.log(`[AuthContext] Profile upserted for user ${userId}`);
-              }
-            } catch (error) {
-              console.error(`[AuthContext] Unexpected error upserting profile for user ${userId}:`, error);
-            } finally {
-              setTimeout(() => profileUpsertInProgress.current.delete(userId), 1000);
-            }
-          })();
+  const restoreTeacherFromSession = useCallback(async (nextSession: Session) => {
+    const savedUser = localStorage.getItem('auth_user');
+    if (savedUser) {
+      try {
+        const parsedUser = JSON.parse(savedUser) as User;
+        if (parsedUser.role === 'teacher' && parsedUser.id === nextSession.user.id) {
+          setUser(parsedUser);
+          return;
         }
+      } catch (e) {
+        console.error('Error parsing saved user:', e);
       }
+    }
 
-      if (!isInitialized) {
-        setIsInitialized(true);
+    const name = await resolveTeacherDisplayName(nextSession);
+    const teacherUser: User = {
+      id: nextSession.user.id,
+      role: 'teacher',
+      name,
+    };
+    setUser(teacherUser);
+    localStorage.setItem('auth_user', JSON.stringify(teacherUser));
+  }, []);
+
+  const restoreStudentFromStorage = useCallback(() => {
+    const savedUser = localStorage.getItem('auth_user');
+    if (!savedUser) return;
+    try {
+      const parsedUser = JSON.parse(savedUser) as User;
+      if (parsedUser.role === 'student') {
+        setUser(parsedUser);
       }
-    });
-
-    return () => subscription.unsubscribe();
-  }, [isInitialized]);
+    } catch (e) {
+      console.error('Error parsing saved user:', e);
+    }
+  }, []);
 
   useEffect(() => {
-    const initializeUser = async () => {
+    if (import.meta.env.DEV) {
+      void seedDemoAuthUsers();
+    }
+
+    let mounted = true;
+
+    const bootstrap = async () => {
       const {
-        data: { session: currentSession },
+        data: { session: initialSession },
       } = await supabase.auth.getSession();
 
-      if (currentSession?.user) {
-        setSession(currentSession);
-        const savedUser = localStorage.getItem('auth_user');
-        let restored = false;
-        if (savedUser) {
-          try {
-            const parsedUser = JSON.parse(savedUser) as User;
-            if (parsedUser.role === 'teacher' && parsedUser.id === currentSession.user.id) {
-              setUser(parsedUser);
-              restored = true;
-            }
-          } catch (e) {
-            console.error('Error parsing saved user:', e);
-          }
-        }
-        if (!restored) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('display_name')
-            .eq('user_id', currentSession.user.id)
-            .maybeSingle();
-          const name =
-            profile?.display_name ??
-            (typeof currentSession.user.user_metadata?.display_name === 'string'
-              ? currentSession.user.user_metadata.display_name
-              : null) ??
-            currentSession.user.email?.split('@')[0] ??
-            'Docente';
-          const teacherUser: User = {
-            id: currentSession.user.id,
-            role: 'teacher',
-            name,
-          };
-          setUser(teacherUser);
-          localStorage.setItem('auth_user', JSON.stringify(teacherUser));
-        }
+      if (!mounted) return;
+
+      setSession(initialSession);
+
+      if (initialSession?.user) {
+        await restoreTeacherFromSession(initialSession);
       } else {
-        const savedUser = localStorage.getItem('auth_user');
-        if (savedUser) {
-          try {
-            const parsedUser = JSON.parse(savedUser) as User;
-            if (parsedUser.role === 'student') {
-              setUser(parsedUser);
-            }
-          } catch (e) {
-            console.error('Error parsing saved user:', e);
-          }
+        restoreStudentFromStorage();
+      }
+
+      setAuthReady(true);
+    };
+
+    void bootstrap();
+
+    const handleSessionSideEffects = async (event: AuthChangeEvent, nextSession: Session | null) => {
+      if (!mounted || !nextSession?.user) return;
+
+      await restoreTeacherFromSession(nextSession);
+
+      if (event !== 'SIGNED_IN' && event !== 'INITIAL_SESSION' && event !== 'TOKEN_REFRESHED') {
+        return;
+      }
+
+      const userId = nextSession.user.id;
+      if (profileUpsertInProgress.current.has(userId)) return;
+
+      profileUpsertInProgress.current.add(userId);
+      try {
+        const { error } = await supabase.from('profiles').upsert(
+          {
+            user_id: userId,
+            display_name: nextSession.user.user_metadata?.display_name ?? 'Docente',
+            role: 'teacher',
+          },
+          { onConflict: 'user_id' }
+        );
+        if (error && import.meta.env.DEV) {
+          console.error(`[AuthContext] Error upserting profile for user ${userId}:`, error);
         }
+      } finally {
+        setTimeout(() => profileUpsertInProgress.current.delete(userId), 1000);
       }
     };
 
-    void initializeUser();
-  }, []);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (!mounted) return;
+
+      setSession(nextSession);
+
+      if (event === 'SIGNED_OUT') {
+        setUser((prev) => {
+          if (prev?.role === 'teacher') {
+            clearTeacherAuthStorage();
+            return null;
+          }
+          return prev;
+        });
+        return;
+      }
+
+      if (nextSession?.user) {
+        // Never await Supabase calls inside this callback (deadlock risk with getUser/getSession elsewhere).
+        queueMicrotask(() => {
+          void handleSessionSideEffects(event, nextSession);
+        });
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [restoreTeacherFromSession, restoreStudentFromStorage]);
 
   const login = async (role: UserRole, credentials: { username: string; password: string }): Promise<LoginResult> => {
     const username = credentials.username.trim();
@@ -252,15 +279,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       }
 
       const uid = signData.session.user.id;
-      const { data: profile } = await supabase.from('profiles').select('display_name').eq('user_id', uid).maybeSingle();
-
-      const name =
-        profile?.display_name ??
-        (typeof signData.session.user.user_metadata?.display_name === 'string'
-          ? signData.session.user.user_metadata.display_name
-          : null) ??
-        signData.session.user.email?.split('@')[0] ??
-        'Docente';
+      const name = await resolveTeacherDisplayName(signData.session);
 
       const newUser: User = { id: uid, role: 'teacher', name };
       setSession(signData.session);
@@ -311,19 +330,24 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const logout = async (): Promise<void> => {
     const wasTeacher = user?.role === 'teacher';
     setUser(null);
-    localStorage.removeItem('auth_user');
+    clearTeacherAuthStorage();
     if (wasTeacher) {
       await supabase.auth.signOut();
       setSession(null);
     }
   };
 
+  const isTeacherAuthenticated = user?.role === 'teacher' && Boolean(session?.user);
+  const isStudentAuthenticated = user?.role === 'student';
+  const isAuthenticated = isTeacherAuthenticated || isStudentAuthenticated;
+
   const contextValue: AuthContextType = {
     user,
     login,
     logout,
-    isAuthenticated: !!user,
+    isAuthenticated,
     session,
+    authReady,
   };
 
   return <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>;
