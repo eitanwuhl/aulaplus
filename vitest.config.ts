@@ -8,6 +8,7 @@ export default defineConfig({
       "src/services/auth/**/*.test.ts",
       "src/services/notifications/**/*.test.ts",
       "src/services/teacherGroups/**/*.test.ts",
+      "src/lib/teacherGroups/**/*.test.ts",
     ],
   },
   resolve: {

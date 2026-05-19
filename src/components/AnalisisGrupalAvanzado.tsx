@@ -1,7 +1,14 @@
-import { useMemo } from "react";
+﻿import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { motion } from "framer-motion";
 import { Network } from "lucide-react";
+import {
+  LEARNING_STYLE_LABELS,
+  primaryStyleFromPerfil,
+  type LearningStyleLabel,
+} from "@/lib/teacherGroups/learningStyleStats";
+
+const UNCLASSIFIED_LABEL = "Sin perfil clasificado";
 
 interface Student {
   id: number;
@@ -18,41 +25,32 @@ interface AnalisisGrupalAvanzadoProps {
 }
 
 const AnalisisGrupalAvanzado = ({ students, groupName }: AnalisisGrupalAvanzadoProps) => {
-  // Agrupar estudiantes por perfil de aprendizaje
   const gruposPorPerfil = useMemo(() => {
     const grupos: Record<string, Student[]> = {};
-    
-    students.forEach(student => {
-      const perfilNormalizado = student.perfil.toLowerCase();
-      let categoria = '';
-      
-      if (perfilNormalizado.includes('visual')) {
-        categoria = 'Visual';
-      } else if (perfilNormalizado.includes('auditivo')) {
-        categoria = 'Auditivo';
-      } else if (perfilNormalizado.includes('kinestésico') || perfilNormalizado.includes('kinesthetic')) {
-        categoria = 'Kinestésico';
-      } else if (perfilNormalizado.includes('lecto') || perfilNormalizado.includes('escritor')) {
-        categoria = 'Lector/Escritor';
-      } else {
-        categoria = student.perfil;
-      }
-      
-      if (!grupos[categoria]) {
-        grupos[categoria] = [];
-      }
+
+    for (const student of students) {
+      const style = primaryStyleFromPerfil(student.perfil);
+      const categoria = style ?? UNCLASSIFIED_LABEL;
+      if (!grupos[categoria]) grupos[categoria] = [];
       grupos[categoria].push(student);
-    });
-    
-    return grupos;
+    }
+
+    const ordered: Record<string, Student[]> = {};
+    for (const label of LEARNING_STYLE_LABELS) {
+      if (grupos[label]?.length) ordered[label] = grupos[label];
+    }
+    if (grupos[UNCLASSIFIED_LABEL]?.length) {
+      ordered[UNCLASSIFIED_LABEL] = grupos[UNCLASSIFIED_LABEL];
+    }
+    return ordered;
   }, [students]);
 
-  // Colores para cada perfil
-  const coloresPerfil: Record<string, string> = {
-    'Visual': 'bg-blue-100 border-blue-300 text-blue-800',
-    'Auditivo': 'bg-green-100 border-green-300 text-green-800', 
-    'Kinestésico': 'bg-orange-100 border-orange-300 text-orange-800',
-    'Lector/Escritor': 'bg-purple-100 border-purple-300 text-purple-800'
+  const coloresPerfil: Record<LearningStyleLabel | typeof UNCLASSIFIED_LABEL, string> = {
+    Visual: "bg-blue-100 border-blue-300 text-blue-800",
+    Auditivo: "bg-green-100 border-green-300 text-green-800",
+    "Kinestésico": "bg-orange-100 border-orange-300 text-orange-800",
+    "Lector/escritor": "bg-purple-100 border-purple-300 text-purple-800",
+    [UNCLASSIFIED_LABEL]: "bg-gray-100 border-gray-300 text-gray-800",
   };
 
   return (
@@ -86,7 +84,7 @@ const AnalisisGrupalAvanzado = ({ students, groupName }: AnalisisGrupalAvanzadoP
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       transition={{ duration: 0.5, delay: index * 0.2 }}
-                      className={`relative ${coloresPerfil[perfil] || 'bg-gray-100 border-gray-300 text-gray-800'} rounded-2xl border-2 p-6 shadow-lg`}
+                      className={`relative ${coloresPerfil[perfil as LearningStyleLabel] ?? coloresPerfil[UNCLASSIFIED_LABEL]} rounded-2xl border-2 p-6 shadow-lg`}
                     >
                       {/* Título del perfil */}
                       <div className="text-center mb-4">

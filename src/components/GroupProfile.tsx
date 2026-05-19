@@ -18,6 +18,13 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import type { TeacherSugerencias } from "@/data/mockData";
 import { CatalogEmptyState } from "@/components/teacherGroups/CatalogEmptyState";
+import {
+  dominantLearningStyle,
+  getLearningStyleDistribution,
+  LEARNING_STYLE_LABELS,
+} from "@/lib/teacherGroups/learningStyleStats";
+
+const UNCLASSIFIED_STYLE_LABEL = "Sin perfil clasificado";
 
 interface Student {
   id: number;
@@ -60,28 +67,8 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
     otras: ''
   });
   const [isSaving, setIsSaving] = useState(false);
-  // Calcular estadísticas de estilos de aprendizaje
-  const getLearningstyleStats = () => {
-    const styles = {
-      "Visual": 0,
-      "Kinestésico": 0,
-      "Auditivo": 0,
-      "Lector/escritor": 0
-    };
-
-    group.students.forEach(student => {
-      const profile = student.perfil.toLowerCase();
-      if (profile.includes("visual")) styles["Visual"]++;
-      if (profile.includes("kinestésico") || profile.includes("kinesthetic")) styles["Kinestésico"]++;
-      if (profile.includes("auditivo")) styles["Auditivo"]++;
-      if (profile.includes("lecto") || profile.includes("escritor")) styles["Lector/escritor"]++;
-    });
-
-    return styles;
-  };
-
-  const learningStyles = getLearningstyleStats();
-  const totalStudents = group.students.length;
+  const { counts: learningStyles, unclassified: unclassifiedLearningStyles, totalStudents } =
+    getLearningStyleDistribution(group.students);
 
   // Generar recomendaciones pedagógicas basadas en los estilos predominantes
   const getPedagogicalRecommendations = () => {
@@ -125,10 +112,8 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
 
   const recommendations = getPedagogicalRecommendations();
 
-  // Determinar perfil dominante para los nuevos componentes
-  const perfilDominante = Object.entries(learningStyles).reduce((a, b) => 
-    learningStyles[a[0]] > learningStyles[b[0]] ? a : b
-  )[0];
+  const perfilDominante = dominantLearningStyle(learningStyles);
+  const classifiedStudents = totalStudents - unclassifiedLearningStyles;
 
   // Calcular diversidad del grupo
   const diversidadGrupo = Object.values(learningStyles).filter(count => count > 0).length;
@@ -402,9 +387,19 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
             priority="high"
           >
             <div className="space-y-6">
+              <p className="text-sm text-muted-foreground">
+                Un estilo principal por alumno (segmento antes del guion en perfiles compuestos).
+                {totalStudents === 0
+                  ? " No hay estudiantes en el listado."
+                  : unclassifiedLearningStyles === 0
+                    ? ` Los ${totalStudents} estudiantes del listado coinciden con esta distribución.`
+                    : ` ${classifiedStudents} de ${totalStudents} con estilo clasificado; ${unclassifiedLearningStyles} sin perfil reconocible en el catálogo.`}
+              </p>
               {/* Estadísticas en barras */}
               <div className="space-y-4">
-                {Object.entries(learningStyles).map(([style, count]) => (
+                {LEARNING_STYLE_LABELS.map((style) => {
+                  const count = learningStyles[style];
+                  return (
                   <div key={style} className="space-y-2">
                     <div className="flex justify-between items-center">
                       <div className="flex items-center gap-2">
@@ -427,7 +422,32 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
                       {totalStudents > 0 ? Math.round((count / totalStudents) * 100) : 0}%
                     </div>
                   </div>
-                ))}
+                  );
+                })}
+                {unclassifiedLearningStyles > 0 && (
+                  <div key={UNCLASSIFIED_STYLE_LABEL} className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-2">
+                        {getStyleIcon(UNCLASSIFIED_STYLE_LABEL)}
+                        <span className="font-medium text-gray-700">{UNCLASSIFIED_STYLE_LABEL}</span>
+                      </div>
+                      <span className="text-lg font-semibold text-gray-800">
+                        {unclassifiedLearningStyles} estudiante{unclassifiedLearningStyles !== 1 ? "s" : ""}
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-4">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: totalStudents > 0 ? `${(unclassifiedLearningStyles / totalStudents) * 100}%` : '0%' }}
+                        transition={{ duration: 1, delay: 0.5 }}
+                        className={`h-4 rounded-full ${getStyleColor(UNCLASSIFIED_STYLE_LABEL)}`}
+                      />
+                    </div>
+                    <div className="text-right text-sm text-gray-500">
+                      {totalStudents > 0 ? Math.round((unclassifiedLearningStyles / totalStudents) * 100) : 0}%
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Resumen visual */}
@@ -437,7 +457,9 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
                   <h4 className="font-semibold text-blue-800">Resumen del grupo</h4>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
-                  {Object.entries(learningStyles).map(([style, count]) => (
+                  {LEARNING_STYLE_LABELS.map((style) => {
+                    const count = learningStyles[style];
+                    return (
                     <motion.div 
                       key={style} 
                       className="bg-white p-3 rounded-lg shadow-sm"
@@ -451,7 +473,23 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
                       <div className="text-2xl font-bold text-gray-800">{count}</div>
                       <div className="text-xs text-gray-600">{style}</div>
                     </motion.div>
-                  ))}
+                    );
+                  })}
+                  {unclassifiedLearningStyles > 0 && (
+                    <motion.div
+                      key={UNCLASSIFIED_STYLE_LABEL}
+                      className="bg-white p-3 rounded-lg shadow-sm"
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{ delay: 0.8, duration: 0.3 }}
+                    >
+                      <div className="flex justify-center mb-1">
+                        {getStyleIcon(UNCLASSIFIED_STYLE_LABEL)}
+                      </div>
+                      <div className="text-2xl font-bold text-gray-800">{unclassifiedLearningStyles}</div>
+                      <div className="text-xs text-gray-600">{UNCLASSIFIED_STYLE_LABEL}</div>
+                    </motion.div>
+                  )}
                 </div>
               </div>
             </div>

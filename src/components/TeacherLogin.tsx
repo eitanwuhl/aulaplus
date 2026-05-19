@@ -99,12 +99,6 @@ const TeacherLogin = () => {
           </form>
 
           <div className="mt-6 text-center">
-            {import.meta.env.DEV && (
-              <p className="text-xs text-muted-foreground mb-4 text-left rounded-md border border-dashed p-3">
-                Modo desarrollo: credenciales de prueba y seed están en la documentación del repo / scripts (no se
-                muestran en pantalla).
-              </p>
-            )}
 
             <Button
               variant="ghost"
