@@ -60,7 +60,7 @@ export function BetaToggle({ onChange, className, showHelperText = true }: BetaT
         <p className="text-xs text-muted-foreground flex items-start gap-1 ml-9">
           <Info className="w-3 h-3 mt-0.5 shrink-0" />
           <span>
-            Usa el nuevo formato estructurado. Si no está disponible, volvemos al formato estándar automáticamente.
+            Usa el motor V2 (recomendado). Requiere la función desplegada en Supabase y sesión de docente activa.
           </span>
         </p>
       )}

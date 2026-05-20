@@ -15,5 +15,8 @@ verify_jwt = false
 verify_jwt = false
 
 # Gateway validates JWT (default). No manual JWT secret needed in the function.
+[functions.modify-evaluation]
+verify_jwt = true
+
 [functions.modify-evaluation-v2]
 verify_jwt = true

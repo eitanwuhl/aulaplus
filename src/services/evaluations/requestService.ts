@@ -95,7 +95,10 @@ const DEBUG_MODE = import.meta.env.DEV || import.meta.env.VITE_DEBUG_EVAL_PIPELI
 export function getBetaToggleState(): boolean {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    return stored === 'true';
+    if (stored === 'true') return true;
+    if (stored === 'false') return false;
+    // Default ON in dev so generation uses deployed modify-evaluation-v2.
+    return import.meta.env.DEV;
   } catch {
     return false;
   }

@@ -14,12 +14,15 @@ console.log('OpenAI API Key:', openAIApiKey);
 
 // Initialize Supabase client for image rehosting (local: SUPABASE_SERVICE_ROLE_KEY; optional custom SERVICE_ROLE_KEY)
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-const supabaseServiceKey =
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY');
-if (!supabaseServiceKey) {
-  throw new Error('SUPABASE_SERVICE_ROLE_KEY or SERVICE_ROLE_KEY is required');
+
+function getServiceRoleClient() {
+  const supabaseServiceKey =
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY');
+  if (!supabaseServiceKey) {
+    throw new Error('SUPABASE_SERVICE_ROLE_KEY or SERVICE_ROLE_KEY is required');
+  }
+  return createClient(supabaseUrl, supabaseServiceKey);
 }
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -891,6 +894,7 @@ async function validateAndRehostImage(url: string, title: string = 'Imagen'): Pr
     const filePath = `images/${fileName}`;
 
     // Upload to Supabase Storage
+    const supabase = getServiceRoleClient();
     const { data, error } = await supabase.storage
       .from('evaluaciones-assets')
       .upload(filePath, blob, {

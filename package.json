@@ -22,6 +22,7 @@
     "functions:local": "npx supabase functions serve --no-verify-jwt",
     "preview": "vite preview",
     "supabase:deploy:v2": "node scripts/supabase-deploy-v2.js",
+    "supabase:deploy:evaluations": "supabase functions deploy modify-evaluation-v2 modify-evaluation --project-ref bbzikjvrehfooaumkmui",
     "supabase:verify:v2": "node scripts/supabase-verify-v2.js"
   },
   "dependencies": {
