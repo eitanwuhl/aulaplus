@@ -1,6 +1,7 @@
 export {
   fetchDashboardNotifications,
   markNotificationAsRead,
+  markNotificationsAsRead,
   createBroadcastNotification,
 } from './notifications.service';
 

@@ -28,13 +28,37 @@ npm run seed:demo
 
 `seed:demo` = login + catálogo + **perfiles** (`seed:student-profiles`) + asignación docente↔grupo.
 
+## Perfil del alumno (`profile_data`)
+
+Campos leídos desde jsonb (sin mocks en runtime):
+
+| Campo | UI |
+|-------|-----|
+| `historialAcademico` | Historial académico |
+| `evaluacionesCualitativas` | Observaciones pasadas |
+| `resultadosEvaluaciones` | Resultados de evaluaciones |
+| `evolucionDetallada` | Evolución académica por materia (gráfico) |
+| `dashboardEvolucion` | Dashboard de métricas al pie del perfil |
+| `informeTecnico` | Informe psicopedagógico |
+| `contemplaciones` | Sugerencias en catálogo de contemplaciones |
+| `anotaciones`, `seguimiento`, etc. | Sidebar / evolución |
+
+Demo: `src/data/mockData.ts` → `npm run seed:student-profiles` (incluido en `seed:demo`). Si faltan campos opcionales, el seed aplica defaults (`DEFAULT_*` o `buildDefaultDashboardEvolucion` según `promedio`/`progreso` del alumno).
+
+**Contemplaciones:** el catálogo completo vive en `src/lib/contemplaciones/catalog` (config de producto). Las sugerencias por alumno vienen de `profile_data.contemplaciones` (seed). La selección del docente se guarda en `localStorage`.
+
+## Notificaciones del alumno
+
+`NotificacionesAlumno` filtra `dashboard_notifications` del docente (`useNotifications`) por `student_id` y estado no leído (`useStudentNotifications`).
+
 ## Front
 
 - Servicio: `src/services/teacherGroups/`
 - Hook: `useTeacherGroups`
 - Página: `src/pages/TeacherGroups.tsx`
+- View models: `toStudentProfileViewModel` / `toGroupProfileViewModel`
 - Empty states: `src/components/teacherGroups/CatalogEmptyState.tsx`
-- Notificaciones → `teacherGroupsNavState()` con `returnTo: '/teacher-dashboard'`
+- Navegación con retorno → `teacherGroupsNavState()` con `returnTo: '/teacher-dashboard'`
 
 ## Otras pantallas
 

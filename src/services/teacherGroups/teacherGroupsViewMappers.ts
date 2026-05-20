@@ -11,6 +11,10 @@ export type StudentProfileViewModel = {
   seguimiento: string[];
   historialAcademico: NonNullable<SchoolStudent['historialAcademico']>;
   evaluacionesCualitativas: NonNullable<SchoolStudent['evaluacionesCualitativas']>;
+  resultadosEvaluaciones: NonNullable<SchoolStudent['resultadosEvaluaciones']>;
+  evolucionDetallada: NonNullable<SchoolStudent['evolucionDetallada']>;
+  /** Present when seeded; UI shows empty state if `metricas` is missing. */
+  dashboardEvolucion: SchoolStudent['dashboardEvolucion'];
   informeTecnico?: SchoolStudent['informeTecnico'];
 };
 
@@ -41,6 +45,9 @@ export function toStudentProfileViewModel(student: SchoolStudent): StudentProfil
     seguimiento: student.seguimiento ?? [],
     historialAcademico: student.historialAcademico ?? [],
     evaluacionesCualitativas: student.evaluacionesCualitativas ?? [],
+    resultadosEvaluaciones: student.resultadosEvaluaciones ?? [],
+    evolucionDetallada: student.evolucionDetallada ?? [],
+    dashboardEvolucion: student.dashboardEvolucion,
     informeTecnico: student.informeTecnico,
   };
 }

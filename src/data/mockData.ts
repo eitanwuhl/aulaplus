@@ -19,6 +19,246 @@ export interface EvaluacionCualitativa {
   tipo: 'docente' | 'psicopedagogico';
 }
 
+/** Resultados de evaluaciones cargados en el perfil (seed → profile_data). */
+export interface ResultadoEvaluacion {
+  fecha: string;
+  materia: string;
+  trimestre: string;
+  nota: number;
+  versionEvaluacion: number;
+  observacion: string;
+}
+
+export interface EvolucionPeriodo {
+  año: string;
+  trimestre: string;
+  materias: { nombre: string; calificacion: number }[];
+}
+
+/** Demo default; copied into profile_data when seeding if absent per student. */
+export const DEFAULT_EVOLUCION_DETALLADA: EvolucionPeriodo[] = [
+  {
+    año: '2023',
+    trimestre: 'T1',
+    materias: [
+      { nombre: 'Matemática', calificacion: 6.5 },
+      { nombre: 'Lengua', calificacion: 6.0 },
+      { nombre: 'Historia', calificacion: 7.5 },
+      { nombre: 'Ciencias', calificacion: 7.0 },
+    ],
+  },
+  {
+    año: '2023',
+    trimestre: 'T2',
+    materias: [
+      { nombre: 'Matemática', calificacion: 7.0 },
+      { nombre: 'Lengua', calificacion: 6.5 },
+      { nombre: 'Historia', calificacion: 8.0 },
+      { nombre: 'Ciencias', calificacion: 7.5 },
+    ],
+  },
+  {
+    año: '2023',
+    trimestre: 'T3',
+    materias: [
+      { nombre: 'Matemática', calificacion: 7.5 },
+      { nombre: 'Lengua', calificacion: 6.5 },
+      { nombre: 'Historia', calificacion: 8.5 },
+      { nombre: 'Ciencias', calificacion: 7.5 },
+    ],
+  },
+  {
+    año: '2024',
+    trimestre: 'T1',
+    materias: [
+      { nombre: 'Matemática', calificacion: 8.0 },
+      { nombre: 'Lengua', calificacion: 6.8 },
+      { nombre: 'Historia', calificacion: 8.8 },
+      { nombre: 'Ciencias', calificacion: 8.0 },
+    ],
+  },
+  {
+    año: '2024',
+    trimestre: 'T2',
+    materias: [
+      { nombre: 'Matemática', calificacion: 8.2 },
+      { nombre: 'Lengua', calificacion: 7.0 },
+      { nombre: 'Historia', calificacion: 9.0 },
+      { nombre: 'Ciencias', calificacion: 8.2 },
+    ],
+  },
+  {
+    año: '2024',
+    trimestre: 'T3',
+    materias: [
+      { nombre: 'Matemática', calificacion: 8.5 },
+      { nombre: 'Lengua', calificacion: 7.0 },
+      { nombre: 'Historia', calificacion: 9.0 },
+      { nombre: 'Ciencias', calificacion: 8.0 },
+    ],
+  },
+];
+
+/** Demo default; copied into profile_data when seeding if absent per student. */
+export const DEFAULT_RESULTADOS_EVALUACION: ResultadoEvaluacion[] = [
+  {
+    fecha: 'Noviembre 2024',
+    materia: 'Historia',
+    trimestre: 'Tercer Trimestre',
+    nota: 8,
+    versionEvaluacion: 1,
+    observacion:
+      'Demostró un excelente manejo de los contenidos utilizando las imágenes de apoyo. Se sintió cómodo con las consignas más breves y pudo concentrarse mejor con el tiempo adicional otorgado.',
+  },
+  {
+    fecha: 'Octubre 2024',
+    materia: 'Matemática',
+    trimestre: 'Tercer Trimestre',
+    nota: 7,
+    versionEvaluacion: 2,
+    observacion:
+      'Se sintió cómodo expresando sus conocimientos mediante modalidad de opción múltiple, lo cual no había podido desarrollar de la manera deseada cuando se le había pedido desarrollar en otras instancias.',
+  },
+  {
+    fecha: 'Septiembre 2024',
+    materia: 'Lengua',
+    trimestre: 'Segundo Trimestre',
+    nota: 6,
+    versionEvaluacion: 1,
+    observacion:
+      'Mostró mejoras con el uso de apoyos visuales. Aún requiere más tiempo para organizar sus ideas por escrito, pero las consignas más breves le permitieron expresarse mejor.',
+  },
+];
+
+export type ObjetivoEstado = 'en_progreso' | 'completado' | 'pendiente';
+
+export interface DashboardObjetivo {
+  id: number;
+  descripcion: string;
+  estado: ObjetivoEstado;
+  progreso: number;
+  fechaLimite: string;
+}
+
+export interface DashboardMetricas {
+  promedioGeneral: number;
+  promedioAnterior: number;
+  mejorMateria: { nombre: string; nota: number };
+  materiaRiesgo: { nombre: string; nota: number };
+  objetivosCumplidos: number;
+  objetivosTotales: number;
+  progresoAnual: number;
+}
+
+export interface ProgresoMateria {
+  materia: string;
+  actual: number;
+  objetivo: number;
+  progreso: number;
+}
+
+export interface EfectividadContemplacion {
+  name: string;
+  value: number;
+  color: string;
+}
+
+/** Dashboard de evolución (métricas, objetivos, gráficos) — seed → profile_data. */
+export interface DashboardEvolucionData {
+  metricas: DashboardMetricas;
+  progresoMaterias: ProgresoMateria[];
+  efectividadContemplaciones: EfectividadContemplacion[];
+  objetivos: DashboardObjetivo[];
+}
+
+const DEFAULT_OBJETIVOS: DashboardObjetivo[] = [
+  {
+    id: 1,
+    descripcion: 'Mejorar comprensión lectora',
+    estado: 'en_progreso',
+    progreso: 65,
+    fechaLimite: '2024-12-15',
+  },
+  {
+    id: 2,
+    descripcion: 'Reducir ansiedad evaluativa',
+    estado: 'completado',
+    progreso: 100,
+    fechaLimite: '2024-11-30',
+  },
+  {
+    id: 3,
+    descripcion: 'Fortalecer autonomía en tareas',
+    estado: 'completado',
+    progreso: 100,
+    fechaLimite: '2024-10-15',
+  },
+  {
+    id: 4,
+    descripcion: 'Desarrollar habilidades sociales',
+    estado: 'completado',
+    progreso: 100,
+    fechaLimite: '2024-09-30',
+  },
+  {
+    id: 5,
+    descripcion: 'Mejorar organización personal',
+    estado: 'en_progreso',
+    progreso: 45,
+    fechaLimite: '2024-12-30',
+  },
+];
+
+const DEFAULT_PROGRESO_MATERIAS: ProgresoMateria[] = [
+  { materia: 'Matemática', actual: 8.5, objetivo: 8.0, progreso: 106 },
+  { materia: 'Lengua', actual: 7.0, objetivo: 8.0, progreso: 88 },
+  { materia: 'Historia', actual: 9.0, objetivo: 8.5, progreso: 106 },
+  { materia: 'Ciencias', actual: 8.0, objetivo: 8.0, progreso: 100 },
+];
+
+const DEFAULT_EFECTIVIDAD: EfectividadContemplacion[] = [
+  { name: 'Muy efectiva', value: 40, color: '#10b981' },
+  { name: 'Efectiva', value: 35, color: '#3b82f6' },
+  { name: 'Parcialmente efectiva', value: 20, color: '#f59e0b' },
+  { name: 'Poco efectiva', value: 5, color: '#ef4444' },
+];
+
+/** Builds demo dashboard metrics using student catalog fields when available. */
+export function buildDefaultDashboardEvolucion(student?: {
+  promedio?: number;
+  progreso?: number;
+}): DashboardEvolucionData {
+  const promedioGeneral = student?.promedio ?? 7.8;
+  const promedioAnterior = Math.max(0, Math.round((promedioGeneral - 0.6) * 10) / 10);
+  const progresoAnual = student?.progreso ?? 78;
+
+  const progresoMaterias = DEFAULT_PROGRESO_MATERIAS.map((m) => {
+    const delta = promedioGeneral - 7.8;
+    const actual = Math.min(10, Math.max(0, Math.round((m.actual + delta) * 10) / 10));
+    const progreso = Math.round((actual / m.objetivo) * 100);
+    return { ...m, actual, progreso };
+  });
+
+  const sorted = [...progresoMaterias].sort((a, b) => b.actual - a.actual);
+
+  return {
+    metricas: {
+      promedioGeneral,
+      promedioAnterior,
+      mejorMateria: { nombre: sorted[0].materia, nota: sorted[0].actual },
+      materiaRiesgo: { nombre: sorted[sorted.length - 1].materia, nota: sorted[sorted.length - 1].actual },
+      objetivosCumplidos: DEFAULT_OBJETIVOS.filter((o) => o.estado === 'completado').length,
+      objetivosTotales: DEFAULT_OBJETIVOS.length,
+      progresoAnual,
+    },
+    progresoMaterias,
+    efectividadContemplaciones: DEFAULT_EFECTIVIDAD,
+    objetivos: DEFAULT_OBJETIVOS,
+  };
+}
+
+export const DEFAULT_DASHBOARD_EVOLUCION = buildDefaultDashboardEvolucion();
+
 export interface InformeTecnico {
   sintesis: string | { title: string; bullets: string[] }[];  // New: support accordion cards OR legacy string
   estiloAprendizaje: string;
@@ -44,6 +284,9 @@ export interface Student {
   seguimiento?: string[];
   historialAcademico?: HistorialAcademico[];
   evaluacionesCualitativas?: EvaluacionCualitativa[];
+  resultadosEvaluaciones?: ResultadoEvaluacion[];
+  evolucionDetallada?: EvolucionPeriodo[];
+  dashboardEvolucion?: DashboardEvolucionData;
   informeTecnico?: InformeTecnico;
 }
 
@@ -134,6 +377,46 @@ export const mockStudents: Student[] = [
         comentario:
           "Ana muestra mejores resultados cuando se le proporcionan apoyos visuales y tiempo adicional. Su ansiedad ante evaluaciones escritas ha disminuido con las contemplaciones implementadas.",
         tipo: "psicopedagogico",
+      },
+      {
+        fecha: "15 Oct 2024",
+        evaluador: "Prof. Ana García (Matemática)",
+        area: "Matemática - Resolución de problemas",
+        comentario:
+          "Ha mejorado notablemente en la comprensión de problemas algebraicos desde que implementamos las contemplaciones visuales. Utiliza el material concreto de manera efectiva y su nivel de ansiedad durante las evaluaciones ha disminuido considerablemente.",
+        tipo: "docente",
+      },
+      {
+        fecha: "8 Oct 2024",
+        evaluador: "Lic. María Rodriguez (Psicopedagoga)",
+        area: "Evaluación integral",
+        comentario:
+          "Se observa un progreso significativo en su autoestima académica. Las estrategias de apoyo implementadas han permitido que exprese mejor sus conocimientos. Recomiendo continuar con el enfoque multimodal y considerar la ampliación de tiempo en evaluaciones escritas.",
+        tipo: "psicopedagogico",
+      },
+      {
+        fecha: "25 Sep 2024",
+        evaluador: "Prof. Carlos Mendez (Historia)",
+        area: "Historia - Comprensión temporal",
+        comentario:
+          "Excelente respuesta a las líneas de tiempo visuales y mapas conceptuales. Su capacidad para establecer relaciones causa-efecto ha mejorado sustancialmente. Sugiero continuar con recursos gráficos para consolidar aprendizajes complejos.",
+        tipo: "docente",
+      },
+      {
+        fecha: "12 Sep 2024",
+        evaluador: "Prof. Laura Vega (Lengua)",
+        area: "Lengua - Expresión escrita",
+        comentario:
+          "Muestra progreso en la organización de ideas cuando utiliza esquemas previos. La implementación de borradores estructurados ha mejorado significativamente la coherencia de sus textos. Requiere continuar trabajando la revisión ortográfica con apoyo tecnológico.",
+        tipo: "docente",
+      },
+      {
+        fecha: "3 Sep 2024",
+        evaluador: "Prof. Roberto Silva (Ciencias)",
+        area: "Ciencias Naturales - Experimentación",
+        comentario:
+          "Demuestra gran interés y habilidad en actividades prácticas de laboratorio. Su comprensión mejora notablemente cuando puede manipular materiales y observar fenómenos directamente. Recomiendo priorizar aprendizaje experimental sobre contenido teórico extenso.",
+        tipo: "docente",
       },
     ],
     informeTecnico: {

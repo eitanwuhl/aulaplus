@@ -87,26 +87,41 @@ export async function fetchDashboardNotifications(): Promise<{
 }
 
 export async function markNotificationAsRead(notificationId: string): Promise<{ error?: string }> {
+  return markNotificationsAsRead([notificationId]);
+}
+
+export async function markNotificationsAsRead(
+  notificationIds: string[]
+): Promise<{ error?: string }> {
+  const uniqueIds = [...new Set(notificationIds.filter(Boolean))];
+  if (uniqueIds.length === 0) {
+    return {};
+  }
+
   try {
     const auth = await resolveAuthenticatedUserId();
     if ('error' in auth) {
       return { error: auth.error };
     }
 
-    const { error } = await supabase.from('dashboard_notification_reads').upsert(
-      { notification_id: notificationId, user_id: auth.userId },
-      { onConflict: 'notification_id,user_id' }
-    );
+    const rows = uniqueIds.map((notification_id) => ({
+      notification_id,
+      user_id: auth.userId,
+    }));
+
+    const { error } = await supabase
+      .from('dashboard_notification_reads')
+      .upsert(rows, { onConflict: 'notification_id,user_id' });
 
     if (error) {
-      console.error('[notifications] markAsRead', error);
+      console.error('[notifications] markNotificationsAsRead', error);
       return { error: error.message };
     }
 
     return {};
   } catch (e) {
-    console.error('[notifications] markNotificationAsRead', e);
-    return { error: 'Error inesperado al marcar como leída.' };
+    console.error('[notifications] markNotificationsAsRead', e);
+    return { error: 'Error inesperado al marcar como leídas.' };
   }
 }
 

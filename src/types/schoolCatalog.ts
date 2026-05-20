@@ -4,11 +4,16 @@
  */
 
 import type {
+  DashboardEvolucionData,
   EvaluacionCualitativa,
+  EvolucionPeriodo,
   HistorialAcademico,
   InformeTecnico,
+  ResultadoEvaluacion,
   TeacherSugerencias,
 } from '@/data/mockData';
+
+export type { DashboardEvolucionData, EvolucionPeriodo, ResultadoEvaluacion };
 
 export type SchoolStudent = {
   id: number;
@@ -20,6 +25,9 @@ export type SchoolStudent = {
   seguimiento?: string[];
   historialAcademico?: HistorialAcademico[];
   evaluacionesCualitativas?: EvaluacionCualitativa[];
+  resultadosEvaluaciones?: ResultadoEvaluacion[];
+  evolucionDetallada?: EvolucionPeriodo[];
+  dashboardEvolucion?: DashboardEvolucionData;
   informeTecnico?: InformeTecnico;
   ajustes?: string;
   progreso?: number;

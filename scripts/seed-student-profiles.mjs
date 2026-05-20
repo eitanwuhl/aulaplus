@@ -9,11 +9,6 @@ import { connectPgClient, repoRootFromImportMeta } from './lib/run-sql-seed.mjs'
 
 const repoRoot = repoRootFromImportMeta(import.meta.url);
 
-function studentProfilePayload(student) {
-  const { id: _id, name: _name, perfil: _perfil, ...rest } = student;
-  return rest;
-}
-
 async function loadMockStudents() {
   const server = await createServer({
     root: repoRoot,
@@ -23,13 +18,46 @@ async function loadMockStudents() {
   });
   try {
     const mod = await server.ssrLoadModule('/src/data/mockData.ts');
-    return mod.mockStudents ?? [];
+    return {
+      mockStudents: mod.mockStudents ?? [],
+      DEFAULT_RESULTADOS_EVALUACION: mod.DEFAULT_RESULTADOS_EVALUACION,
+      DEFAULT_EVOLUCION_DETALLADA: mod.DEFAULT_EVOLUCION_DETALLADA,
+      buildDefaultDashboardEvolucion: mod.buildDefaultDashboardEvolucion,
+    };
   } finally {
     await server.close();
   }
 }
 
-const mockStudents = await loadMockStudents();
+const {
+  mockStudents,
+  DEFAULT_RESULTADOS_EVALUACION: defaultResultados,
+  DEFAULT_EVOLUCION_DETALLADA: defaultEvolucion,
+  buildDefaultDashboardEvolucion,
+} = await loadMockStudents();
+const mod = {
+  DEFAULT_RESULTADOS_EVALUACION: defaultResultados,
+  DEFAULT_EVOLUCION_DETALLADA: defaultEvolucion,
+  buildDefaultDashboardEvolucion,
+};
+
+function studentProfilePayload(student) {
+  const { id: _id, name: _name, perfil: _perfil, ...rest } = student;
+  return {
+    ...rest,
+    resultadosEvaluaciones:
+      rest.resultadosEvaluaciones ?? mod.DEFAULT_RESULTADOS_EVALUACION ?? [],
+    evolucionDetallada:
+      rest.evolucionDetallada ?? mod.DEFAULT_EVOLUCION_DETALLADA ?? [],
+    dashboardEvolucion:
+      rest.dashboardEvolucion ??
+      mod.buildDefaultDashboardEvolucion?.({
+        promedio: rest.promedio,
+        progreso: rest.progreso,
+      }),
+  };
+}
+
 if (!mockStudents.length) {
   console.error('No mockStudents found in mockData.ts');
   process.exit(1);

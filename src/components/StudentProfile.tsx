@@ -17,6 +17,7 @@ import ReporteEjecutivo from './ReporteEjecutivo';
 import GeneradorTextosBoletin from './GeneradorTextosBoletin';
 
 import NotificacionesAlumno from './NotificacionesAlumno';
+import type { StudentProfileViewModel } from '@/services/teacherGroups';
 import SectionOrderManager from './SectionOrderManager';
 import { 
   getAllContemplaciones, 
@@ -45,38 +46,7 @@ import { seedDefaultsForStudent } from '@/lib/contemplaciones/seeding';
 
 
 interface StudentProfileProps {
-  student: {
-    id: number;
-    name: string;
-    perfil: string;
-    avatar: string;
-    contemplaciones: string[];
-    anotaciones: string;
-    seguimiento: string[];
-    historialAcademico: {
-      año: string;
-      materias: { nombre: string; calificacion: string }[];
-    }[];
-    evaluacionesCualitativas: {
-      fecha: string;
-      evaluador: string;
-      area: string;
-      comentario: string;
-      tipo: 'docente' | 'psicopedagogico';
-    }[];
-    informeTecnico?: {
-      sintesis: string | { title: string; bullets: string[] }[];
-      estiloAprendizaje: string;
-      objetivosPriorizados: string[];
-      modalidadCursado: string;
-      ajustesProgramaticos: {
-        materia: string;
-        ajustes: string[];
-      }[];
-      requiereAdecuacionAcceso?: boolean;
-      requiereAdecuacionContenido?: boolean;
-    };
-  };
+  student: StudentProfileViewModel;
   onBack: () => void;
 }
 
@@ -90,12 +60,6 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
     resolucion: false,
     expresion: false
   });
-  const [qualitativeComments, setQualitativeComments] = useState({
-    comprension: "Demuestra buena comprensión de textos narrativos, pero necesita apoyo con textos expositivos.",
-    resolucion: "Aplica estrategias básicas correctamente. Requiere más práctica con problemas de múltiples pasos.",
-    expresion: "Excelente organización de ideas. Continuar trabajando la ortografía y puntuación."
-  });
-
   // State for contemplaciones - split by category
   const [selectedClase, setSelectedClase] = useState<string[]>(() => 
     readSelected(student.id, 'clase')
@@ -283,50 +247,8 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
     
   ]);
 
-  // Mock evaluation results data
-  const evaluationResults = [
-    {
-      fecha: "Noviembre 2024",
-      materia: "Historia",
-      trimestre: "Tercer Trimestre",
-      nota: 8,
-      versionEvaluacion: 1,
-      observacion: "Demostró un excelente manejo de los contenidos utilizando las imágenes de apoyo. Se sintió cómodo con las consignas más breves y pudo concentrarse mejor con el tiempo adicional otorgado."
-    },
-    {
-      fecha: "Octubre 2024",
-      materia: "Matemática",
-      trimestre: "Tercer Trimestre", 
-      nota: 7,
-      versionEvaluacion: 2,
-      observacion: "Se sintió cómodo expresando sus conocimientos mediante modalidad de opción múltiple, lo cual no había podido desarrollar de la manera deseada cuando se le había pedido desarrollar en otras instancias."
-    },
-    {
-      fecha: "Septiembre 2024",
-      materia: "Lengua",
-      trimestre: "Segundo Trimestre",
-      nota: 6,
-      versionEvaluacion: 1,
-      observacion: "Mostró mejoras con el uso de apoyos visuales. Aún requiere más tiempo para organizar sus ideas por escrito, pero las consignas más breves le permitieron expresarse mejor."
-    }
-  ];
-
-  const contemplacionesDisponibles = [
-    "Evitar consignas extensas en evaluaciones escritas",
-    "Permitir evaluaciones orales en lugar de escritas", 
-    "Otorgar tiempo adicional en pruebas",
-    "Reducir la cantidad de ejercicios por consigna",
-    "Permitir el uso de procesador de texto",
-    "Evitar evaluaciones sorpresa o no anunciadas",
-    "Permitir el uso de imágenes como apoyo en consignas",
-    "Sentar al alumno cerca del docente o del pizarrón",
-    "Evitar lecturas extensas en voz alta frente al grupo",
-    "Brindar consignas escritas además de orales",
-    "Proporcionar ejemplos concretos antes de las actividades",
-    "Permitir descansos durante evaluaciones largas",
-    "Usar lenguaje claro y directo en las instrucciones",
-    "Evitar distractores visuales en el material de trabajo"
-  ];
+  const evaluationResults = student.resultadosEvaluaciones;
+  const evaluacionesCualitativas = student.evaluacionesCualitativas;
 
   const handleSaveNotes = () => {
     setEditingNotes(false);
@@ -341,46 +263,6 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
     setSectionOrder(newOrder);
     localStorage.setItem(`sectionOrder:${student.id}`, JSON.stringify(newOrder));
   };
-
-  // Extended qualitative evaluations with more examples
-  const evaluacionesCualitativasExtended = [
-    ...student.evaluacionesCualitativas,
-    {
-      fecha: "15 Oct 2024",
-      evaluador: "Prof. Ana García (Matemática)",
-      area: "Matemática - Resolución de problemas",
-      comentario: "Ha mejorado notablemente en la comprensión de problemas algebraicos desde que implementamos las contemplaciones visuales. Utiliza el material concreto de manera efectiva y su nivel de ansiedad durante las evaluaciones ha disminuido considerablemente.",
-      tipo: 'docente' as const
-    },
-    {
-      fecha: "8 Oct 2024",
-      evaluador: "Lic. María Rodriguez (Psicopedagoga)",
-      area: "Evaluación integral",
-      comentario: "Se observa un progreso significativo en su autoestima académica. Las estrategias de apoyo implementadas han permitido que exprese mejor sus conocimientos. Recomiendo continuar con el enfoque multimodal y considerar la ampliación de tiempo en evaluaciones escritas.",
-      tipo: 'psicopedagogico' as const
-    },
-    {
-      fecha: "25 Sep 2024",
-      evaluador: "Prof. Carlos Mendez (Historia)",
-      area: "Historia - Comprensión temporal",
-      comentario: "Excelente respuesta a las líneas de tiempo visuales y mapas conceptuales. Su capacidad para establecer relaciones causa-efecto ha mejorado sustancialmente. Sugiero continuar con recursos gráficos para consolidar aprendizajes complejos.",
-      tipo: 'docente' as const
-    },
-    {
-      fecha: "12 Sep 2024",
-      evaluador: "Prof. Laura Vega (Lengua)",
-      area: "Lengua - Expresión escrita",
-      comentario: "Muestra progreso en la organización de ideas cuando utiliza esquemas previos. La implementación de borradores estructurados ha mejorado significativamente la coherencia de sus textos. Requiere continuar trabajando la revisión ortográfica con apoyo tecnológico.",
-      tipo: 'docente' as const
-    },
-    {
-      fecha: "3 Sep 2024",
-      evaluador: "Prof. Roberto Silva (Ciencias)",
-      area: "Ciencias Naturales - Experimentación",
-      comentario: "Demuestra gran interés y habilidad en actividades prácticas de laboratorio. Su comprensión mejora notablemente cuando puede manipular materiales y observar fenómenos directamente. Recomiendo priorizar aprendizaje experimental sobre contenido teórico extenso.",
-      tipo: 'docente' as const
-    }
-  ];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-yellow-50 p-4">
@@ -437,10 +319,15 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                       preview="Últimas evaluaciones con observaciones detalladas"
                       className="mb-8"
                     >
-              <div className="space-y-6">
-                {evaluationResults.map((result, index) => (
+              <motion.div className="space-y-6">
+                {evaluationResults.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-6">
+                    No hay resultados de evaluaciones registrados para este alumno.
+                  </p>
+                ) : (
+                evaluationResults.map((result, index) => (
                   <motion.div
-                    key={index}
+                    key={`${result.materia}-${result.fecha}-${index}`}
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.4, delay: index * 0.1 }}
@@ -481,8 +368,9 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                       </p>
                     </div>
                   </motion.div>
-                ))}
-              </div>
+                ))
+                )}
+              </motion.div>
                     </ProgressiveDisclosure>
                   );
                 
@@ -853,9 +741,14 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                       className="mb-8"
                     >
               <div className="space-y-6">
-                {student.historialAcademico.map((año, index) => (
+                {student.historialAcademico.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-6">
+                    No hay historial académico registrado para este alumno.
+                  </p>
+                ) : (
+                student.historialAcademico.map((año, index) => (
                   <motion.div
-                    key={index}
+                    key={año.año}
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ duration: 0.4, delay: index * 0.1 }}
@@ -871,7 +764,8 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                       ))}
                     </div>
                   </motion.div>
-                ))}
+                ))
+                )}
               </div>
                     </ProgressiveDisclosure>
                   );
@@ -885,9 +779,14 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                       className="mb-8"
                     >
                       <div className="space-y-4">
-                        {evaluacionesCualitativasExtended.map((evaluacion, index) => (
+                        {evaluacionesCualitativas.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-6">
+                            No hay observaciones cualitativas registradas para este alumno.
+                          </p>
+                        ) : (
+                        evaluacionesCualitativas.map((evaluacion, index) => (
                   <motion.div
-                    key={index}
+                    key={`${evaluacion.fecha}-${evaluacion.area}-${index}`}
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.4, delay: index * 0.1 }}
@@ -923,7 +822,8 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                       "{evaluacion.comentario}"
                     </p>
                   </motion.div>
-                        ))}
+                        ))
+                        )}
                       </div>
                     </ProgressiveDisclosure>
                   );

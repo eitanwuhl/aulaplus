@@ -50,6 +50,15 @@ export function mapSchoolStudentRowToStudent(row: SchoolStudentRow): SchoolStude
     evaluacionesCualitativas: hasSeededProfile
       ? (profile.evaluacionesCualitativas as SchoolStudent['evaluacionesCualitativas'])
       : undefined,
+    resultadosEvaluaciones: hasSeededProfile
+      ? (profile.resultadosEvaluaciones as SchoolStudent['resultadosEvaluaciones'])
+      : undefined,
+    evolucionDetallada: hasSeededProfile
+      ? (profile.evolucionDetallada as SchoolStudent['evolucionDetallada'])
+      : undefined,
+    dashboardEvolucion: hasSeededProfile
+      ? (profile.dashboardEvolucion as SchoolStudent['dashboardEvolucion'])
+      : undefined,
     informeTecnico: hasSeededProfile
       ? (profile.informeTecnico as SchoolStudent['informeTecnico'])
       : undefined,

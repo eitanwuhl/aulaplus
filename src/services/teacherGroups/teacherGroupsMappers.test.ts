@@ -51,6 +51,78 @@ describe('mapSchoolStudentRowToStudent', () => {
     expect(student.contemplaciones).toEqual(['Tiempo adicional']);
   });
 
+  it('maps resultadosEvaluaciones from profile_data', () => {
+    const student = mapSchoolStudentRowToStudent({
+      id: 1,
+      display_name: 'Ana',
+      perfil: 'Visual',
+      school_group_id: '1',
+      profile_data: {
+        resultadosEvaluaciones: [
+          {
+            fecha: 'Nov 2024',
+            materia: 'Historia',
+            trimestre: 'T3',
+            nota: 8,
+            versionEvaluacion: 1,
+            observacion: 'Buen desempeño',
+          },
+        ],
+      },
+    });
+
+    expect(student.resultadosEvaluaciones).toHaveLength(1);
+    expect(student.resultadosEvaluaciones?.[0].materia).toBe('Historia');
+  });
+
+  it('maps evolucionDetallada from profile_data', () => {
+    const student = mapSchoolStudentRowToStudent({
+      id: 1,
+      display_name: 'Ana',
+      perfil: 'Visual',
+      school_group_id: '1',
+      profile_data: {
+        evolucionDetallada: [
+          {
+            año: '2024',
+            trimestre: 'T1',
+            materias: [{ nombre: 'Matemática', calificacion: 8 }],
+          },
+        ],
+      },
+    });
+
+    expect(student.evolucionDetallada).toHaveLength(1);
+    expect(student.evolucionDetallada?.[0].trimestre).toBe('T1');
+  });
+
+  it('maps dashboardEvolucion from profile_data', () => {
+    const student = mapSchoolStudentRowToStudent({
+      id: 1,
+      display_name: 'Ana',
+      perfil: 'Visual',
+      school_group_id: '1',
+      profile_data: {
+        dashboardEvolucion: {
+          metricas: {
+            promedioGeneral: 8.1,
+            promedioAnterior: 7.5,
+            mejorMateria: { nombre: 'Historia', nota: 9 },
+            materiaRiesgo: { nombre: 'Lengua', nota: 7 },
+            objetivosCumplidos: 3,
+            objetivosTotales: 5,
+            progresoAnual: 85,
+          },
+          progresoMaterias: [],
+          efectividadContemplaciones: [],
+          objetivos: [],
+        },
+      },
+    });
+
+    expect(student.dashboardEvolucion?.metricas.promedioGeneral).toBe(8.1);
+  });
+
   it('does not use mock fallback when profile_data is empty', () => {
     const student = mapSchoolStudentRowToStudent({
       id: 99,
