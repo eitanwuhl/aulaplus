@@ -136,7 +136,7 @@ export interface WizardData {
     objetivos_unidad?: string;
   };
   horario?: {
-    horas_semanales: number;
+    horas_semanales?: number;
     configuracion: ConfiguracionHorario[];
   };
   enfoque?: {

@@ -1,6 +1,12 @@
 import { useState, useCallback } from 'react';
 import { WizardData, ConfiguracionHorario } from '@/types/planificacion';
 import { ValidationResult, FieldError } from '@/types/validation';
+import {
+  validateHorarioCoherence,
+  validateHorarioConfigItem,
+  validateHorarioNoOverlaps,
+  validateHorasSemanalesValue,
+} from '@/lib/planificacion/horarioValidation';
 
 export const usePlanificacionWizard = () => {
   const [wizardData, setWizardData] = useState<WizardData>({
@@ -142,20 +148,13 @@ export const usePlanificacionWizard = () => {
       }
 
       case 1: {
-        // Validar horas_semanales
         const horasSemanales = wizardData.horario?.horas_semanales;
-        if (!horasSemanales || horasSemanales <= 0) {
-          errors.push({
-            fieldId: 'horas_semanales',
-            message: horasSemanales === undefined
-              ? 'Horas semanales es obligatorio'
-              : 'Debe ser un número mayor a 0',
-            type: horasSemanales === undefined ? 'required' : 'range'
-          });
-          if (!firstInvalidField) firstInvalidField = 'horas_semanales';
+        const horasError = validateHorasSemanalesValue(horasSemanales);
+        if (horasError) {
+          errors.push(horasError);
+          if (!firstInvalidField) firstInvalidField = horasError.fieldId;
         }
 
-        // Validar configuracion
         const configuracion = wizardData.horario?.configuracion || [];
         if (configuracion.length === 0) {
           errors.push({
@@ -165,55 +164,24 @@ export const usePlanificacionWizard = () => {
           });
           if (!firstInvalidField) firstInvalidField = 'configuracion';
         } else {
-          // Validar cada item de configuración
           configuracion.forEach((config, index) => {
-            const prefix = `configuracion[${index}]`;
-
-            if (!config.dia) {
-              errors.push({
-                fieldId: `${prefix}.dia`,
-                message: 'Día es obligatorio',
-                type: 'required'
-              });
-              if (!firstInvalidField) firstInvalidField = `${prefix}.dia`;
-            }
-
-            if (!config.horaInicio) {
-              errors.push({
-                fieldId: `${prefix}.horaInicio`,
-                message: 'Hora de inicio es obligatoria',
-                type: 'required'
-              });
-              if (!firstInvalidField) firstInvalidField = `${prefix}.horaInicio`;
-            }
-
-            if (!config.horaFin) {
-              errors.push({
-                fieldId: `${prefix}.horaFin`,
-                message: 'Hora de fin es obligatoria',
-                type: 'required'
-              });
-              if (!firstInvalidField) firstInvalidField = `${prefix}.horaFin`;
-            } else if (config.horaInicio && config.horaFin <= config.horaInicio) {
-              errors.push({
-                fieldId: `${prefix}.horaFin`,
-                message: 'Debe ser posterior a la hora de inicio',
-                type: 'range'
-              });
-              if (!firstInvalidField) firstInvalidField = `${prefix}.horaFin`;
-            }
-
-            if (!config.duracionMinutos || config.duracionMinutos <= 0) {
-              errors.push({
-                fieldId: `${prefix}.duracionMinutos`,
-                message: config.duracionMinutos === undefined
-                  ? 'Duración es obligatoria'
-                  : 'Debe ser mayor a 0 minutos',
-                type: config.duracionMinutos === undefined ? 'required' : 'range'
-              });
-              if (!firstInvalidField) firstInvalidField = `${prefix}.duracionMinutos`;
+            const itemErrors = validateHorarioConfigItem(config, index);
+            for (const itemError of itemErrors) {
+              errors.push(itemError);
+              if (!firstInvalidField) firstInvalidField = itemError.fieldId;
             }
           });
+
+          for (const overlapError of validateHorarioNoOverlaps(configuracion)) {
+            errors.push(overlapError);
+            if (!firstInvalidField) firstInvalidField = overlapError.fieldId;
+          }
+
+          const coherenceError = validateHorarioCoherence(horasSemanales, configuracion);
+          if (coherenceError) {
+            errors.push(coherenceError);
+            if (!firstInvalidField) firstInvalidField = coherenceError.fieldId;
+          }
         }
 
         break;

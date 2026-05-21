@@ -1456,7 +1456,7 @@ export default function PlanificacionWizard() {
                 )}
               </div>
 
-              {generationError ? (
+              {generationError && (
                 <div className="space-y-4">
                   <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
                     <p className="text-sm text-red-700 font-mono">
@@ -1477,10 +1477,6 @@ export default function PlanificacionWizard() {
                       'Reintentar generación'
                     )}
                   </Button>
-                </div>
-              ) : (
-                <div className="flex justify-center">
-                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
                 </div>
               )}
               

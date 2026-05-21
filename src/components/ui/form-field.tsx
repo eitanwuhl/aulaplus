@@ -61,17 +61,19 @@ export const FormField: React.FC<FormFieldProps> = ({
         </p>
       )}
 
-      {/* Input/Select/etc con props de accesibilidad inyectados */}
+      {/* Input/Select/etc con props de accesibilidad inyectados (solo si hay un único hijo) */}
       <div>
-        {React.isValidElement(children) && React.cloneElement(children as React.ReactElement<any>, {
-          id,
-          'aria-invalid': error ? 'true' : 'false',
-          'aria-describedby': error ? errorId : descriptionId,
-          className: cn(
-            (children as React.ReactElement).props.className,
-            error && 'border-destructive focus:ring-destructive focus-visible:ring-destructive'
-          )
-        })}
+        {React.Children.count(children) === 1 && React.isValidElement(children)
+          ? React.cloneElement(children as React.ReactElement<any>, {
+              id,
+              'aria-invalid': error ? 'true' : 'false',
+              'aria-describedby': error ? errorId : descriptionId,
+              className: cn(
+                (children as React.ReactElement).props.className,
+                error && 'border-destructive focus:ring-destructive focus-visible:ring-destructive'
+              ),
+            })
+          : children}
       </div>
 
       {/* Mensaje de error inline */}

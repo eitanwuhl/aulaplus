@@ -21,6 +21,12 @@ import { UnidadDidacticaBuilder } from './UnidadDidacticaBuilder';
 import { PlanMaterialsSection } from './PlanMaterialsSection';
 import { Materia } from '@/data/catalogo';
 import { useToast } from '@/hooks/use-toast';
+import {
+  computeWeeklyHoursFromConfig,
+  HORAS_SEMANALES_MAX,
+  HORAS_SEMANALES_MIN,
+  slotMinutesFromTimes,
+} from '@/lib/planificacion/horarioValidation';
 
 interface WizardStepsProps {
   wizardData: WizardData;
@@ -573,7 +579,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
     
     const configuracionActual = wizardData.horario?.configuracion || [];
     onUpdateHorario({
-      horas_semanales: wizardData.horario?.horas_semanales || 2,
+      horas_semanales: wizardData.horario?.horas_semanales,
       configuracion: [...configuracionActual, nuevaConfig]
     });
   };
@@ -581,7 +587,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
   const eliminarHorario = (index: number) => {
     const configuracionActual = wizardData.horario?.configuracion || [];
     onUpdateHorario({
-      horas_semanales: wizardData.horario?.horas_semanales || 2,
+      horas_semanales: wizardData.horario?.horas_semanales,
       configuracion: configuracionActual.filter((_, i) => i !== index)
     });
   };
@@ -589,12 +595,45 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
   const actualizarHorario = (index: number, campo: keyof ConfiguracionHorario, valor: any) => {
     const configuracionActual = wizardData.horario?.configuracion || [];
     const nuevaConfig = [...configuracionActual];
-    nuevaConfig[index] = { ...nuevaConfig[index], [campo]: valor };
-    
+    const updated = { ...nuevaConfig[index], [campo]: valor };
+
+    if (campo === 'horaInicio' || campo === 'horaFin') {
+      const rangeMinutes = slotMinutesFromTimes(
+        campo === 'horaInicio' ? String(valor) : updated.horaInicio,
+        campo === 'horaFin' ? String(valor) : updated.horaFin
+      );
+      if (rangeMinutes !== null) {
+        updated.duracionMinutos = rangeMinutes;
+      }
+    }
+
+    nuevaConfig[index] = updated;
+
     onUpdateHorario({
-      horas_semanales: wizardData.horario?.horas_semanales || 2,
+      horas_semanales: wizardData.horario?.horas_semanales,
       configuracion: nuevaConfig
     });
+  };
+
+  const horasComputadasDesdeBloques = useMemo(() => {
+    const config = wizardData.horario?.configuracion || [];
+    if (config.length === 0) return null;
+    const hours = computeWeeklyHoursFromConfig(config);
+    return hours > 0 ? hours : null;
+  }, [wizardData.horario?.configuracion]);
+
+  const horasSugeridasDesdeBloques =
+    horasComputadasDesdeBloques !== null
+      ? Math.round(horasComputadasDesdeBloques)
+      : null;
+
+  const aplicarHorasDesdeBloques = () => {
+    if (horasSugeridasDesdeBloques === null) return;
+    onUpdateHorario({
+      configuracion: wizardData.horario?.configuracion || [],
+      horas_semanales: horasSugeridasDesdeBloques,
+    });
+    markFieldAsTouched('horas_semanales');
   };
 
   const renderPaso1 = () => (
@@ -612,16 +651,25 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           label="Horas Semanales"
           required
           error={getError('horas_semanales')}
+          description={`Total de horas de esta materia por semana (${HORAS_SEMANALES_MIN}–${HORAS_SEMANALES_MAX}). Debe coincidir con la suma de los bloques de abajo.`}
         >
           <Input
             type="number"
-            min="1"
-            max="10"
-            value={wizardData.horario?.horas_semanales || ''}
+            min={HORAS_SEMANALES_MIN}
+            max={HORAS_SEMANALES_MAX}
+            step="1"
+            className="max-w-[8rem]"
+            value={
+              wizardData.horario?.horas_semanales === undefined
+                ? ''
+                : wizardData.horario.horas_semanales
+            }
             onChange={(e) => {
+              const raw = e.target.value;
+              const parsed = raw === '' ? undefined : parseInt(raw, 10);
               onUpdateHorario({
                 configuracion: wizardData.horario?.configuracion || [],
-                horas_semanales: parseInt(e.target.value) || 2
+                horas_semanales: parsed as number
               });
               markFieldAsTouched('horas_semanales');
             }}
@@ -629,6 +677,30 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
             placeholder="Ej: 3"
           />
         </FormField>
+        {horasComputadasDesdeBloques !== null && (
+          <div className="flex flex-wrap items-center gap-2 -mt-2">
+            <p className="text-xs text-muted-foreground">
+              Según los bloques configurados:{' '}
+              <strong>
+                {horasComputadasDesdeBloques % 1 === 0
+                  ? horasComputadasDesdeBloques
+                  : horasComputadasDesdeBloques.toFixed(1)}{' '}
+                h/semana
+              </strong>
+            </p>
+            {wizardData.horario?.horas_semanales !== horasSugeridasDesdeBloques && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={aplicarHorasDesdeBloques}
+              >
+                Usar {horasSugeridasDesdeBloques} h
+              </Button>
+            )}
+          </div>
+        )}
 
         <div>
           <div className="flex items-center justify-between mb-3">
@@ -657,8 +729,15 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
           <div className="space-y-3">
             {(wizardData.horario?.configuracion || []).map((config, index) => {
               const prefix = `configuracion[${index}]`;
+              const overlapError = getError(`${prefix}.solapamiento`);
               return (
-                <div key={index} className="space-y-2 p-3 border rounded-lg">
+                <div
+                  key={index}
+                  className={cn(
+                    'space-y-2 p-3 border rounded-lg',
+                    overlapError && 'border-destructive bg-destructive/5'
+                  )}
+                >
                   <div className="flex items-center gap-3">
                     {/* Día */}
                     <div className="flex-1">
@@ -755,7 +834,9 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                         step="15"
                         value={config.duracionMinutos}
                         onChange={(e) => {
-                          actualizarHorario(index, 'duracionMinutos', parseInt(e.target.value));
+                          const raw = e.target.value;
+                          const parsed = raw === '' ? NaN : parseInt(raw, 10);
+                          actualizarHorario(index, 'duracionMinutos', parsed);
                           markFieldAsTouched(`${prefix}.duracionMinutos`);
                         }}
                         onBlur={() => markFieldAsTouched(`${prefix}.duracionMinutos`)}
@@ -784,6 +865,11 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
+                  {overlapError && (
+                    <p className="text-xs text-destructive font-medium" role="alert">
+                      {overlapError}
+                    </p>
+                  )}
                 </div>
               );
             })}

@@ -418,7 +418,17 @@ export default function PlanificacionWorkspace() {
 
       if (error) {
         console.error('[GEN_PLAN_FRONTEND] Function error:', error);
-        throw new Error(error.message || 'Error generando plan de clase');
+        const msg = error.message || '';
+        if (
+          msg.includes('NOT_FOUND') ||
+          msg.includes('Requested function was not found') ||
+          (error as { status?: number }).status === 404
+        ) {
+          throw new Error(
+            'La función de generación de planes no está disponible en el servidor. Ejecutá `npm run supabase:deploy:plans` o contactá al administrador.'
+          );
+        }
+        throw new Error(msg || 'Error generando plan de clase');
       }
 
       if (!data) {
