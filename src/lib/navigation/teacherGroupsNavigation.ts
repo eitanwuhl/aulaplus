@@ -14,3 +14,17 @@ export function teacherGroupsNavState(
     returnTo: TEACHER_DASHBOARD_PATH,
   };
 }
+
+export function isTeacherGroupsReturnToPanel(returnTo?: string): boolean {
+  return returnTo === TEACHER_DASHBOARD_PATH;
+}
+
+export function teacherGroupsBackLabel(
+  returnTo: string | undefined,
+  target: 'group' | 'student'
+): string {
+  if (isTeacherGroupsReturnToPanel(returnTo)) {
+    return 'Volver al panel';
+  }
+  return target === 'student' ? 'Volver al grupo' : 'Volver a grupos';
+}

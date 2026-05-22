@@ -37,7 +37,7 @@ export function NotificationsPanel() {
 
   const markAsReadMutation = useMarkNotificationAsRead(userId);
   const createNotificationMutation = useCreateBroadcastNotification(userId);
-  const linkOptionsQuery = useNotificationLinkOptions(queryEnabled);
+  const linkOptionsQuery = useNotificationLinkOptions(userId, queryEnabled);
 
   const notifications = data?.notifications ?? [];
   const readIds = useMemo(

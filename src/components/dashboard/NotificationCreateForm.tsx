@@ -110,7 +110,12 @@ export function NotificationCreateForm({
             </SelectContent>
           </Select>
           <p className="text-xs text-foreground-subtle">
-            Podés elegir <strong>como máximo uno</strong>: alumno <em>o</em> grupo, o ninguno.
+            Podés elegir <strong>como máximo uno</strong>: alumno <em>o</em> grupo, o ninguno. Solo
+            aparecen alumnos y cursos de <strong>tu liceo</strong>
+            {linkTarget === 'student' || linkTarget === 'group'
+              ? ' (docentes: solo los cursos que tenés asignados en Mis grupos)'
+              : ''}
+            .
           </p>
         </div>
 

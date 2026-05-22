@@ -1,5 +1,5 @@
-import { ArrowLeft, User } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { User } from 'lucide-react';
+import { TeacherGroupsBackButton } from '@/components/teacherGroups/TeacherGroupsBackButton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import type { SchoolStudent } from '@/types/schoolCatalog';
@@ -8,18 +8,22 @@ import { CatalogEmptyState } from '@/components/teacherGroups/CatalogEmptyState'
 type StudentProfileIncompleteProps = {
   student: SchoolStudent;
   onBack: () => void;
+  backLabel?: string;
+  fromPanel?: boolean;
 };
 
 /**
  * Shown when the student exists in the catalog but profile_data was not seeded yet.
  */
-export function StudentProfileIncomplete({ student, onBack }: StudentProfileIncompleteProps) {
+export function StudentProfileIncomplete({
+  student,
+  onBack,
+  backLabel = 'Volver al grupo',
+  fromPanel = false,
+}: StudentProfileIncompleteProps) {
   return (
     <div className="space-y-6">
-      <Button variant="outline" onClick={onBack} className="flex items-center gap-2">
-        <ArrowLeft className="h-4 w-4" />
-        Volver
-      </Button>
+      <TeacherGroupsBackButton onClick={onBack} label={backLabel} fromPanel={fromPanel} />
 
       <Card>
         <CardHeader>

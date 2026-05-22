@@ -1,25 +1,19 @@
 import { useQuery } from '@tanstack/react-query';
-import { fetchGroupLinkOptions, fetchStudentLinkOptions } from '@/services/schoolCatalog/schoolCatalog.service';
+import { fetchNotificationLinkOptions } from '@/services/notifications/notificationLinkCatalog';
 
 export const notificationLinkOptionsKey = ['notification-link-options'] as const;
 
-export function useNotificationLinkOptions(enabled: boolean) {
+export function useNotificationLinkOptions(userId: string | undefined, enabled: boolean) {
   return useQuery({
-    queryKey: notificationLinkOptionsKey,
-    enabled,
+    queryKey: [...notificationLinkOptionsKey, userId],
+    enabled: enabled && Boolean(userId),
     staleTime: 5 * 60 * 1000,
     queryFn: async () => {
-      const [groupsRes, studentsRes] = await Promise.all([
-        fetchGroupLinkOptions(),
-        fetchStudentLinkOptions(),
-      ]);
-
-      if (groupsRes.error) throw new Error(groupsRes.error);
-      if (studentsRes.error) throw new Error(studentsRes.error);
-
+      const result = await fetchNotificationLinkOptions(userId!);
+      if (result.error) throw new Error(result.error);
       return {
-        groups: groupsRes.data ?? [],
-        students: studentsRes.data ?? [],
+        groups: result.data?.groups ?? [],
+        students: result.data?.students ?? [],
       };
     },
   });

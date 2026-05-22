@@ -37,13 +37,20 @@ npm run supabase:gen-types
 
 Cada docente solo ve datos de **su** liceo (catálogo, grupos, notificaciones).
 
+## Producción
+
+- El front **no** invoca `ensure-demo-users` en builds de producción (`import.meta.env.PROD`).
+- Los docentes deben tener `profiles.school_id` asignado (seeds o administración); sin liceo el login se rechaza.
+- En Supabase hospedado, `ensure-demo-users` responde **403** salvo que configures `DEMO_BOOTSTRAP_SECRET` y envíes el header `x-demo-bootstrap-secret` (solo para bootstrap manual). En local (`127.0.0.1`) sigue abierto para desarrollo.
+
 ## Aplicar en Supabase remoto
 
 ```bash
 npx supabase db push
 npm run seed:demo
-# Re-desplegar ensure-demo-users si cambió:
+# Opcional si necesitás la edge en hosted con secreto:
 npx supabase functions deploy ensure-demo-users --project-ref <ref>
+# supabase secrets set DEMO_BOOTSTRAP_SECRET=<valor-largo-aleatorio>
 ```
 
 `npm run seed:demo` carga **ambos liceos**:

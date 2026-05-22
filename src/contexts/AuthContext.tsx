@@ -3,6 +3,12 @@ import { supabase } from '@/integrations/supabase/client';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { resolveTeacherAuthEmail, verifyStudentLoginRemote, formatRpcError } from '@/services/auth/remoteLogin';
 import { invalidateTeacherGroupsCache } from '@/services/teacherGroups';
+import {
+  demoStudentLoginHints,
+  demoTeacherLoginHints,
+  isDemoBootstrapEnabled,
+  isDemoTeacherEmail,
+} from '@/lib/demoBootstrap';
 
 type UserRole = 'teacher' | 'student';
 
@@ -108,6 +114,15 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const restoreTeacherFromSession = useCallback(async (nextSession: Session) => {
     const { name, schoolId, schoolName } = await resolveTeacherProfile(nextSession);
 
+    if (!schoolId) {
+      if (import.meta.env.PROD) {
+        clearTeacherAuthStorage();
+        setUser(null);
+        await supabase.auth.signOut();
+      }
+      return;
+    }
+
     const savedUser = localStorage.getItem('auth_user');
     if (savedUser) {
       try {
@@ -152,7 +167,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   }, []);
 
   useEffect(() => {
-    if (import.meta.env.DEV) {
+    if (isDemoBootstrapEnabled()) {
       void seedDemoAuthUsers();
     }
 
@@ -198,17 +213,18 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
           .eq('user_id', userId)
           .maybeSingle();
 
-        const { error } = await supabase.from('profiles').upsert(
-          {
-            user_id: userId,
-            display_name: nextSession.user.user_metadata?.display_name ?? 'Docente',
-            role: 'teacher',
-            ...(!existingProfile?.school_id ? { school_id: 'liceo-demo' } : {}),
-          },
-          { onConflict: 'user_id' }
-        );
-        if (error && import.meta.env.DEV) {
-          console.error(`[AuthContext] Error upserting profile for user ${userId}:`, error);
+        if (!existingProfile) {
+          const { error } = await supabase.from('profiles').upsert(
+            {
+              user_id: userId,
+              display_name: nextSession.user.user_metadata?.display_name ?? 'Docente',
+              role: 'teacher',
+            },
+            { onConflict: 'user_id' }
+          );
+          if (error && import.meta.env.DEV) {
+            console.error(`[AuthContext] Error upserting profile for user ${userId}:`, error);
+          }
         }
       } finally {
         setTimeout(() => profileUpsertInProgress.current.delete(userId), 1000);
@@ -256,9 +272,12 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         return { ok: false, message: 'Ingresá usuario o correo y contraseña.' };
       }
 
-      const ensure = await seedDemoAuthUsers();
-      if (ensure.errorMessage) {
-        console.warn('[Auth]', ensure.errorMessage);
+      let ensure: { errorMessage?: string } = {};
+      if (isDemoBootstrapEnabled()) {
+        ensure = await seedDemoAuthUsers();
+        if (ensure.errorMessage) {
+          console.warn('[Auth]', ensure.errorMessage);
+        }
       }
 
       let authEmail: string | null;
@@ -298,22 +317,22 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
           console.warn('[Auth] teacher signIn failed:', signError?.message);
         }
         let message = 'Correo o contraseña incorrectos.';
-        if (authEmail.toLowerCase().includes('demo.teacher')) {
-          const hint: string[] = [];
-          if (ensure.errorMessage) hint.push(ensure.errorMessage);
-          hint.push(
-            'Docentes demo: DOC001–DOC005 con contraseña DemoPassword2024! (liceo-demo, liceo-norte, St. Patrick\'s).',
-          );
-          hint.push(
-            'Ejecutá `npm run seed:login`, desplegá `ensure-demo-users` y recargá la página.',
-          );
-          message += ' ' + hint.join(' ');
+        if (isDemoBootstrapEnabled() && isDemoTeacherEmail(authEmail)) {
+          message += ` ${demoTeacherLoginHints(ensure.errorMessage)}`;
         }
         return { ok: false, message };
       }
 
       const uid = signData.session.user.id;
       const { name, schoolId, schoolName } = await resolveTeacherProfile(signData.session);
+
+      if (!schoolId) {
+        return {
+          ok: false,
+          message:
+            'Tu cuenta no tiene un liceo asignado. Pedí al administrador que configure tu perfil antes de ingresar.',
+        };
+      }
 
       const newUser: User = { id: uid, role: 'teacher', name, schoolId, schoolName };
       setSession(signData.session);
@@ -336,11 +355,11 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     try {
       const result = await verifyStudentLoginRemote(supabase, username, password);
       if (!result.ok) {
-        return {
-          ok: false,
-          message:
-            'Código o contraseña incorrectos. Estudiantes demo: EST2024001–EST2024006, contraseña EstudianteDemo2024! Ejecutá `npm run seed:login` contra la misma base que usa el front.',
-        };
+        let message = 'Código o contraseña incorrectos.';
+        if (isDemoBootstrapEnabled()) {
+          message += ` ${demoStudentLoginHints()}`;
+        }
+        return { ok: false, message };
       }
       const newUser: User = {
         id: result.studentId,
@@ -354,9 +373,12 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     } catch (e) {
       const detail = formatRpcError(e);
       console.error('[Auth] student login:', e);
+      const suffix = isDemoBootstrapEnabled()
+        ? ' Si administrás el entorno, comprobá migración y seed de estudiantes.'
+        : ' Intentá de nuevo más tarde o contactá soporte.';
       return {
         ok: false,
-        message: `No se pudo validar el acceso: ${detail}. Si administrás el entorno, comprobá migración y seed de estudiantes.`,
+        message: `No se pudo validar el acceso: ${detail}.${suffix}`,
       };
     }
   };

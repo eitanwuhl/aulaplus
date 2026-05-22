@@ -7,7 +7,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { motion } from "framer-motion";
-import { ArrowLeft, Edit2, Save, X, Plus, FileText, BookOpen, TrendingUp, Activity, AlertTriangle, Calendar, User, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Edit2, Save, X, Plus, FileText, BookOpen, TrendingUp, Activity, AlertTriangle, Calendar, User, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { TeacherGroupsBackButton } from '@/components/teacherGroups/TeacherGroupsBackButton';
 import { ProgressiveDisclosure } from "@/components/ui/progressive-disclosure";
 import TeacherInsights from "@/components/TeacherInsights";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -48,9 +49,16 @@ import { seedDefaultsForStudent } from '@/lib/contemplaciones/seeding';
 interface StudentProfileProps {
   student: StudentProfileViewModel;
   onBack: () => void;
+  backLabel?: string;
+  fromPanel?: boolean;
 }
 
-const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
+const StudentProfile = ({
+  student,
+  onBack,
+  backLabel = 'Volver al grupo',
+  fromPanel = false,
+}: StudentProfileProps) => {
   const [isEditingComentarios, setIsEditingComentarios] = useState(false);
   const [editedComentarios, setEditedComentarios] = useState('');
   const [editingNotes, setEditingNotes] = useState(false);
@@ -274,14 +282,13 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
           transition={{ duration: 0.5 }}
           className="mb-8"
         >
-          <Button
+          <TeacherGroupsBackButton
             onClick={onBack}
+            label={backLabel}
+            fromPanel={fromPanel}
             variant="ghost"
-            className="mb-4 hover:bg-white/50"
-          >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Volver al grupo
-          </Button>
+            className="hover:bg-white/50"
+          />
           
           <div className="bg-white rounded-2xl p-6 shadow-lg">
             <div className="flex items-center gap-4">

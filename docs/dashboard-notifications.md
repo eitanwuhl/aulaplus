@@ -63,6 +63,7 @@ Motivo de dos tablas: el **texto del aviso** no se duplica por cada docente; sol
   - Migración: `20260522000000_notifications_liceo_recipients_only.sql`.
   - Migración: `20260516120000_dashboard_notifications_group_scoped_visibility.sql`.
   - **INSERT:** solo perfiles con `profiles.role` en **`teacher`**, **`direccion`** o **`psicopedagogico`** (`20260517140000_…`). Staff puede apuntar a cualquier alumno/grupo del catálogo (FK). Docentes: broadcast libre; con `group_id`/`student_id` solo si tienen ese curso en **`public.grupos`** (asignación por `(user_id, id)` — varios docentes pueden compartir el mismo `id` de curso).
+  - **Formulario “Crear aviso”:** el desplegable de alumnos/grupos usa el catálogo del liceo (`school_id` vía RLS). **Docentes** solo ven cursos y alumnos de sus filas en **`public.grupos`**. **Dirección / psicopedagogía** ven todo el catálogo de su liceo.
   - **SELECT staff:** `direccion` / `psicopedagogico` ven **todos** los avisos. **SELECT docente:** reglas por asignación en `grupos` (migración `20260516120000` + `20260517140000`).
   - **UPDATE / DELETE** para rol `authenticated`: **no** (políticas con `USING (false)`).
 

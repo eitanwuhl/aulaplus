@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { motion } from "framer-motion";
-import { ArrowLeft, Users, BarChart3, BookOpen, Eye, Headphones, Hand, PenTool, Edit2, Save, X } from "lucide-react";
+import { Users, BarChart3, BookOpen, Eye, Headphones, Hand, PenTool, Edit2, Save, X } from "lucide-react";
+import { TeacherGroupsBackButton } from "@/components/teacherGroups/TeacherGroupsBackButton";
 import { useNavigate } from "react-router-dom";
 import { StudentCard } from "@/components/ui/enhanced-card";
 import { ProgressiveDisclosure, StudentSectionDisclosure } from "@/components/ui/progressive-disclosure";
@@ -49,9 +50,17 @@ interface GroupProfileProps {
   group: Group;
   onBack: () => void;
   onStudentClick: (student: Student) => void;
+  backLabel?: string;
+  fromPanel?: boolean;
 }
 
-const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
+const GroupProfile = ({
+  group,
+  onBack,
+  onStudentClick,
+  backLabel = 'Volver a grupos',
+  fromPanel = false,
+}: GroupProfileProps) => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { session } = useAuth();
@@ -314,14 +323,12 @@ const GroupProfile = ({ group, onBack, onStudentClick }: GroupProfileProps) => {
           transition={{ duration: 0.6 }}
           className="mb-8"
         >
-          <Button 
+          <TeacherGroupsBackButton
             onClick={onBack}
-            variant="outline" 
-            className="mb-4 hover:bg-blue-50"
-          >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Volver a grupos
-          </Button>
+            label={backLabel}
+            fromPanel={fromPanel}
+            className="hover:bg-blue-50"
+          />
           
           <div className="text-center">
             <h1 className="text-4xl font-bold text-gray-800 mb-2">

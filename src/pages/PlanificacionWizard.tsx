@@ -20,6 +20,7 @@ import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLes
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
 import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
+import { isDemoBootstrapEnabled } from '@/lib/demoBootstrap';
 
 const PLAN_WIZARD_DRAFT_KEY = 'aulaplus.planWizard.draft';
 const SUMMARY_STEP = 3;
@@ -1083,36 +1084,37 @@ export default function PlanificacionWizard() {
       const { data: { user }, error: userError } = await supabase.auth.getUser();
       
       if (userError || !user) {
+        if (!isDemoBootstrapEnabled()) {
+          throw new Error(
+            'Tenés que iniciar sesión como docente antes de crear una planificación.',
+          );
+        }
+
         console.log('[PlanificacionWizard] No valid session, ensuring demo auth...');
         const { error: ensureError } = await supabase.functions.invoke('ensure-demo-users');
         if (ensureError) {
           console.error('[PlanificacionWizard] Error ensuring demo users:', ensureError);
-          // Non-blocking: continue anyway
         }
-        
+
         const { error: signInError } = await supabase.auth.signInWithPassword({
           email: 'demo.teacher@example.com',
-          password: 'DemoPassword2024!'
+          password: 'DemoPassword2024!',
         });
-        
+
         if (signInError) {
           const errorMsg = `No se pudo autenticar: ${signInError.message}`;
-          if (import.meta.env.DEV) {
-            console.error('[PlanificacionWizard] Sign-in error:', signInError);
-          }
+          console.error('[PlanificacionWizard] Sign-in error:', signInError);
           throw new Error(errorMsg);
         }
-        
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
         const { data: { user: retryUser }, error: retryError } = await supabase.auth.getUser();
         if (retryError || !retryUser) {
-          const errorMsg = retryError 
+          const errorMsg = retryError
             ? `No se pudo establecer la sesión: ${retryError.message}`
             : 'No se pudo establecer la sesión de usuario.';
-          if (import.meta.env.DEV) {
-            console.error('[PlanificacionWizard] Retry get user error:', retryError);
-          }
+          console.error('[PlanificacionWizard] Retry get user error:', retryError);
           throw new Error(errorMsg);
         }
         currentUser = retryUser;

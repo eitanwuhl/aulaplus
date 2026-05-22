@@ -3,8 +3,42 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers':
+    'authorization, x-client-info, apikey, content-type, x-demo-bootstrap-secret',
 };
+
+function isLocalSupabaseHost(url: string): boolean {
+  return url.includes('127.0.0.1') || url.includes('localhost');
+}
+
+/** Hosted projects: require DEMO_BOOTSTRAP_SECRET header. Local Supabase: open for dev. */
+function assertBootstrapAuthorized(req: Request): Response | null {
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+  if (isLocalSupabaseHost(supabaseUrl)) {
+    return null;
+  }
+
+  const secret = Deno.env.get('DEMO_BOOTSTRAP_SECRET');
+  if (!secret) {
+    return new Response(
+      JSON.stringify({
+        error: 'Demo bootstrap disabled',
+        details:
+          'On hosted Supabase, set DEMO_BOOTSTRAP_SECRET and call with header x-demo-bootstrap-secret, or use npm run seed:login.',
+      }),
+      { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    );
+  }
+
+  if (req.headers.get('x-demo-bootstrap-secret') !== secret) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  return null;
+}
 
 const DEMO_TEACHER_PASSWORD = 'DemoPassword2024!';
 
@@ -39,6 +73,11 @@ const DEMO_TEACHERS = [
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  const authDenied = assertBootstrapAuthorized(req);
+  if (authDenied) {
+    return authDenied;
   }
 
   try {

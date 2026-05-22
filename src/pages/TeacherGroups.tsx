@@ -29,8 +29,11 @@ import { useTeacherGroupsDeepLink } from "@/hooks/teacherGroups/useTeacherGroups
 import { getGroupCardStats } from "@/lib/teacherGroups/teacherGroupStats";
 import {
   TEACHER_DASHBOARD_PATH,
+  isTeacherGroupsReturnToPanel,
+  teacherGroupsBackLabel,
   type TeacherGroupsLocationState,
 } from "@/lib/navigation/teacherGroupsNavigation";
+import { TeacherGroupsBackButton } from "@/components/teacherGroups/TeacherGroupsBackButton";
 import {
   toGroupProfileViewModel,
   toStudentProfileViewModel,
@@ -55,6 +58,7 @@ const TeacherGroups = () => {
 
   const locationState = location.state as TeacherGroupsLocationState | null;
   const returnTo = locationState?.returnTo;
+  const fromPanel = isTeacherGroupsReturnToPanel(returnTo);
 
   const {
     selectedGroup,
@@ -99,15 +103,23 @@ const TeacherGroups = () => {
   };
 
   if (viewingStudentProfile && selectedStudent) {
+    const studentBackLabel = teacherGroupsBackLabel(returnTo, 'student');
     if (!selectedStudent.hasSeededProfile) {
       return (
-        <StudentProfileIncomplete student={selectedStudent} onBack={handleBackFromStudent} />
+        <StudentProfileIncomplete
+          student={selectedStudent}
+          onBack={handleBackFromStudent}
+          backLabel={studentBackLabel}
+          fromPanel={fromPanel}
+        />
       );
     }
     return (
       <StudentProfile
         student={toStudentProfileViewModel(selectedStudent)}
         onBack={handleBackFromStudent}
+        backLabel={studentBackLabel}
+        fromPanel={fromPanel}
       />
     );
   }
@@ -117,6 +129,8 @@ const TeacherGroups = () => {
       <GroupProfile
         group={toGroupProfileViewModel(selectedGroup)}
         onBack={handleBackToGroups}
+        backLabel={teacherGroupsBackLabel(returnTo, 'group')}
+        fromPanel={fromPanel}
         onStudentClick={(student) => {
           const originalStudent = selectedGroup.students.find((s) => s.id === student.id);
           if (originalStudent) openStudent(selectedGroup, originalStudent);
