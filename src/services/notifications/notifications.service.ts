@@ -147,7 +147,51 @@ export async function createBroadcastNotification(
       return { error: auth.error };
     }
 
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('school_id')
+      .eq('user_id', auth.userId)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error('[notifications] profile school_id', profileError);
+      return { error: 'No se pudo verificar el liceo del docente.' };
+    }
+
+    const schoolId = profile?.school_id;
+    if (!schoolId) {
+      return {
+        error:
+          'Tu perfil no tiene un liceo asignado. No se puede publicar el aviso.',
+      };
+    }
+
     const groupId = targetCheck.groupId?.trim();
+
+    if (targetCheck.studentId != null) {
+      const { data: studentRow, error: studentErr } = await supabase
+        .from('school_students')
+        .select('id, school_id')
+        .eq('id', targetCheck.studentId)
+        .eq('school_id', schoolId)
+        .maybeSingle();
+      if (studentErr || !studentRow) {
+        return { error: 'El alumno no pertenece a tu liceo.' };
+      }
+    }
+
+    if (groupId) {
+      const { data: groupRow, error: groupErr } = await supabase
+        .from('school_groups')
+        .select('id, school_id')
+        .eq('id', groupId)
+        .eq('school_id', schoolId)
+        .maybeSingle();
+      if (groupErr || !groupRow) {
+        return { error: 'El grupo no pertenece a tu liceo.' };
+      }
+    }
+
     const { error } = await supabase.from('dashboard_notifications').insert({
       notification_type: input.notificationType,
       title: input.title,
@@ -155,6 +199,7 @@ export async function createBroadcastNotification(
       recipient_user_id: null,
       student_id: targetCheck.studentId ?? null,
       group_id: groupId ? groupId : null,
+      school_id: schoolId,
     });
 
     if (error) {

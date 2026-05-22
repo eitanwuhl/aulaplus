@@ -4,9 +4,13 @@
 
 | Capa | Tabla / origen |
 |------|----------------|
-| Grupos del docente | `public.grupos` (`user_id` = auth, `id` = `school_groups.id`) |
-| Alumnos (catálogo) | `public.school_students` (`display_name`, `perfil`, `school_group_id`) |
+| **Tenant (liceo)** | `public.schools` — ver [multitenancy.md](./multitenancy.md) |
+| Grupos del docente | `public.grupos` (`user_id` = auth, `id` = `school_groups.id` del mismo `school_id`) |
+| Catálogo de cursos | `public.school_groups` (`school_id`, `id`) |
+| Alumnos (catálogo) | `public.school_students` (`school_id`, `display_name`, `perfil`, `school_group_id`) |
 | Perfil extendido | `school_students.profile_data` (jsonb), poblado por seed |
+
+RLS: cada docente solo ve `school_groups` / `school_students` de su `profiles.school_id`.
 
 ## Sin mocks en runtime
 

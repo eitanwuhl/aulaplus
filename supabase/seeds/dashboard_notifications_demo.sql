@@ -9,6 +9,7 @@ INSERT INTO public.dashboard_notifications (
   created_at,
   student_id,
   group_id,
+  school_id,
   recipient_user_id
 )
 VALUES
@@ -20,6 +21,7 @@ VALUES
     now() - interval '30 minutes',
     9,
     NULL,
+    'liceo-demo',
     NULL
   ),
   (
@@ -30,6 +32,7 @@ VALUES
     now() - interval '2 hours',
     1,
     NULL,
+    'liceo-demo',
     NULL
   ),
   (
@@ -40,6 +43,7 @@ VALUES
     now() - interval '4 hours',
     NULL,
     NULL,
+    'liceo-demo',
     NULL
   ),
   (
@@ -50,6 +54,10 @@ VALUES
     now() - interval '1 day',
     NULL,
     '1',
+    'liceo-demo',
     NULL
   )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET
+  school_id = EXCLUDED.school_id,
+  student_id = EXCLUDED.student_id,
+  group_id = EXCLUDED.group_id;

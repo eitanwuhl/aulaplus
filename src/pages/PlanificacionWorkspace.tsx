@@ -17,9 +17,7 @@ import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLes
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/services/groupContext/provider';
-import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
-import { resolveMockGroup } from '@/utils/resolveMockGroup';
 import { PlanningAIDesignReport } from '@/components/planificacion/PlanningAIDesignReport';
 import type { PlanningAIDesignReportData } from '@/components/planificacion/PlanningAIDesignReport';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -447,7 +445,7 @@ export default function PlanificacionWorkspace() {
       const fallbackRecursos = normalizeArrayField(data?.recursos);
       
       // CONTEMPLACIONES: Use centralized helper to inject deterministic reminders in REPLACE mode
-      const sanitizedHtml = buildSanitizedLessonPlanHtml(
+      const sanitizedHtml = await buildSanitizedLessonPlanHtml(
         data.plan_html,
         fallbackRecursos,
         planificacion.grupo_id,

@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Search, Users, User } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { mockGroups } from "@/data/mockData";
+import { useAuth } from "@/contexts/AuthContext";
+import { useTeacherGroups } from "@/hooks/useTeacherGroups";
+import { normalizeGroupSearchValue } from "@/lib/groups/resolveGroupInList";
 
 type StudentResult = {
   id: number;
@@ -17,21 +19,22 @@ type GroupResult = {
 };
 
 function normalize(text: string): string {
-  return text
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
+  return normalizeGroupSearchValue(text);
 }
 
 export function GlobalSearch() {
   const navigate = useNavigate();
+  const { session } = useAuth();
+  const { data: teacherGroups = [], isLoading } = useTeacherGroups({
+    userId: session?.user?.id,
+    enabled: Boolean(session?.user?.id),
+  });
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
 
   const allStudents: StudentResult[] = useMemo(() => {
-    return mockGroups.flatMap((group) =>
+    return teacherGroups.flatMap((group) =>
       group.students.map((student) => ({
         id: student.id,
         name: student.name,
@@ -39,7 +42,7 @@ export function GlobalSearch() {
         groupName: group.name,
       }))
     );
-  }, []);
+  }, [teacherGroups]);
 
   const { students, groups } = useMemo(() => {
     const q = normalize(query);
@@ -49,13 +52,13 @@ export function GlobalSearch() {
       .filter((student) => normalize(student.name).includes(q))
       .slice(0, 6);
 
-    const filteredGroups = mockGroups
+    const filteredGroups = teacherGroups
       .filter((group) => normalize(group.name).includes(q))
       .map((group) => ({ id: group.id, name: group.name }))
       .slice(0, 6);
 
     return { students: filteredStudents, groups: filteredGroups };
-  }, [allStudents, query]);
+  }, [allStudents, query, teacherGroups]);
 
   useEffect(() => {
     const onClickOutside = (event: MouseEvent) => {
@@ -69,6 +72,7 @@ export function GlobalSearch() {
   }, []);
 
   const hasResults = students.length > 0 || groups.length > 0;
+  const showEmptyHint = !isLoading && teacherGroups.length === 0 && query.trim().length > 0;
 
   const handleStudentSelect = (studentId: number) => {
     navigate("/teacher-groups", { state: { studentId } });
@@ -100,7 +104,13 @@ export function GlobalSearch() {
 
       {open && (
         <div className="absolute right-0 mt-2 w-80 rounded-md border bg-popover shadow-md z-50 p-2">
-          {!hasResults ? (
+          {isLoading ? (
+            <div className="px-3 py-2 text-sm text-muted-foreground">Cargando…</div>
+          ) : showEmptyHint ? (
+            <div className="px-3 py-2 text-sm text-muted-foreground">
+              Sin grupos asignados en tu liceo
+            </div>
+          ) : !hasResults ? (
             <div className="px-3 py-2 text-sm text-muted-foreground">Sin resultados</div>
           ) : (
             <div className="space-y-2">

@@ -101,7 +101,14 @@ const TeacherDashboard = () => {
               ¡Hola, {user?.name}!
             </h1>
             <p className="text-primary-100 text-lg">
-              Bienvenido de vuelta. Tienes nuevas actualizaciones esperándote.
+              Bienvenido de vuelta
+              {user?.schoolName ? (
+                <>
+                  {' '}
+                  a <strong>{user.schoolName}</strong>
+                </>
+              ) : null}
+              .
             </p>
           </div>
           <div className="hidden md:flex items-center space-x-4">

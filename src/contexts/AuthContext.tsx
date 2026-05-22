@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useRef, ReactNode, useC
 import { supabase } from '@/integrations/supabase/client';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { resolveTeacherAuthEmail, verifyStudentLoginRemote, formatRpcError } from '@/services/auth/remoteLogin';
+import { invalidateTeacherGroupsCache } from '@/services/teacherGroups';
 
 type UserRole = 'teacher' | 'student';
 
@@ -14,6 +15,9 @@ interface User {
   role: UserRole;
   name: string;
   username?: string;
+  /** Tenant (liceo). Teachers only — from profiles.school_id. */
+  schoolId?: string;
+  schoolName?: string;
 }
 
 interface AuthContextType {
@@ -64,21 +68,35 @@ async function seedDemoAuthUsers(): Promise<{ errorMessage?: string }> {
   return {};
 }
 
-async function resolveTeacherDisplayName(session: Session): Promise<string> {
+async function resolveTeacherProfile(session: Session): Promise<{
+  name: string;
+  schoolId?: string;
+  schoolName?: string;
+}> {
   const { data: profile } = await supabase
     .from('profiles')
-    .select('display_name')
+    .select('display_name, school_id, schools ( name )')
     .eq('user_id', session.user.id)
     .maybeSingle();
 
-  return (
+  const schoolJoin = profile?.schools as { name?: string } | { name?: string }[] | null;
+  const schoolName = Array.isArray(schoolJoin)
+    ? schoolJoin[0]?.name
+    : schoolJoin?.name;
+
+  const name =
     profile?.display_name ??
     (typeof session.user.user_metadata?.display_name === 'string'
       ? session.user.user_metadata.display_name
       : null) ??
     session.user.email?.split('@')[0] ??
-    'Docente'
-  );
+    'Docente';
+
+  return {
+    name,
+    schoolId: profile?.school_id ?? undefined,
+    schoolName: schoolName ?? undefined,
+  };
 }
 
 export const AuthProvider = ({ children }: AuthProviderProps) => {
@@ -88,24 +106,33 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const profileUpsertInProgress = useRef<Set<string>>(new Set());
 
   const restoreTeacherFromSession = useCallback(async (nextSession: Session) => {
+    const { name, schoolId, schoolName } = await resolveTeacherProfile(nextSession);
+
     const savedUser = localStorage.getItem('auth_user');
     if (savedUser) {
       try {
         const parsedUser = JSON.parse(savedUser) as User;
         if (parsedUser.role === 'teacher' && parsedUser.id === nextSession.user.id) {
-          setUser(parsedUser);
+          const teacherUser: User = {
+            ...parsedUser,
+            name: name || parsedUser.name,
+            schoolId: schoolId !== undefined ? schoolId : parsedUser.schoolId,
+            schoolName: schoolName !== undefined ? schoolName : parsedUser.schoolName,
+          };
+          setUser(teacherUser);
+          localStorage.setItem('auth_user', JSON.stringify(teacherUser));
           return;
         }
       } catch (e) {
         console.error('Error parsing saved user:', e);
       }
     }
-
-    const name = await resolveTeacherDisplayName(nextSession);
     const teacherUser: User = {
       id: nextSession.user.id,
       role: 'teacher',
       name,
+      schoolId,
+      schoolName,
     };
     setUser(teacherUser);
     localStorage.setItem('auth_user', JSON.stringify(teacherUser));
@@ -165,11 +192,18 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
 
       profileUpsertInProgress.current.add(userId);
       try {
+        const { data: existingProfile } = await supabase
+          .from('profiles')
+          .select('school_id')
+          .eq('user_id', userId)
+          .maybeSingle();
+
         const { error } = await supabase.from('profiles').upsert(
           {
             user_id: userId,
             display_name: nextSession.user.user_metadata?.display_name ?? 'Docente',
             role: 'teacher',
+            ...(!existingProfile?.school_id ? { school_id: 'liceo-demo' } : {}),
           },
           { onConflict: 'user_id' }
         );
@@ -268,7 +302,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
           const hint: string[] = [];
           if (ensure.errorMessage) hint.push(ensure.errorMessage);
           hint.push(
-            'Docentes demo: códigos DOC001, DOC002 o DOC003 con contraseña DemoPassword2024! (emails demo.teacher@example.com, demo.teacher2@example.com, demo.teacher3@example.com).',
+            'Docentes demo: DOC001–DOC005 con contraseña DemoPassword2024! (liceo-demo, liceo-norte, St. Patrick\'s).',
           );
           hint.push(
             'Ejecutá `npm run seed:login`, desplegá `ensure-demo-users` y recargá la página.',
@@ -279,9 +313,9 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       }
 
       const uid = signData.session.user.id;
-      const name = await resolveTeacherDisplayName(signData.session);
+      const { name, schoolId, schoolName } = await resolveTeacherProfile(signData.session);
 
-      const newUser: User = { id: uid, role: 'teacher', name };
+      const newUser: User = { id: uid, role: 'teacher', name, schoolId, schoolName };
       setSession(signData.session);
       setUser(newUser);
       localStorage.setItem('auth_user', JSON.stringify(newUser));
@@ -332,6 +366,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     setUser(null);
     clearTeacherAuthStorage();
     if (wasTeacher) {
+      invalidateTeacherGroupsCache();
       await supabase.auth.signOut();
       setSession(null);
     }

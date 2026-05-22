@@ -17,10 +17,8 @@ import {
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext } from '@/services/groupContext/provider';
 import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
-import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
-import { resolveMockGroup } from '@/utils/resolveMockGroup';
 import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
 
 const PLAN_WIZARD_DRAFT_KEY = 'aulaplus.planWizard.draft';
@@ -267,7 +265,7 @@ const generarPlanesAutomaticamente = async (
   try {
     console.log('Iniciando generación automática de planes...');
     
-    // PHASE 4: Load group context from Supabase + mockGroups (shared helper)
+    // PHASE 4: Load group context from school catalog (shared helper)
     const groupContext = await loadGroupContext(grupoId);
     
     if (groupContext.perfilGrupo) {
@@ -661,7 +659,7 @@ const generarPlanesAutomaticamente = async (
 
           // CONTEMPLACIONES: Use centralized helper to inject deterministic reminders in REPLACE mode
           const fallbackRecursos = normalizeArrayField(data.recursos);
-          const finalHtml = buildSanitizedLessonPlanHtml(
+          const finalHtml = await buildSanitizedLessonPlanHtml(
             data.plan_html,
             fallbackRecursos,
             grupoId,

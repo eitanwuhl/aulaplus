@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { fetchTeacherGroups } from '@/services/teacherGroups';
+import { fetchTeacherGroups, primeTeacherGroupsCache } from '@/services/teacherGroups';
 import { teacherGroupKeys } from '@/hooks/teacherGroups/teacherGroupKeys';
 
 export function useTeacherGroups(options: {
@@ -18,7 +18,9 @@ export function useTeacherGroups(options: {
       if (result.error) {
         throw new Error(result.error);
       }
-      return result.data ?? [];
+      const groups = result.data ?? [];
+      primeTeacherGroupsCache(userId, groups);
+      return groups;
     },
     enabled: enabled && Boolean(userId),
     staleTime: 60 * 1000,

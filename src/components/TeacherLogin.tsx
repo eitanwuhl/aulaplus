@@ -7,6 +7,7 @@ import { ArrowLeft, GraduationCap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { formatRpcError } from "@/services/auth/remoteLogin";
 
 const TeacherLogin = () => {
   const [credentials, setCredentials] = useState({ username: '', password: '' });
@@ -32,15 +33,19 @@ const TeacherLogin = () => {
         toast({
           variant: "destructive",
           title: "No se pudo ingresar",
-          description: result.message,
+          description: result.ok === false ? result.message : "Credenciales incorrectas.",
         });
       }
     } catch (error) {
       console.error('Login error:', error);
+      const detail = formatRpcError(error);
       toast({
         variant: "destructive",
-        title: "Error de conexión",
-        description: "No pudimos validar tus credenciales. Revisa tu red e intenta de nuevo.",
+        title: "Error al ingresar",
+        description:
+          import.meta.env.DEV && detail
+            ? detail
+            : "No pudimos completar el ingreso. Revisá tu red e intentá de nuevo.",
       });
     } finally {
       setIsLoading(false);

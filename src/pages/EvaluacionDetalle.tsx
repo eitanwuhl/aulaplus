@@ -14,8 +14,9 @@ import { canRenderV2 } from '@/services/evaluations/v2Normalizer';
 import type { V2Response } from '@/services/evaluations/v2Types';
 import { getSubtemaPorId } from '@/data/catalogo';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import { mockGroups } from '@/data/mockData';
+import type { Student } from '@/data/mockData';
 import { useAuth } from '@/contexts/AuthContext';
+import { fetchLegacyStudentsForGroup } from '@/services/teacherGroups';
 
 // Presentational only — no hooks. Keeps parent hook order stable.
 function LoadingState(): React.ReactElement {
@@ -156,28 +157,22 @@ const EvaluacionDetalle: React.FC = () => {
         const evaluacionData = evalData as unknown as Evaluacion;
         setEvaluacion(evaluacionData);
 
-        // Load group to get students (needed for reminders calculation)
-        // Note: Students are stored in mockData, not in Supabase grupos table
         if (evaluacionData.grupo_id) {
-          // Try to find group in mockGroups (fallback for student data)
-          const mockGroup = mockGroups.find(g => g.id === evaluacionData.grupo_id);
-          if (mockGroup?.students) {
-            setStudents(mockGroup.students);
-            
-            // DEV-ONLY: Diagnostic logging
-            if (import.meta.env.DEV && (window as any).__CONTEMPLACIONES_DEBUG__ === true) {
-              console.log('[EVALUACION DETALLE] Loaded students from mockGroup:', {
-                grupoId: evaluacionData.grupo_id,
-                studentsCount: mockGroup.students.length,
-                studentIds: mockGroup.students.map(s => ({ id: s.id, name: s.name }))
-              });
-            }
-          } else {
-            console.warn('[EVALUACION DETALLE] ⚠️ Grupo no encontrado en mockData:', evaluacionData.grupo_id);
-            console.warn('[EVALUACION DETALLE] Los recordatorios no se mostrarán. Grupos disponibles:', mockGroups.map(g => g.id));
-            // Non-fatal: continue without students (reminders won't show but evaluation will)
-            // Set empty array explicitly to avoid fallback to "first 4 students"
-            setStudents([]);
+          const catalogStudents = await fetchLegacyStudentsForGroup(evaluacionData.grupo_id);
+          setStudents(catalogStudents as Student[]);
+
+          if (import.meta.env.DEV && (window as any).__CONTEMPLACIONES_DEBUG__ === true) {
+            console.log('[EVALUACION DETALLE] Loaded students from catalog:', {
+              grupoId: evaluacionData.grupo_id,
+              studentsCount: catalogStudents.length,
+            });
+          }
+
+          if (catalogStudents.length === 0) {
+            console.warn(
+              '[EVALUACION DETALLE] Sin alumnos en catálogo para grupo:',
+              evaluacionData.grupo_id
+            );
           }
         } else {
           // No grupo_id, set empty array explicitly

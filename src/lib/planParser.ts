@@ -6,7 +6,7 @@
  */
 
 import { enforceForLessonPlan, type Student } from './contemplaciones/enforcement';
-import { resolveMockGroup } from '@/utils/resolveMockGroup';
+import { fetchLegacyStudentsForGroup } from '@/services/teacherGroups';
 
 export interface ParsedPlan {
   inicio: string;       // Clean HTML/markdown for Start section (no resources)
@@ -718,35 +718,29 @@ export function buildPlanHtmlWithReminders(
  * @param logTag - Tag for diagnostic logs (e.g., '[INITIAL-GEN]', '[REGENERATE]')
  * @returns Sanitized HTML with reminders injected (or without if no students/contemplaciones)
  */
-export function buildSanitizedLessonPlanHtml(
+export async function buildSanitizedLessonPlanHtml(
   rawPlanHtml: string,
   fallbackRecursos?: string[],
   grupoId?: string,
   logTag: string = '[PLAN-BUILD]'
-): string {
-  // STEP 1: Attempt to load students for reminder injection
+): Promise<string> {
   if (!grupoId) {
     console.log(`${logTag} No grupoId provided, building plan without reminders`);
     const parsedPlan = parsePlan(rawPlanHtml, fallbackRecursos);
     return buildPlanHtml(parsedPlan);
   }
-  
-  const resolveResult = resolveMockGroup(grupoId, false);
-  const mockGroup = resolveResult.group;
-  
-  if (!mockGroup || !mockGroup.students || mockGroup.students.length === 0) {
-    console.log(`${logTag} No students found for grupoId=${grupoId}, building plan without reminders`, {
-      matchType: resolveResult.matchType,
-      searchedValue: resolveResult.searchedValue
-    });
+
+  const catalogStudents = await fetchLegacyStudentsForGroup(grupoId);
+
+  if (catalogStudents.length === 0) {
+    console.log(`${logTag} No students found for grupoId=${grupoId}, building plan without reminders`);
     const parsedPlan = parsePlan(rawPlanHtml, fallbackRecursos);
     return buildPlanHtml(parsedPlan);
   }
-  
-  // STEP 2: Map students to enforcement format
-  const students: Student[] = mockGroup.students.map(s => ({
+
+  const students: Student[] = catalogStudents.map((s) => ({
     id: s.id,
-    name: s.name
+    name: s.name,
   }));
   
   // STEP 3: Generate enforcement to check if we have reminders

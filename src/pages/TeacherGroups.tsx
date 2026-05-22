@@ -45,7 +45,7 @@ function getProgressIcon(progress: number) {
 const TeacherGroups = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { session } = useAuth();
+  const { session, user } = useAuth();
   const userId = session?.user?.id;
 
   const { data: groups = [], isLoading, isError, error } = useTeacherGroups({
@@ -161,6 +161,11 @@ const TeacherGroups = () => {
             <p className="text-foreground-subtle">
               Gestiona y visualiza el progreso de tus grupos de estudiantes
             </p>
+            {user?.schoolName && (
+              <Badge variant="secondary" className="mt-2">
+                {user.schoolName}
+              </Badge>
+            )}
           </motion.div>
         </motion.div>
       </motion.div>

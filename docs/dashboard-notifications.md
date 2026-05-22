@@ -53,11 +53,14 @@ Motivo de dos tablas: el **texto del aviso** no se duplica por cada docente; sol
 ## 3. Seguridad (RLS)
 
 - **`dashboard_notifications`**
-  - **SELECT:** docentes (`profiles.role = 'teacher'`) y:
-    - **Personal:** `recipient_user_id = auth.uid()`.
-    - **Broadcast general:** `recipient_user_id` NULL y sin `student_id` ni `group_id` → todos los docentes.
-    - **Por grupo:** `group_id` seteado → solo docentes con fila en **`public.grupos`** con ese `id` y `user_id = auth.uid()`.
-    - **Por alumno:** `student_id` seteado → solo docentes asignados al **`school_group_id`** del alumno (misma regla vía `grupos`).
+  - **SELECT (multi-tenant):** `school_id` de la notificación debe coincidir con `profiles.school_id` del usuario (`current_user_school_id()`). Sin coincidencia de liceo, **nadie** ve la fila.
+    - **Dirección / psicopedagogía** del liceo: ven **todos** los avisos de su `school_id`.
+    - **Docentes** del mismo liceo:
+      - **Broadcast:** `recipient_user_id` NULL, sin `student_id` ni `group_id` → todos los docentes del liceo.
+      - **Por grupo:** solo docentes con ese curso en **`public.grupos`**.
+      - **Por alumno:** solo docentes del curso del alumno en **`grupos`**.
+    - **Personal:** `recipient_user_id = auth.uid()` (mismo liceo).
+  - Migración: `20260522000000_notifications_liceo_recipients_only.sql`.
   - Migración: `20260516120000_dashboard_notifications_group_scoped_visibility.sql`.
   - **INSERT:** solo perfiles con `profiles.role` en **`teacher`**, **`direccion`** o **`psicopedagogico`** (`20260517140000_…`). Staff puede apuntar a cualquier alumno/grupo del catálogo (FK). Docentes: broadcast libre; con `group_id`/`student_id` solo si tienen ese curso en **`public.grupos`** (asignación por `(user_id, id)` — varios docentes pueden compartir el mismo `id` de curso).
   - **SELECT staff:** `direccion` / `psicopedagogico` ven **todos** los avisos. **SELECT docente:** reglas por asignación en `grupos` (migración `20260516120000` + `20260517140000`).

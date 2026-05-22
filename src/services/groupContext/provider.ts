@@ -9,7 +9,7 @@
  * to enable seamless migration without changing call sites.
  * 
  * IMPORTANT: This is the ONLY place allowed to touch:
- * - mockData.ts (students)
+ * - school_students catalog (via teacherGroups service)
  * - localStorage (contemplaciones)
  * - Supabase grupos table (teacher_sugerencias)
  * 
@@ -17,9 +17,12 @@
  */
 
 import { supabase } from '@/integrations/supabase/client';
-import { mockGroups, type TeacherSugerencias, type Student } from '@/data/mockData';
-import { resolveMockGroup } from '@/utils/resolveMockGroup';
+import type { Student } from '@/data/mockData';
 import { readSelected } from '@/lib/contemplaciones/storage';
+import {
+  fetchLegacyStudentsForGroup,
+  resolveLegacyGroup,
+} from '@/services/teacherGroups';
 import type {
   GroupContextForAI,
   StudentForAI,
@@ -51,62 +54,17 @@ interface StudentDataSource {
   ): Promise<string[]>;
 }
 
-/**
- * Current implementation: Mock data + localStorage
- */
-class MockStudentDataSource implements StudentDataSource {
+/** school_students + grupos catalog for the signed-in teacher. */
+class CatalogStudentDataSource implements StudentDataSource {
   async getGroupStudents(grupoId: string): Promise<Student[]> {
-    const resolveResult = resolveMockGroup(grupoId, true);
-    const mockGroup = resolveResult.group;
-    
-    if (!mockGroup || !mockGroup.students) {
-      return [];
-    }
-    
-    return mockGroup.students;
+    return fetchLegacyStudentsForGroup(grupoId);
   }
-  
+
   async getStudentContemplaciones(
     studentId: string | number,
     category: 'clase' | 'evaluaciones'
   ): Promise<string[]> {
     return readSelected(studentId, category);
-  }
-}
-
-/**
- * Future implementation: Supabase (placeholder with TODOs)
- * 
- * TODO: Implement when students table is added to Supabase
- * - Create students table with RLS
- * - Create student_contemplaciones junction table
- * - Implement getGroupStudents() to query Supabase
- * - Implement getStudentContemplaciones() to query Supabase
- */
-class SupabaseStudentDataSource implements StudentDataSource {
-  async getGroupStudents(grupoId: string): Promise<Student[]> {
-    // TODO: Query Supabase students table
-    // const { data, error } = await supabase
-    //   .from('students')
-    //   .select('*')
-    //   .eq('grupo_id', grupoId)
-    //   .eq('user_id', user.id);
-    // return data || [];
-    throw new Error('SupabaseStudentDataSource not yet implemented');
-  }
-  
-  async getStudentContemplaciones(
-    studentId: string | number,
-    category: 'clase' | 'evaluaciones'
-  ): Promise<string[]> {
-    // TODO: Query Supabase student_contemplaciones table
-    // const { data, error } = await supabase
-    //   .from('student_contemplaciones')
-    //   .select('contemplacion_id')
-    //   .eq('student_id', studentId)
-    //   .eq('category', category);
-    // return data?.map(d => d.contemplacion_id) || [];
-    throw new Error('SupabaseStudentDataSource not yet implemented');
   }
 }
 
@@ -326,7 +284,7 @@ async function loadTeacherSugerencias(grupoId: string): Promise<TeacherSugerenci
     if (error) {
       if (error.code === 'PGRST116') {
         // No rows found - group doesn't exist in DB, use mock data (expected behavior)
-        console.log('[getGroupContextForAI] Group not found in DB, using mock data');
+        console.log('[getGroupContextForAI] Group not found in DB for teacher_sugerencias');
         return undefined;
       }
       // Handle 404 or other errors gracefully without blocking generation
@@ -373,11 +331,11 @@ export async function getGroupContextForAI(
 ): Promise<GroupContextForAI> {
   const { purpose = 'planning', maxStudents = 10 } = options;
   
-  console.log('[getGroupContextForAI] Loading context for grupo:', grupoId, 'purpose:', purpose);
+  if (import.meta.env.DEV) {
+    console.log('[getGroupContextForAI] Loading context for grupo:', grupoId, 'purpose:', purpose);
+  }
   
-  // Use current data source (mock + localStorage)
-  // TODO: Switch to SupabaseStudentDataSource when students table is ready
-  const dataSource: StudentDataSource = new MockStudentDataSource();
+  const dataSource: StudentDataSource = new CatalogStudentDataSource();
   
   try {
     // 1. Load teacher suggestions from Supabase
@@ -390,13 +348,12 @@ export async function getGroupContextForAI(
       console.log('[getGroupContextForAI] No students found for grupo:', grupoId);
       
       // Return minimal context with teacher suggestions if available
-      const resolveResult = resolveMockGroup(grupoId, true);
-      const mockGroup = resolveResult.group;
-      
+      const catalogGroup = await resolveLegacyGroup(grupoId, true);
+
       return {
         groupId: grupoId,
-        groupName: mockGroup?.name || grupoId,
-        gradeLevel: mockGroup?.year,
+        groupName: catalogGroup?.name || grupoId,
+        gradeLevel: catalogGroup?.year,
         teacherSugerencias,
         students: [],
         anonymizedStudentsForPrompt: [],
@@ -498,14 +455,12 @@ export async function getGroupContextForAI(
     // 8. Calculate coverage hints from contemplaciones (for future PU Family generation)
     const coverageHints = calculateCoverageHints(studentsWithContemplaciones, purpose);
     
-    // 8. Get group name from mock data
-    const resolveResult = resolveMockGroup(grupoId, true);
-    const mockGroup = resolveResult.group;
-    
+    const catalogGroup = await resolveLegacyGroup(grupoId, true);
+
     const result: GroupContextForAI = {
       groupId: grupoId,
-      groupName: mockGroup?.name || grupoId,
-      gradeLevel: mockGroup?.year,
+      groupName: catalogGroup?.name || grupoId,
+      gradeLevel: catalogGroup?.year,
       teacherSugerencias,
       students: studentsWithContemplaciones,
       groupProfile,
@@ -531,13 +486,12 @@ export async function getGroupContextForAI(
     console.error('[getGroupContextForAI] Error loading group context:', error);
     
     // Return minimal context on error
-    const resolveResult = resolveMockGroup(grupoId, true);
-    const mockGroup = resolveResult.group;
-    
+    const catalogGroup = await resolveLegacyGroup(grupoId, true);
+
       return {
         groupId: grupoId,
-        groupName: mockGroup?.name || grupoId,
-        gradeLevel: mockGroup?.year,
+        groupName: catalogGroup?.name || grupoId,
+        gradeLevel: catalogGroup?.year,
         students: [],
         anonymizedStudentsForPrompt: [],
         hasContentAdaptation: false,
@@ -613,10 +567,10 @@ export async function loadGroupContext(grupoId: string | undefined): Promise<Gro
         distribucion: context.groupProfile.distribucion
       } : undefined,
       estudiantes: context.anonymizedStudentsForPrompt.length > 0
-        ? context.anonymizedStudentsForPrompt.map(s => ({
-            perfil: s.learningStyle,
-            ajustes: s.adjustments,
-            contemplaciones: s.contemplaciones
+        ? context.anonymizedStudentsForPrompt.map((s) => ({
+            perfil: s.perfil,
+            ajustes: s.ajustes,
+            contemplaciones: s.contemplaciones,
           }))
         : undefined,
       teacherSugerencias: context.teacherSugerencias

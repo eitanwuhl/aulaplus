@@ -16,7 +16,9 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { invokeEdgeFunctionAuthed } from "@/lib/edgeFunctionAuth";
 import { normalizeArrayField } from "@/lib/normalizeSupabaseArrays";
-import { Group, mockGroups } from "@/data/mockData";
+import type { Group } from "@/data/mockData";
+import { useTeacherGroups } from "@/hooks/useTeacherGroups";
+import { teacherGroupToLegacyGroup } from "@/services/teacherGroups";
 import { CATALOGO_JERARQUICO, criteriosParaContenidos, contenidosPorMateria, getSubtemaPorId, getCapituloPorSubtema, type Materia, type CapituloMacro, type SubtemaItem } from "@/data/catalogo";
 import { getCompetenciasEspecificas, getCriteriosLogroPorCompetencias, type CompetenciaEspecifica } from "@/data/competencias";
 import { getCompetenciasEspecificasLiteratura, getCriteriosLogroPorCompetenciasLiteratura } from "@/data/competenciasLiteratura";
@@ -350,6 +352,14 @@ ${requerimientos ? `\n**APOYOS BIOLÓGICOS:** ${requerimientos}` : ""}`
 const EvaluacionesGrupo = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { data: teacherGroups = [], isLoading: loadingGroups } = useTeacherGroups({
+    userId: user?.id,
+    enabled: Boolean(user?.id),
+  });
+  const legacyGroups = useMemo(
+    () => teacherGroups.map(teacherGroupToLegacyGroup),
+    [teacherGroups]
+  );
   const [searchParams] = useSearchParams();
   const [selectedGroupId, setSelectedGroupId] = useState<string>(searchParams.get("grupo") || "");
   const [esInterdisciplinaria, setEsInterdisciplinaria] = useState(false);
@@ -414,8 +424,8 @@ const EvaluacionesGrupo = () => {
   const [isConfigCollapsed, setIsConfigCollapsed] = useState<boolean>(false);
 
   const selectedGroup: Group | undefined = useMemo(
-    () => mockGroups.find(g => g.id === selectedGroupId),
-    [selectedGroupId]
+    () => legacyGroups.find((g) => g.id === selectedGroupId),
+    [legacyGroups, selectedGroupId]
   );
 
   const showDebugPanel = import.meta.env.VITE_DEBUG_EVAL_PIPELINE === 'true';
@@ -1202,9 +1212,21 @@ const EvaluacionesGrupo = () => {
                 <Select value={selectedGroupId} onValueChange={setSelectedGroupId}>
                   <SelectTrigger className="bg-white"><SelectValue placeholder="Seleccioná el grupo" /></SelectTrigger>
                   <SelectContent className="bg-white">
-                    {mockGroups.map(g => (
-                      <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
-                    ))}
+                    {loadingGroups ? (
+                      <SelectItem value="__loading" disabled>
+                        Cargando grupos…
+                      </SelectItem>
+                    ) : legacyGroups.length === 0 ? (
+                      <SelectItem value="__empty" disabled>
+                        Sin grupos asignados
+                      </SelectItem>
+                    ) : (
+                      legacyGroups.map((g) => (
+                        <SelectItem key={g.id} value={g.id}>
+                          {g.name}
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
               </div>

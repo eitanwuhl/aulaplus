@@ -13,9 +13,7 @@ import { PDFGenerator } from '@/components/PDFGenerator';
 import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml, ParsedPlan } from '@/lib/planParser';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext, getGrupoIdFromPlanificacion } from '@/services/groupContext/provider';
-import { mockGroups } from '@/data/mockData';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
-import { resolveMockGroup } from '@/utils/resolveMockGroup';
 import { SessionMaterialsPanel } from './SessionMaterialsPanel';
 import { PlanningAIDesignReport } from './PlanningAIDesignReport';
 import type { PlanningAIDesignReportData } from './PlanningAIDesignReport';
@@ -436,7 +434,7 @@ export function EditorSesionNuevo({
         : normalizeArrayField(data.recursos);
       
       // Use centralized helper for consistent reminder injection across all flows
-      const sanitizedHtml = buildSanitizedLessonPlanHtml(
+      const sanitizedHtml = await buildSanitizedLessonPlanHtml(
         data.plan_html,
         fallbackRecursos,
         grupoId,
@@ -581,7 +579,7 @@ export function EditorSesionNuevo({
         : normalizeArrayField(data.recursos);
       
       // Use centralized helper for consistent reminder injection across all flows
-      const sanitizedHtml = buildSanitizedLessonPlanHtml(
+      const sanitizedHtml = await buildSanitizedLessonPlanHtml(
         data.plan_html,
         fallbackRecursos,
         grupoId,

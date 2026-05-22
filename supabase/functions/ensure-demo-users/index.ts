@@ -9,9 +9,31 @@ const corsHeaders = {
 const DEMO_TEACHER_PASSWORD = 'DemoPassword2024!';
 
 const DEMO_TEACHERS = [
-  { email: 'demo.teacher@example.com', displayName: 'Profesor Demo (9no 1 y 2)' },
-  { email: 'demo.teacher2@example.com', displayName: 'Profesor Demo 2 (9no 2 y 3)' },
-  { email: 'demo.teacher3@example.com', displayName: 'Profesor Demo 3 (9no 1 y 3)' },
+  {
+    email: 'demo.teacher@example.com',
+    displayName: 'Profesor Demo (9no 1 y 2)',
+    schoolId: 'liceo-demo',
+  },
+  {
+    email: 'demo.teacher2@example.com',
+    displayName: 'Profesor Demo 2 — Liceo Norte (8vo 1 y 2)',
+    schoolId: 'liceo-norte',
+  },
+  {
+    email: 'demo.teacher3@example.com',
+    displayName: 'Profesor Demo 3 (9no 1 y 3)',
+    schoolId: 'liceo-demo',
+  },
+  {
+    email: 'demo.teacher4@example.com',
+    displayName: "Prof. St. Patrick's (10mo 1 y 2)",
+    schoolId: 'liceo-st-patricks',
+  },
+  {
+    email: 'demo.teacher5@example.com',
+    displayName: "Prof. St. Patrick's 2 (10mo 2 y 3)",
+    schoolId: 'liceo-st-patricks',
+  },
 ] as const;
 
 serve(async (req) => {
@@ -113,6 +135,7 @@ serve(async (req) => {
           user_id: userId,
           display_name: teacher.displayName,
           role: 'teacher',
+          school_id: teacher.schoolId,
         });
         if (profileInsertError) {
           console.error('Error creating profile:', profileInsertError);
@@ -120,7 +143,11 @@ serve(async (req) => {
       } else {
         await supabaseAdmin
           .from('profiles')
-          .update({ display_name: teacher.displayName, role: 'teacher' })
+          .update({
+            display_name: teacher.displayName,
+            role: 'teacher',
+            school_id: teacher.schoolId,
+          })
           .eq('user_id', userId);
       }
 

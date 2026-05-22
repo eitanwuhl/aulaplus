@@ -15,7 +15,8 @@ import { es } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
 import { WizardData, ConfiguracionHorario, DistribucionModalidades } from '@/types/planificacion';
 import { ValidationResult } from '@/types/validation';
-import { mockGroups } from '@/data/mockData';
+import { useAuth } from '@/contexts/AuthContext';
+import { useTeacherGroups } from '@/hooks/useTeacherGroups';
 import { ModalityDistribution } from './ModalityDistribution';
 import { UnidadDidacticaBuilder } from './UnidadDidacticaBuilder';
 import { PlanMaterialsSection } from './PlanMaterialsSection';
@@ -54,6 +55,10 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
   validation
 }) => {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const { data: teacherGroups = [], isLoading: loadingTeacherGroups } = useTeacherGroups({
+    userId: user?.role === 'teacher' ? user.id : undefined,
+  });
 
   // Pristine state tracking: campos no muestran errores hasta que el usuario intente avanzar o interactúe
   const [submitAttempted, setSubmitAttempted] = useState<Record<number, boolean>>({});
@@ -211,8 +216,18 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                 <SelectValue placeholder="Seleccionar grupo" />
               </SelectTrigger>
               <SelectContent>
-                {mockGroups.map((group) => (
-                  <SelectItem key={group.id} value={group.name}>
+                {loadingTeacherGroups && (
+                  <SelectItem value="__loading" disabled>
+                    Cargando grupos…
+                  </SelectItem>
+                )}
+                {!loadingTeacherGroups && teacherGroups.length === 0 && (
+                  <SelectItem value="__empty" disabled>
+                    No hay grupos asignados en tu liceo
+                  </SelectItem>
+                )}
+                {teacherGroups.map((group) => (
+                  <SelectItem key={group.id} value={group.id}>
                     {group.name} ({group.studentCount} estudiantes)
                   </SelectItem>
                 ))}
