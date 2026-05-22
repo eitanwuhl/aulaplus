@@ -27,13 +27,13 @@ npm run supabase:gen-types
 
 ## Demo
 
-| Código | Email | Liceo |
-|--------|-------|-------|
-| DOC001 | demo.teacher@example.com | `liceo-demo` (9º 1–3) |
-| DOC002 | demo.teacher2@example.com | `liceo-norte` (8º 1–2) |
-| DOC003 | demo.teacher3@example.com | `liceo-demo` (9º 1 y 3) |
-| DOC004 | demo.teacher4@example.com | `liceo-st-patricks` (10mo 1 y 2) |
-| DOC005 | demo.teacher5@example.com | `liceo-st-patricks` (10mo 2 y 3) |
+| Código login | Nombre en la app | Cursos en Mis grupos |
+|--------------|----------------|----------------------|
+| DOC001 | María López | 9no 1, 9no 2 |
+| DOC002 | Carlos Rodríguez | 8vo 1, 8vo 2 |
+| DOC003 | Laura Fernández | 9no 1, 9no 3 |
+| DOC004 | Patricia Morales | 10mo 1, 10mo 2 |
+| DOC005 | Miguel Torres | 10mo 2, 10mo 3 |
 
 Cada docente solo ve datos de **su** liceo (catálogo, grupos, notificaciones).
 

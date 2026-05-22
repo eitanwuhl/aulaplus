@@ -15,12 +15,12 @@ export function demoTeacherLoginHints(ensureError?: string): string {
   const parts: string[] = [];
   if (ensureError) parts.push(ensureError);
   parts.push(
-    'Docentes demo: DOC001–DOC005 con contraseña DemoPassword2024!.',
+    'Docentes demo: DOC001–DOC005 con contraseña DemoPassword2026!.',
     'En local: `npm run seed:login` y `npm run functions:local`.',
   );
   return parts.join(' ');
 }
 
 export function demoStudentLoginHints(): string {
-  return 'Estudiantes demo: EST2024001–EST2024006, contraseña EstudianteDemo2024!. En local: `npm run seed:login`.';
+  return 'Estudiantes demo: EST2024001–EST2024006, contraseña EstudianteDemo2026!. En local: `npm run seed:login`.';
 }

@@ -123,25 +123,6 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       return;
     }
 
-    const savedUser = localStorage.getItem('auth_user');
-    if (savedUser) {
-      try {
-        const parsedUser = JSON.parse(savedUser) as User;
-        if (parsedUser.role === 'teacher' && parsedUser.id === nextSession.user.id) {
-          const teacherUser: User = {
-            ...parsedUser,
-            name: name || parsedUser.name,
-            schoolId: schoolId !== undefined ? schoolId : parsedUser.schoolId,
-            schoolName: schoolName !== undefined ? schoolName : parsedUser.schoolName,
-          };
-          setUser(teacherUser);
-          localStorage.setItem('auth_user', JSON.stringify(teacherUser));
-          return;
-        }
-      } catch (e) {
-        console.error('Error parsing saved user:', e);
-      }
-    }
     const teacherUser: User = {
       id: nextSession.user.id,
       role: 'teacher',

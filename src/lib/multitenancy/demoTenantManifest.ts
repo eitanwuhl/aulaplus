@@ -7,11 +7,41 @@ export const DEMO_SCHOOL_IDS = ['liceo-demo', 'liceo-norte', 'liceo-st-patricks'
 export type DemoSchoolId = (typeof DEMO_SCHOOL_IDS)[number];
 
 export const DEMO_TEACHER_ASSIGNMENTS = [
-  { loginCode: 'DOC001', email: 'demo.teacher@example.com', schoolId: 'liceo-demo' as DemoSchoolId, groupIds: ['1', '2'] },
-  { loginCode: 'DOC002', email: 'demo.teacher2@example.com', schoolId: 'liceo-norte' as DemoSchoolId, groupIds: ['1', '2'] },
-  { loginCode: 'DOC003', email: 'demo.teacher3@example.com', schoolId: 'liceo-demo' as DemoSchoolId, groupIds: ['1', '3'] },
-  { loginCode: 'DOC004', email: 'demo.teacher4@example.com', schoolId: 'liceo-st-patricks' as DemoSchoolId, groupIds: ['1', '2'] },
-  { loginCode: 'DOC005', email: 'demo.teacher5@example.com', schoolId: 'liceo-st-patricks' as DemoSchoolId, groupIds: ['2', '3'] },
+  {
+    loginCode: 'DOC001',
+    email: 'demo.teacher@example.com',
+    schoolId: 'liceo-demo' as DemoSchoolId,
+    groupIds: ['1', '2'],
+    displayName: 'María López',
+  },
+  {
+    loginCode: 'DOC002',
+    email: 'demo.teacher2@example.com',
+    schoolId: 'liceo-norte' as DemoSchoolId,
+    groupIds: ['1', '2'],
+    displayName: 'Carlos Rodríguez',
+  },
+  {
+    loginCode: 'DOC003',
+    email: 'demo.teacher3@example.com',
+    schoolId: 'liceo-demo' as DemoSchoolId,
+    groupIds: ['1', '3'],
+    displayName: 'Laura Fernández',
+  },
+  {
+    loginCode: 'DOC004',
+    email: 'demo.teacher4@example.com',
+    schoolId: 'liceo-st-patricks' as DemoSchoolId,
+    groupIds: ['1', '2'],
+    displayName: 'Patricia Morales',
+  },
+  {
+    loginCode: 'DOC005',
+    email: 'demo.teacher5@example.com',
+    schoolId: 'liceo-st-patricks' as DemoSchoolId,
+    groupIds: ['2', '3'],
+    displayName: 'Miguel Torres',
+  },
 ] as const;
 
 /** Catalog student ids per school (must match school_students seeds). */

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,7 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
 import { NotificationsPanel } from "@/components/dashboard/NotificationsPanel";
+import { useTeacherGroups } from "@/hooks/useTeacherGroups";
 
 const motivationalQuotes = [
   "Un maestro afecta la eternidad; no puede decir dónde termina su influencia. - Henry Adams",
@@ -69,9 +70,20 @@ const quickStats = [
 ];
 
 const TeacherDashboard = () => {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const navigate = useNavigate();
   const [currentQuote, setCurrentQuote] = useState("");
+  const userId = session?.user?.id;
+
+  const { data: teacherGroups = [] } = useTeacherGroups({
+    userId,
+    enabled: Boolean(userId),
+  });
+
+  const assignedCourseNames = useMemo(
+    () => teacherGroups.map((g) => g.name).join(", "),
+    [teacherGroups]
+  );
 
   useEffect(() => {
     // Rotate quote every 10 seconds
@@ -110,6 +122,11 @@ const TeacherDashboard = () => {
               ) : null}
               .
             </p>
+            {assignedCourseNames ? (
+              <p className="text-primary-100/90 text-sm mt-2">
+                Tus cursos asignados: <strong>{assignedCourseNames}</strong>
+              </p>
+            ) : null}
           </div>
           <div className="hidden md:flex items-center space-x-4">
             <Button

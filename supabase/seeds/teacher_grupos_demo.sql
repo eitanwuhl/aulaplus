@@ -1,9 +1,11 @@
 -- Asignación docente ↔ curso (public.grupos). Requiere auth.users + school_groups.
 -- Re-run: npm run seed:teacher-grupos
 --
--- demo.teacher@example.com  → 9no 1 y 9no 2
--- demo.teacher2@example.com → 9no 2 y 9no 3
--- demo.teacher3@example.com → 9no 1 y 9no 3
+-- DOC001 / demo.teacher@example.com     → liceo-demo: 9no 1 y 9no 2
+-- DOC002 / demo.teacher2@example.com    → liceo-norte: 8vo 1 y 8vo 2
+-- DOC003 / demo.teacher3@example.com    → liceo-demo: 9no 1 y 9no 3
+-- DOC004 / demo.teacher4@example.com    → St. Patrick's: 10mo 1 y 10mo 2
+-- DOC005 / demo.teacher5@example.com    → St. Patrick's: 10mo 2 y 10mo 3
 
 -- DOC001 / demo.teacher → liceo-demo
 INSERT INTO public.grupos (id, name, year, section, user_id)

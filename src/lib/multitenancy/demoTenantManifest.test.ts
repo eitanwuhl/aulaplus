@@ -29,6 +29,13 @@ describe('demoTenantManifest', () => {
     }
   });
 
+  it('uses human display names (login code is separate)', () => {
+    for (const teacher of DEMO_TEACHER_ASSIGNMENTS) {
+      expect(teacher.displayName).not.toMatch(/^DOC\d+/);
+      expect(teacher.displayName.length).toBeGreaterThan(2);
+    }
+  });
+
   it('isolates DOC002 to liceo-norte (different school_id than DOC001)', () => {
     const doc1 = DEMO_TEACHER_ASSIGNMENTS.find((t) => t.loginCode === 'DOC001');
     const doc2 = DEMO_TEACHER_ASSIGNMENTS.find((t) => t.loginCode === 'DOC002');

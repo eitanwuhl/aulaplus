@@ -1098,7 +1098,7 @@ export default function PlanificacionWizard() {
 
         const { error: signInError } = await supabase.auth.signInWithPassword({
           email: 'demo.teacher@example.com',
-          password: 'DemoPassword2024!',
+          password: 'DemoPassword2026!',
         });
 
         if (signInError) {

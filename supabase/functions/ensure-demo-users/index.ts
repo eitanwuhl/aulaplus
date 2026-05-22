@@ -40,32 +40,33 @@ function assertBootstrapAuthorized(req: Request): Response | null {
   return null;
 }
 
-const DEMO_TEACHER_PASSWORD = 'DemoPassword2024!';
+const DEMO_TEACHER_PASSWORD = 'DemoPassword2026!';
 
+/** Keep in sync with src/lib/multitenancy/demoTenantManifest.ts and supabase/seeds/login_demo.sql */
 const DEMO_TEACHERS = [
   {
     email: 'demo.teacher@example.com',
-    displayName: 'Profesor Demo (9no 1 y 2)',
+    displayName: 'María López',
     schoolId: 'liceo-demo',
   },
   {
     email: 'demo.teacher2@example.com',
-    displayName: 'Profesor Demo 2 — Liceo Norte (8vo 1 y 2)',
+    displayName: 'Carlos Rodríguez',
     schoolId: 'liceo-norte',
   },
   {
     email: 'demo.teacher3@example.com',
-    displayName: 'Profesor Demo 3 (9no 1 y 3)',
+    displayName: 'Laura Fernández',
     schoolId: 'liceo-demo',
   },
   {
     email: 'demo.teacher4@example.com',
-    displayName: "Prof. St. Patrick's (10mo 1 y 2)",
+    displayName: 'Patricia Morales',
     schoolId: 'liceo-st-patricks',
   },
   {
     email: 'demo.teacher5@example.com',
-    displayName: "Prof. St. Patrick's 2 (10mo 2 y 3)",
+    displayName: 'Miguel Torres',
     schoolId: 'liceo-st-patricks',
   },
 ] as const;
