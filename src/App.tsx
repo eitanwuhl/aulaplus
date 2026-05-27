@@ -24,6 +24,10 @@ import MisPlanificaciones from "./pages/MisPlanificaciones";
 import Comunicaciones from "./pages/Comunicaciones";
 import BibliotecaMateriales from "./pages/BibliotecaMateriales";
 import { AuthRouteFallback } from "./components/auth/AuthRouteFallback";
+import InstitutionOnboarding from "./pages/institution/InstitutionOnboarding";
+import InstitutionConfig from "./pages/institution/InstitutionConfig";
+import { InstitutionOnboardingGate } from "./components/institution/InstitutionOnboardingGate";
+import { canViewInstitutionConfig } from "./lib/institution/curriculumFrameworks";
 
 const queryClient = new QueryClient();
 
@@ -39,7 +43,33 @@ const ProtectedTeacherRoute = ({ children }: { children: React.ReactNode }) => {
     return <Navigate to="/teacher-login" replace />;
   }
 
-  return <AppLayout>{children}</AppLayout>;
+  return (
+    <AppLayout>
+      <InstitutionOnboardingGate>{children}</InstitutionOnboardingGate>
+    </AppLayout>
+  );
+};
+
+const ProtectedInstitutionRoute = ({ children }: { children: React.ReactNode }) => {
+  const { user, isAuthenticated, authReady, session } = useAuth();
+
+  if (!authReady) {
+    return <AuthRouteFallback />;
+  }
+
+  if (!isAuthenticated || user?.role !== 'teacher' || !session?.user) {
+    return <Navigate to="/teacher-login" replace />;
+  }
+
+  if (!canViewInstitutionConfig(user?.profileRole)) {
+    return <Navigate to="/teacher-dashboard" replace />;
+  }
+
+  return (
+    <AppLayout>
+      <InstitutionOnboardingGate>{children}</InstitutionOnboardingGate>
+    </AppLayout>
+  );
 };
 
 // Protected Route wrapper for students  
@@ -136,6 +166,16 @@ const AppRoutes = () => {
         <ProtectedTeacherRoute>
           <BibliotecaMateriales />
         </ProtectedTeacherRoute>
+      } />
+      <Route path="/institucion/onboarding" element={
+        <ProtectedInstitutionRoute>
+          <InstitutionOnboarding />
+        </ProtectedInstitutionRoute>
+      } />
+      <Route path="/institucion/configuracion" element={
+        <ProtectedInstitutionRoute>
+          <InstitutionConfig />
+        </ProtectedInstitutionRoute>
       } />
       
       {/* Protected Student Routes */}

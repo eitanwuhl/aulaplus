@@ -551,7 +551,10 @@ export function EditorSesionNuevo({
         }),
         ...(groupContext.anonymizedStudentsForPrompt.length > 0 && { 
           estudiantes: groupContext.anonymizedStudentsForPrompt 
-        })
+        }),
+        ...(groupContext.institutionPromptBlock && {
+          institutionContext: groupContext.institutionPromptBlock,
+        }),
       };
 
       console.log('Generando plan inicial con payload:', payload);

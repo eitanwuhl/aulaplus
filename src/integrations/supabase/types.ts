@@ -1,4 +1,4 @@
-﻿export type Json =
+export type Json =
   | string
   | number
   | boolean
@@ -78,6 +78,113 @@ export type Database = {
             columns: ["related_planificacion_id"]
             isOneToOne: false
             referencedRelation: "planificaciones"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      curriculum_catalog_items: {
+        Row: {
+          catalog_id: string
+          codigo: string | null
+          created_at: string
+          descripcion: string | null
+          id: string
+          materia: string | null
+          metadata: Json
+          nivel: string | null
+          nombre: string
+          orden: number
+          parent_id: string | null
+          tipo: Database["public"]["Enums"]["catalog_item_type"]
+        }
+        Insert: {
+          catalog_id: string
+          codigo?: string | null
+          created_at?: string
+          descripcion?: string | null
+          id?: string
+          materia?: string | null
+          metadata?: Json
+          nivel?: string | null
+          nombre: string
+          orden?: number
+          parent_id?: string | null
+          tipo: Database["public"]["Enums"]["catalog_item_type"]
+        }
+        Update: {
+          catalog_id?: string
+          codigo?: string | null
+          created_at?: string
+          descripcion?: string | null
+          id?: string
+          materia?: string | null
+          metadata?: Json
+          nivel?: string | null
+          nombre?: string
+          orden?: number
+          parent_id?: string | null
+          tipo?: Database["public"]["Enums"]["catalog_item_type"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "curriculum_catalog_items_catalog_id_fkey"
+            columns: ["catalog_id"]
+            isOneToOne: false
+            referencedRelation: "curriculum_catalogs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "curriculum_catalog_items_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "curriculum_catalog_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      curriculum_catalogs: {
+        Row: {
+          created_at: string
+          estado: Database["public"]["Enums"]["catalog_status"]
+          framework: Database["public"]["Enums"]["curriculum_framework"]
+          id: string
+          metadata: Json
+          nombre: string
+          school_id: string | null
+          version: string
+          vigente_desde: string
+          vigente_hasta: string | null
+        }
+        Insert: {
+          created_at?: string
+          estado?: Database["public"]["Enums"]["catalog_status"]
+          framework: Database["public"]["Enums"]["curriculum_framework"]
+          id?: string
+          metadata?: Json
+          nombre: string
+          school_id?: string | null
+          version?: string
+          vigente_desde?: string
+          vigente_hasta?: string | null
+        }
+        Update: {
+          created_at?: string
+          estado?: Database["public"]["Enums"]["catalog_status"]
+          framework?: Database["public"]["Enums"]["curriculum_framework"]
+          id?: string
+          metadata?: Json
+          nombre?: string
+          school_id?: string | null
+          version?: string
+          vigente_desde?: string
+          vigente_hasta?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "curriculum_catalogs_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
             referencedColumns: ["id"]
           },
         ]
@@ -502,28 +609,100 @@ export type Database = {
           },
         ]
       }
+      school_curriculum_frameworks: {
+        Row: {
+          activo: boolean
+          catalog_id: string | null
+          configuracion: Json
+          created_at: string
+          fecha_activacion: string
+          framework: Database["public"]["Enums"]["curriculum_framework"]
+          id: string
+          idioma_generacion: string
+          school_id: string
+        }
+        Insert: {
+          activo?: boolean
+          catalog_id?: string | null
+          configuracion?: Json
+          created_at?: string
+          fecha_activacion?: string
+          framework: Database["public"]["Enums"]["curriculum_framework"]
+          id?: string
+          idioma_generacion?: string
+          school_id: string
+        }
+        Update: {
+          activo?: boolean
+          catalog_id?: string | null
+          configuracion?: Json
+          created_at?: string
+          fecha_activacion?: string
+          framework?: Database["public"]["Enums"]["curriculum_framework"]
+          id?: string
+          idioma_generacion?: string
+          school_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "school_curriculum_frameworks_catalog_id_fkey"
+            columns: ["catalog_id"]
+            isOneToOne: false
+            referencedRelation: "curriculum_catalogs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "school_curriculum_frameworks_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       school_groups: {
         Row: {
           created_at: string
+          group_settings: Json
           id: string
           name: string
+          primary_framework:
+            | Database["public"]["Enums"]["curriculum_framework"]
+            | null
           school_id: string
+          secondary_framework:
+            | Database["public"]["Enums"]["curriculum_framework"]
+            | null
           section: string | null
           year: string | null
         }
         Insert: {
           created_at?: string
+          group_settings?: Json
           id: string
           name: string
+          primary_framework?:
+            | Database["public"]["Enums"]["curriculum_framework"]
+            | null
           school_id: string
+          secondary_framework?:
+            | Database["public"]["Enums"]["curriculum_framework"]
+            | null
           section?: string | null
           year?: string | null
         }
         Update: {
           created_at?: string
+          group_settings?: Json
           id?: string
           name?: string
+          primary_framework?:
+            | Database["public"]["Enums"]["curriculum_framework"]
+            | null
           school_id?: string
+          secondary_framework?:
+            | Database["public"]["Enums"]["curriculum_framework"]
+            | null
           section?: string | null
           year?: string | null
         }
@@ -546,6 +725,7 @@ export type Database = {
           profile_data: Json
           school_group_id: string
           school_id: string
+          student_frameworks: Json
         }
         Insert: {
           created_at?: string
@@ -555,6 +735,7 @@ export type Database = {
           profile_data?: Json
           school_group_id: string
           school_id: string
+          student_frameworks?: Json
         }
         Update: {
           created_at?: string
@@ -564,6 +745,7 @@ export type Database = {
           profile_data?: Json
           school_group_id?: string
           school_id?: string
+          student_frameworks?: Json
         }
         Relationships: [
           {
@@ -586,20 +768,29 @@ export type Database = {
         Row: {
           created_at: string
           id: string
+          institution_settings: Json
           name: string
+          onboarding_completed_at: string | null
           slug: string
+          updated_at: string
         }
         Insert: {
           created_at?: string
           id: string
+          institution_settings?: Json
           name: string
+          onboarding_completed_at?: string | null
           slug: string
+          updated_at?: string
         }
         Update: {
           created_at?: string
           id?: string
+          institution_settings?: Json
           name?: string
+          onboarding_completed_at?: string | null
           slug?: string
+          updated_at?: string
         }
         Relationships: []
       }
@@ -791,6 +982,8 @@ export type Database = {
         }[]
       }
       get_teacher_login_email: { Args: { p_code: string }; Returns: string }
+      profile_role_is_institution_admin: { Args: never; Returns: boolean }
+      profile_role_is_institution_staff: { Args: never; Returns: boolean }
       profile_role_is_notification_publisher: { Args: never; Returns: boolean }
       profile_role_is_notification_staff: { Args: never; Returns: boolean }
       profile_role_is_teacher: { Args: never; Returns: boolean }
@@ -800,6 +993,32 @@ export type Database = {
       }
     }
     Enums: {
+      catalog_item_type:
+        | "competencia_general"
+        | "espacio_curricular"
+        | "materia"
+        | "tramo"
+        | "contenido"
+        | "progresion"
+        | "learning_objective"
+        | "strand"
+        | "criterio"
+        | "descriptor"
+        | "key_concept"
+        | "global_context"
+        | "other"
+      catalog_status: "borrador" | "activa" | "deprecada"
+      curriculum_framework:
+        | "anep_ebi"
+        | "anep_bach"
+        | "cambridge_primary"
+        | "cambridge_lower"
+        | "cambridge_igcse"
+        | "cambridge_al"
+        | "ib_pyp"
+        | "ib_myp"
+        | "ib_dp"
+        | "ib_cp"
       sesion_estado:
         | "backlog"
         | "planificada"
@@ -933,6 +1152,34 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
+      catalog_item_type: [
+        "competencia_general",
+        "espacio_curricular",
+        "materia",
+        "tramo",
+        "contenido",
+        "progresion",
+        "learning_objective",
+        "strand",
+        "criterio",
+        "descriptor",
+        "key_concept",
+        "global_context",
+        "other",
+      ],
+      catalog_status: ["borrador", "activa", "deprecada"],
+      curriculum_framework: [
+        "anep_ebi",
+        "anep_bach",
+        "cambridge_primary",
+        "cambridge_lower",
+        "cambridge_igcse",
+        "cambridge_al",
+        "ib_pyp",
+        "ib_myp",
+        "ib_dp",
+        "ib_cp",
+      ],
       sesion_estado: [
         "backlog",
         "planificada",

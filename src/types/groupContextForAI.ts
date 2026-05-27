@@ -43,6 +43,9 @@ export interface StudentForAI {
   
   /** Optional notes about content adaptation declaration */
   declaredContentAdaptationNotes?: string | null;
+
+  /** Module 1 — student-specific curriculum frameworks (labels) */
+  studentFrameworkLabels?: string[];
 }
 
 /**
@@ -101,11 +104,15 @@ export interface GroupContextForAI {
     perfil?: string;
     ajustes?: string;
     contemplaciones?: string[];
+    studentFrameworks?: string[];
   }>;
   
   /** Whether any student requires content adaptation */
   hasContentAdaptation: boolean;
   
+  /** Module 1 — institutional context block for LLM prompts */
+  institutionPromptBlock?: string;
+
   /** Structured coverage hints for future PU Family generation */
   coverageHints: {
     /** Student IDs needing alternative response format */

@@ -42,6 +42,14 @@ export const DEMO_TEACHER_ASSIGNMENTS = [
     groupIds: ['2', '3'],
     displayName: 'Miguel Torres',
   },
+  {
+    loginCode: 'DIR001',
+    email: 'direccion.demo@example.com',
+    schoolId: 'liceo-demo' as DemoSchoolId,
+    groupIds: [] as readonly string[],
+    displayName: 'Ana Martínez (Dirección)',
+    profileRole: 'direccion' as const,
+  },
 ] as const;
 
 /** Catalog student ids per school (must match school_students seeds). */

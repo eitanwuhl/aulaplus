@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
+import { appendInstitutionToPromptText } from '@/lib/institution/buildInstitutionContextForAI';
 import { invokeEdgeFunctionAuthed } from '@/lib/edgeFunctionAuth';
 import { Group } from '@/data/mockData';
 import type { EvaluationDesignPlan, StudentReminders, MissingTemplateError } from '@/services/evaluations';
@@ -345,7 +346,10 @@ export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): Us
         isInterdisciplinary: esInterdisciplinaria,
         groupName: groupContextData.groupName,
         students: groupContextData.anonymizedStudentsForPrompt,
-        ...(groupContextData.dominantLearningStyle && { dominantProfile: groupContextData.dominantLearningStyle })
+        ...(groupContextData.dominantLearningStyle && { dominantProfile: groupContextData.dominantLearningStyle }),
+        ...(groupContextData.institutionPromptBlock && {
+          institutionContext: groupContextData.institutionPromptBlock,
+        }),
       };
 
       const { buildEvaluationDesignPlan } = await import('@/services/evaluations');
@@ -360,6 +364,12 @@ export function useEvaluationPipeline(options: UseEvaluationPipelineOptions): Us
       const effectivePlan = plan;
 
       let modificationText = requerimientos || 'Genera una evaluación escrita universal basada en los contenidos seleccionados.';
+      if (groupContextData.institutionPromptBlock) {
+        modificationText = appendInstitutionToPromptText(
+          modificationText,
+          groupContextData.institutionPromptBlock
+        );
+      }
       let materialsForDesignPlan: Array<{ title?: string; focusText?: string; extractedText?: string }> = [];
       if (generationContext) {
         const { serializeGenerationContext } = await import('@/services/evaluations');

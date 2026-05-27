@@ -30,6 +30,12 @@ import type {
   TeacherSugerenciasForAI,
   GroupContextOptions
 } from '@/types/groupContextForAI';
+import {
+  buildInstitutionContextForAI,
+  formatInstitutionContextBlock,
+} from '@/lib/institution/buildInstitutionContextForAI';
+import { frameworkLabel } from '@/lib/institution/curriculumFrameworks';
+import type { CurriculumFramework, InstitutionSettings } from '@/types/institution';
 
 // ============================================================================
 // Data Source Abstraction
@@ -71,6 +77,78 @@ class CatalogStudentDataSource implements StudentDataSource {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+async function loadStudentFrameworkLabelsById(
+  studentIds: (string | number)[]
+): Promise<Map<string | number, string[]>> {
+  const map = new Map<string | number, string[]>();
+  if (studentIds.length === 0) return map;
+
+  const numericIds = studentIds
+    .map((id) => (typeof id === 'number' ? id : parseInt(String(id), 10)))
+    .filter((id) => Number.isFinite(id));
+
+  if (numericIds.length === 0) return map;
+
+  const { data, error } = await supabase
+    .from('school_students')
+    .select('id, student_frameworks')
+    .in('id', numericIds);
+
+  if (error || !data) return map;
+
+  for (const row of data) {
+    const raw = row.student_frameworks;
+    if (!Array.isArray(raw) || raw.length === 0) continue;
+    const labels = (raw as CurriculumFramework[]).map((fw) => frameworkLabel(fw));
+    map.set(row.id, labels);
+  }
+
+  return map;
+}
+
+async function loadInstitutionPromptBlock(
+  grupoId: string
+): Promise<string | undefined> {
+  try {
+    const { data: group } = await supabase
+      .from('school_groups')
+      .select('school_id, primary_framework, secondary_framework')
+      .eq('id', grupoId)
+      .maybeSingle();
+
+    if (!group?.school_id) return undefined;
+
+    const { data: school } = await supabase
+      .from('schools')
+      .select('name, institution_settings')
+      .eq('id', group.school_id)
+      .maybeSingle();
+
+    const { data: frameworks } = await supabase
+      .from('school_curriculum_frameworks')
+      .select('framework')
+      .eq('school_id', group.school_id)
+      .eq('activo', true);
+
+    const activeFrameworks = (frameworks ?? []).map(
+      (r) => r.framework as CurriculumFramework
+    );
+
+    const ctx = buildInstitutionContextForAI({
+      schoolName: school?.name ?? group.school_id,
+      settings: (school?.institution_settings ?? {}) as InstitutionSettings,
+      activeFrameworks,
+      groupPrimaryFramework: group.primary_framework as CurriculumFramework | null,
+      groupSecondaryFramework: group.secondary_framework as CurriculumFramework | null,
+    });
+
+    return formatInstitutionContextBlock(ctx);
+  } catch (e) {
+    console.warn('[getGroupContextForAI] institution context skipped:', e);
+    return undefined;
+  }
+}
 
 /**
  * Calculate learning style distribution from students
@@ -336,6 +414,7 @@ export async function getGroupContextForAI(
   }
   
   const dataSource: StudentDataSource = new CatalogStudentDataSource();
+  const institutionPromptBlock = await loadInstitutionPromptBlock(grupoId);
   
   try {
     // 1. Load teacher suggestions from Supabase
@@ -355,6 +434,7 @@ export async function getGroupContextForAI(
         groupName: catalogGroup?.name || grupoId,
         gradeLevel: catalogGroup?.year,
         teacherSugerencias,
+        institutionPromptBlock,
         students: [],
         anonymizedStudentsForPrompt: [],
         hasContentAdaptation: false,
@@ -368,6 +448,10 @@ export async function getGroupContextForAI(
       };
     }
     
+    const studentFrameworkLabels = await loadStudentFrameworkLabelsById(
+      students.map((s) => s.id)
+    );
+
     // 3. Load contemplaciones for each student
     const studentsWithContemplaciones: StudentForAI[] = await Promise.all(
       students.slice(0, maxStudents).map(async (student, index) => {
@@ -392,6 +476,8 @@ export async function getGroupContextForAI(
         // Check content adaptation with explicit source tracking
         const contentAdaptationInfo = checkContentAdaptation(student);
         
+        const fwLabels = studentFrameworkLabels.get(student.id);
+
         return {
           studentId: student.id,
           displayName: anonymizeStudentName(index),
@@ -402,7 +488,8 @@ export async function getGroupContextForAI(
           requiresContentAdaptation: contentAdaptationInfo.hasDeclaredContentAdaptation,
           hasDeclaredContentAdaptation: contentAdaptationInfo.hasDeclaredContentAdaptation,
           declaredContentAdaptationSource: contentAdaptationInfo.declaredContentAdaptationSource,
-          declaredContentAdaptationNotes: contentAdaptationInfo.declaredContentAdaptationNotes
+          declaredContentAdaptationNotes: contentAdaptationInfo.declaredContentAdaptationNotes,
+          ...(fwLabels?.length ? { studentFrameworkLabels: fwLabels } : {}),
         };
       })
     );
@@ -426,7 +513,10 @@ export async function getGroupContextForAI(
         : s.contemplacionesEvaluaciones,
       // CRITICAL: Pass content adaptation flag to Edge Function
       hasDeclaredContentAdaptation: s.hasDeclaredContentAdaptation || false,
-      requiresContentAdaptation: s.requiresContentAdaptation || false
+      requiresContentAdaptation: s.requiresContentAdaptation || false,
+      ...(s.studentFrameworkLabels?.length
+        ? { studentFrameworks: s.studentFrameworkLabels }
+        : {}),
     }));
     
     // DEV LOG: Student content adaptation detection
@@ -462,6 +552,7 @@ export async function getGroupContextForAI(
       groupName: catalogGroup?.name || grupoId,
       gradeLevel: catalogGroup?.year,
       teacherSugerencias,
+      institutionPromptBlock,
       students: studentsWithContemplaciones,
       groupProfile,
       dominantLearningStyle: dominante,

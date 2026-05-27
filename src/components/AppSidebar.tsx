@@ -7,9 +7,12 @@ import {
   Settings,
   ClipboardList,
   FolderOpen,
-  Library
+  Library,
+  Building2,
 } from "lucide-react"
 import { NavLink, useLocation } from "react-router-dom"
+import { useAuth } from "@/contexts/AuthContext"
+import { canViewInstitutionConfig } from "@/lib/institution/curriculumFrameworks"
 import logo from "@/assets/logo/aulaplus-logo.png.png"
 
 import {
@@ -83,6 +86,22 @@ export function AppSidebar() {
   const { open } = useSidebar()
   const location = useLocation()
   const currentPath = location.pathname
+  const { user } = useAuth()
+  const showInstitution = canViewInstitutionConfig(user?.profileRole)
+
+  const items = [
+    ...navigationItems,
+    ...(showInstitution
+      ? [
+          {
+            title: "Institución",
+            url: "/institucion/configuracion",
+            icon: Building2,
+            description: "Configuración del liceo (Módulo 1)",
+          },
+        ]
+      : []),
+  ]
 
   const isActive = (path: string) => currentPath === path
   const getNavClassName = ({ isActive }: { isActive: boolean }) =>
@@ -115,7 +134,7 @@ export function AppSidebar() {
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {navigationItems.map((item) => (
+              {items.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild className="h-10 rounded-md">
                     <NavLink 

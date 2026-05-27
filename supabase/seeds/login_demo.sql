@@ -10,7 +10,8 @@ VALUES
   ('DOC002', 'demo.teacher2@example.com'),
   ('DOC003', 'demo.teacher3@example.com'),
   ('DOC004', 'demo.teacher4@example.com'),
-  ('DOC005', 'demo.teacher5@example.com')
+  ('DOC005', 'demo.teacher5@example.com'),
+  ('DIR001', 'direccion.demo@example.com')
 ON CONFLICT (login_code) DO UPDATE
 SET auth_email = EXCLUDED.auth_email;
 
@@ -63,14 +64,18 @@ UPDATE public.profiles p
 SET
   display_name = v.display_name,
   school_id = v.school_id,
-  role = 'teacher'
+  role = CASE
+    WHEN v.email = 'direccion.demo@example.com' THEN 'direccion'
+    ELSE 'teacher'
+  END
 FROM (
   VALUES
     ('demo.teacher@example.com', 'María López', 'liceo-demo'),
     ('demo.teacher2@example.com', 'Carlos Rodríguez', 'liceo-norte'),
     ('demo.teacher3@example.com', 'Laura Fernández', 'liceo-demo'),
     ('demo.teacher4@example.com', 'Patricia Morales', 'liceo-st-patricks'),
-    ('demo.teacher5@example.com', 'Miguel Torres', 'liceo-st-patricks')
+    ('demo.teacher5@example.com', 'Miguel Torres', 'liceo-st-patricks'),
+    ('direccion.demo@example.com', 'Ana Martínez (Dirección)', 'liceo-demo')
 ) AS v(email, display_name, school_id)
 JOIN auth.users u ON lower(u.email) = lower(v.email)
 WHERE p.user_id = u.id;

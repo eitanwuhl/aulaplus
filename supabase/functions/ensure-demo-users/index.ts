@@ -69,6 +69,12 @@ const DEMO_TEACHERS = [
     displayName: 'Miguel Torres',
     schoolId: 'liceo-st-patricks',
   },
+  {
+    email: 'direccion.demo@example.com',
+    displayName: 'Ana Martínez (Dirección)',
+    schoolId: 'liceo-demo',
+    role: 'direccion' as const,
+  },
 ] as const;
 
 serve(async (req) => {
@@ -171,21 +177,23 @@ serve(async (req) => {
         .maybeSingle();
 
       if (!profile) {
+        const profileRole = 'role' in teacher && teacher.role ? teacher.role : 'teacher';
         const { error: profileInsertError } = await supabaseAdmin.from('profiles').insert({
           user_id: userId,
           display_name: teacher.displayName,
-          role: 'teacher',
+          role: profileRole,
           school_id: teacher.schoolId,
         });
         if (profileInsertError) {
           console.error('Error creating profile:', profileInsertError);
         }
       } else {
+        const profileRole = 'role' in teacher && teacher.role ? teacher.role : 'teacher';
         await supabaseAdmin
           .from('profiles')
           .update({
             display_name: teacher.displayName,
-            role: 'teacher',
+            role: profileRole,
             school_id: teacher.schoolId,
           })
           .eq('user_id', userId);

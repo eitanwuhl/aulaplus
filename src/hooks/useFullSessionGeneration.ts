@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { SesionClase, Planificacion, DistribucionModalidades, UnidadDidactica, UnitAssignmentMetadata } from '@/types/planificacion';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
+import { appendInstitutionToPromptText } from '@/lib/institution/buildInstitutionContextForAI';
 import { loadGroupContext } from '@/services/groupContext/provider';
 
 interface SessionGenerationContext {
@@ -291,6 +292,13 @@ async function generateAIPlan(params: {
       }
     }
 
+    if (groupContext.institutionPromptBlock) {
+      additionalContext = appendInstitutionToPromptText(
+        additionalContext,
+        groupContext.institutionPromptBlock
+      );
+    }
+
     const { data, error } = await supabase.functions.invoke('modify-evaluation', {
       body: {
         type: 'planning',
@@ -325,7 +333,10 @@ Use these exact labels in the output: 'Actividad:' and 'Recursos:'.`,
           }),
           ...(groupContext.dominantLearningStyle && { 
             dominantProfile: groupContext.dominantLearningStyle 
-          })
+          }),
+          ...(groupContext.institutionPromptBlock && {
+            institutionContext: groupContext.institutionPromptBlock,
+          }),
         },
         // PHASE 2: Incluir unitContext en payload (opcional para backward compatibility)
         ...(unitContext && { unitContext }),

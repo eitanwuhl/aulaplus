@@ -851,6 +851,9 @@ const EvaluacionesGrupo = () => {
                 students: groupContextData.anonymizedStudentsForPrompt,
                 ...(groupContextData.dominantLearningStyle && {
                   dominantProfile: groupContextData.dominantLearningStyle
+                }),
+                ...(groupContextData.institutionPromptBlock && {
+                  institutionContext: groupContextData.institutionPromptBlock
                 })
               },
               type: 'modification',
@@ -936,6 +939,9 @@ const EvaluacionesGrupo = () => {
             students: groupContextData.anonymizedStudentsForPrompt,
             ...(groupContextData.dominantLearningStyle && {
               dominantProfile: groupContextData.dominantLearningStyle
+            }),
+            ...(groupContextData.institutionPromptBlock && {
+              institutionContext: groupContextData.institutionPromptBlock
             })
           },
           type: 'modification',
@@ -1014,6 +1020,9 @@ const EvaluacionesGrupo = () => {
             students: groupContextData.anonymizedStudentsForPrompt,
             ...(groupContextData.dominantLearningStyle && {
               dominantProfile: groupContextData.dominantLearningStyle
+            }),
+            ...(groupContextData.institutionPromptBlock && {
+              institutionContext: groupContextData.institutionPromptBlock
             })
           },
           type: 'modification',
@@ -1109,6 +1118,9 @@ const EvaluacionesGrupo = () => {
             students: groupContextData.anonymizedStudentsForPrompt,
             ...(groupContextData.dominantLearningStyle && {
               dominantProfile: groupContextData.dominantLearningStyle
+            }),
+            ...(groupContextData.institutionPromptBlock && {
+              institutionContext: groupContextData.institutionPromptBlock
             })
           }
         }

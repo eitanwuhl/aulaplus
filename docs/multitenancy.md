@@ -34,8 +34,9 @@ npm run supabase:gen-types
 | DOC003 | Laura Fernández | 9no 1, 9no 3 |
 | DOC004 | Patricia Morales | 10mo 1, 10mo 2 |
 | DOC005 | Miguel Torres | 10mo 2, 10mo 3 |
+| DIR001 | Ana Martínez (Dirección) | Configuración institucional (Módulo 1) |
 
-Cada docente solo ve datos de **su** liceo (catálogo, grupos, notificaciones).
+Cada docente solo ve datos de **su** liceo (catálogo, grupos, notificaciones). Dirección y psicopedagogía acceden a `/institucion/configuracion` (ver `docs/module-1.md`).
 
 ## Producción
 
@@ -57,7 +58,8 @@ npx supabase functions deploy ensure-demo-users --project-ref <ref>
 
 | Paso | Contenido |
 |------|-----------|
-| `seed:login` | DOC001–003 |
+| `seed:login` | DOC001–005, DIR001 |
+| `seed:module1` | Catálogo ANEP + marcos activos por liceo |
 | `seed:school-catalog` | Demo + norte + **St. Patrick's** (6 alumnos, 3 cursos) |
 | `seed:student-profiles` | `profile_data` ids 1–10, 201–204, **301–306** |
 | `seed:teacher-grupos` | Asignación docente↔curso por tenant |

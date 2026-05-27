@@ -4,10 +4,12 @@ import { demoTeacherLoginHints, isDemoTeacherEmail } from '@/lib/demoBootstrap';
 describe('demoBootstrap', () => {
   it('detects demo teacher emails', () => {
     expect(isDemoTeacherEmail('demo.teacher@example.com')).toBe(true);
+    expect(isDemoTeacherEmail('demo.teacher2@example.com')).toBe(true);
+    expect(isDemoTeacherEmail('direccion.demo@example.com')).toBe(true);
     expect(isDemoTeacherEmail('teacher@school.edu')).toBe(false);
   });
 
   it('builds teacher hints without throwing', () => {
-    expect(demoTeacherLoginHints('seed failed')).toContain('DOC001');
+    expect(demoTeacherLoginHints()).toContain('DOC001');
   });
 });

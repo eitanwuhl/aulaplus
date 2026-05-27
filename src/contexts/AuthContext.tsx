@@ -12,6 +12,9 @@ import {
 
 type UserRole = 'teacher' | 'student';
 
+/** profiles.role for staff (Module 1 configuration). */
+export type ProfileStaffRole = 'teacher' | 'direccion' | 'psicopedagogico' | 'admin';
+
 export type LoginResult =
   | { ok: true }
   | { ok: false; message: string };
@@ -24,6 +27,7 @@ interface User {
   /** Tenant (liceo). Teachers only — from profiles.school_id. */
   schoolId?: string;
   schoolName?: string;
+  profileRole?: ProfileStaffRole;
 }
 
 interface AuthContextType {
@@ -78,10 +82,11 @@ async function resolveTeacherProfile(session: Session): Promise<{
   name: string;
   schoolId?: string;
   schoolName?: string;
+  profileRole?: ProfileStaffRole;
 }> {
   const { data: profile } = await supabase
     .from('profiles')
-    .select('display_name, school_id, schools ( name )')
+    .select('display_name, school_id, role, schools ( name )')
     .eq('user_id', session.user.id)
     .maybeSingle();
 
@@ -98,10 +103,17 @@ async function resolveTeacherProfile(session: Session): Promise<{
     session.user.email?.split('@')[0] ??
     'Docente';
 
+  const role = profile?.role;
+  const profileRole: ProfileStaffRole | undefined =
+    role === 'direccion' || role === 'psicopedagogico' || role === 'admin' || role === 'teacher'
+      ? role
+      : 'teacher';
+
   return {
     name,
     schoolId: profile?.school_id ?? undefined,
     schoolName: schoolName ?? undefined,
+    profileRole,
   };
 }
 
@@ -112,7 +124,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const profileUpsertInProgress = useRef<Set<string>>(new Set());
 
   const restoreTeacherFromSession = useCallback(async (nextSession: Session) => {
-    const { name, schoolId, schoolName } = await resolveTeacherProfile(nextSession);
+    const { name, schoolId, schoolName, profileRole } = await resolveTeacherProfile(nextSession);
 
     if (!schoolId) {
       if (import.meta.env.PROD) {
@@ -129,6 +141,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       name,
       schoolId,
       schoolName,
+      profileRole,
     };
     setUser(teacherUser);
     localStorage.setItem('auth_user', JSON.stringify(teacherUser));
@@ -253,11 +266,10 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         return { ok: false, message: 'Ingresá usuario o correo y contraseña.' };
       }
 
-      let ensure: { errorMessage?: string } = {};
       if (isDemoBootstrapEnabled()) {
-        ensure = await seedDemoAuthUsers();
+        const ensure = await seedDemoAuthUsers();
         if (ensure.errorMessage) {
-          console.warn('[Auth]', ensure.errorMessage);
+          console.warn('[Auth] ensure-demo-users:', ensure.errorMessage);
         }
       }
 
@@ -298,14 +310,14 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
           console.warn('[Auth] teacher signIn failed:', signError?.message);
         }
         let message = 'Correo o contraseña incorrectos.';
-        if (isDemoBootstrapEnabled() && isDemoTeacherEmail(authEmail)) {
-          message += ` ${demoTeacherLoginHints(ensure.errorMessage)}`;
+        if (import.meta.env.DEV && isDemoTeacherEmail(authEmail)) {
+          message += ` ${demoTeacherLoginHints()}`;
         }
         return { ok: false, message };
       }
 
       const uid = signData.session.user.id;
-      const { name, schoolId, schoolName } = await resolveTeacherProfile(signData.session);
+      const { name, schoolId, schoolName, profileRole } = await resolveTeacherProfile(signData.session);
 
       if (!schoolId) {
         return {
@@ -315,7 +327,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         };
       }
 
-      const newUser: User = { id: uid, role: 'teacher', name, schoolId, schoolName };
+      const newUser: User = { id: uid, role: 'teacher', name, schoolId, schoolName, profileRole };
       setSession(signData.session);
       setUser(newUser);
       localStorage.setItem('auth_user', JSON.stringify(newUser));

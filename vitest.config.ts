@@ -11,6 +11,7 @@ export default defineConfig({
       "src/lib/teacherGroups/**/*.test.ts",
       "src/lib/planificacion/**/*.test.ts",
       "src/lib/multitenancy/**/*.test.ts",
+      "src/lib/institution/**/*.test.ts",
     ],
   },
   resolve: {

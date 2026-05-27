@@ -2,7 +2,7 @@ project_id = "bbzikjvrehfooaumkmui"
 
 [db.seed]
 enabled = true
-sql_paths = ["./seeds/login_demo.sql", "./seeds/school_catalog_demo.sql", "./seeds/teacher_grupos_demo.sql", "./seeds/dashboard_notifications_demo.sql"]
+sql_paths = ["./seeds/login_demo.sql", "./seeds/module1_anep_catalog.sql", "./seeds/school_catalog_demo.sql", "./seeds/teacher_grupos_demo.sql", "./seeds/dashboard_notifications_demo.sql"]
 
 # Invoked from the app before login (anon) to create the demo Auth user + profile.
 [functions.ensure-demo-users]
