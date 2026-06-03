@@ -413,6 +413,113 @@ export type Database = {
         }
         Relationships: []
       }
+      grupo_programas: {
+        Row: {
+          anio_lectivo: number
+          created_at: string
+          estado: Database["public"]["Enums"]["programa_estado"]
+          grupo_id: string
+          id: string
+          marco_planificacion: Database["public"]["Enums"]["curriculum_framework"]
+          materia: string
+          metadata: Json
+          nombre: string | null
+          school_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          anio_lectivo?: number
+          created_at?: string
+          estado?: Database["public"]["Enums"]["programa_estado"]
+          grupo_id: string
+          id?: string
+          marco_planificacion?: Database["public"]["Enums"]["curriculum_framework"]
+          materia: string
+          metadata?: Json
+          nombre?: string | null
+          school_id: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          anio_lectivo?: number
+          created_at?: string
+          estado?: Database["public"]["Enums"]["programa_estado"]
+          grupo_id?: string
+          id?: string
+          marco_planificacion?: Database["public"]["Enums"]["curriculum_framework"]
+          materia?: string
+          metadata?: Json
+          nombre?: string | null
+          school_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      programa_unidades: {
+        Row: {
+          catalog_item_ids: string[]
+          clases_estimadas: number
+          competencias_ids: string[]
+          created_at: string
+          descripcion: string | null
+          duracion_semanas: number | null
+          estado: string
+          fecha_fin: string | null
+          fecha_inicio: string | null
+          id: string
+          metadata: Json
+          nombre: string
+          orden: number
+          programa_id: string
+          updated_at: string
+        }
+        Insert: {
+          catalog_item_ids?: string[]
+          clases_estimadas?: number
+          competencias_ids?: string[]
+          created_at?: string
+          descripcion?: string | null
+          duracion_semanas?: number | null
+          estado?: string
+          fecha_fin?: string | null
+          fecha_inicio?: string | null
+          id?: string
+          metadata?: Json
+          nombre: string
+          orden?: number
+          programa_id: string
+          updated_at?: string
+        }
+        Update: {
+          catalog_item_ids?: string[]
+          clases_estimadas?: number
+          competencias_ids?: string[]
+          created_at?: string
+          descripcion?: string | null
+          duracion_semanas?: number | null
+          estado?: string
+          fecha_fin?: string | null
+          fecha_inicio?: string | null
+          id?: string
+          metadata?: Json
+          nombre?: string
+          orden?: number
+          programa_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "programa_unidades_programa_id_fkey"
+            columns: ["programa_id"]
+            isOneToOne: false
+            referencedRelation: "grupo_programas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       material_attachments: {
         Row: {
           created_at: string
@@ -489,6 +596,7 @@ export type Database = {
           nivel: string
           nivel_diferenciacion: string | null
           nombre: string | null
+          programa_id: string | null
           requerimientos_docente: string | null
           saved_at: string | null
           unidades_didacticas: Json | null
@@ -525,6 +633,7 @@ export type Database = {
           nivel: string
           nivel_diferenciacion?: string | null
           nombre?: string | null
+          programa_id?: string | null
           requerimientos_docente?: string | null
           saved_at?: string | null
           unidades_didacticas?: Json | null
@@ -561,6 +670,7 @@ export type Database = {
           nivel?: string
           nivel_diferenciacion?: string | null
           nombre?: string | null
+          programa_id?: string | null
           requerimientos_docente?: string | null
           saved_at?: string | null
           unidades_didacticas?: Json | null
@@ -569,7 +679,15 @@ export type Database = {
           user_id?: string
           ventana_sugerida?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "planificaciones_programa_id_fkey"
+            columns: ["programa_id"]
+            isOneToOne: false
+            referencedRelation: "grupo_programas"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       profiles: {
         Row: {
@@ -1019,6 +1137,7 @@ export type Database = {
         | "ib_myp"
         | "ib_dp"
         | "ib_cp"
+      programa_estado: "borrador" | "en_revision" | "aprobado" | "en_uso"
       sesion_estado:
         | "backlog"
         | "planificada"

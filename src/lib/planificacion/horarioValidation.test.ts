@@ -65,4 +65,20 @@ describe('horarioValidation', () => {
     expect(validateHorarioCoherence(3, configuracion)?.type).toBe('custom');
     expect(validateHorarioCoherence(2, configuracion)).toBeNull();
   });
+
+  it('rejects invalid time format in config item', () => {
+    const errors = validateHorarioConfigItem(
+      { ...baseConfig, horaInicio: 'invalid', horaFin: '10:00' },
+      0
+    );
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('accepts adjacent non-overlapping blocks', () => {
+    const errors = validateHorarioNoOverlaps([
+      baseConfig,
+      { ...baseConfig, horaInicio: '10:00', horaFin: '11:00' },
+    ]);
+    expect(errors).toHaveLength(0);
+  });
 });

@@ -42,6 +42,10 @@ export interface Planificacion {
   deleted_at?: string | null; // Soft delete (ISO timestamp)
   // FIX: AI design report (evidence of AI generation decisions)
   ai_design_report?: any | null; // JSONB field with AI generation rationale
+  /** Module 2: optional link to annual program */
+  programa_id?: string | null;
+  unit_material_plan?: UnidadDidactica['unit_material_plan'];
+  unidades_didacticas?: UnidadDidactica[];
   created_at: string;
   updated_at: string;
 }
@@ -151,6 +155,8 @@ export interface WizardData {
     attachedPlanMaterialIds?: string[];
   };
   planificacionId?: string;
+  /** Module 2: programa anual de origen */
+  programa_id?: string;
 }
 
 export interface AlertaGrupo {

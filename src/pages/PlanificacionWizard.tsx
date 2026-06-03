@@ -1,26 +1,33 @@
 import React, { useEffect, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { usePlanificacionWizard } from '@/hooks/usePlanificacionWizard';
-import { useFullSessionGeneration } from '@/hooks/useFullSessionGeneration';
 import type { UnidadDidactica, UnitAssignmentMetadata, WizardData } from '@/types/planificacion';
 import { WizardSteps } from '@/components/planificacion/WizardSteps';
 import { supabase } from '@/integrations/supabase/client';
 import {
-  extractCompetenciesFromUnits,
-  extractContenidosFromUnits,
-  buildCompetenciasContenidosMap,
-} from '@/lib/competencyExtractor';
-import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
+  normalizeArrayField,
+} from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext } from '@/services/groupContext/provider';
+import {
+  fetchCatalogItemsForProgram,
+  fetchProgramById,
+  programUnitsToWizardUnits,
+} from '@/services/annualProgram';
+import { useAuth } from '@/contexts/AuthContext';
 import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
 import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
-import { isDemoBootstrapEnabled } from '@/lib/demoBootstrap';
+import { invokeGeneratePlanCompleto } from '@/services/planning/generatePlanCompleto';
+import { markProgramaEnUsoIfApproved } from '@/services/planning/planificacionLifecycle.service';
+import { buildPlanificacionInsertPayload } from '@/lib/planificacion/buildPlanificacionInsert';
+import { ensurePlanningSession } from '@/lib/planificacion/ensurePlanningSession';
+import { buildSesionesInsertFromWizard } from '@/lib/planificacion/buildSesionesInsert';
+import { deriveNivelFromGroupYear } from '@/lib/planificacion/deriveNivelFromGroup';
 
 const PLAN_WIZARD_DRAFT_KEY = 'aulaplus.planWizard.draft';
 const SUMMARY_STEP = 3;
@@ -610,33 +617,20 @@ const generarPlanesAutomaticamente = async (
           // TASK 1: Log full payload for verification (temporary)
           console.log('[GEN_PLAN] Full payload:', JSON.stringify({ ...payload, materialsContext: payload.materialsContext ? '[PRESENT]' : '[MISSING]' }, null, 2));
 
-          // FASE 1C: Aumentar timeout a 120 segundos (2 minutos) para permitir procesamiento completo
-          // La generación puede tardar más con materiales grandes o múltiples sesiones
-          const timeoutMs = 120000; // 120 segundos
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error(`Timeout después de ${timeoutMs/1000} segundos`)), timeoutMs)
-          );
-
-          const functionPromise = supabase.functions.invoke('generate-plan-completo', {
-            body: payload
-          });
-
           const startTime = Date.now();
-          const { data, error } = await Promise.race([functionPromise, timeoutPromise]) as any;
+          const { data, error: invokeError } = await invokeGeneratePlanCompleto(payload);
           const elapsedTime = Date.now() - startTime;
           console.log(`[GEN_PLAN] Respuesta recibida para sesión ${sesion.orden} en ${elapsedTime}ms`);
 
-          console.log(`Respuesta para sesión ${sesion.orden}:`, { data, error });
+          console.log(`Respuesta para sesión ${sesion.orden}:`, { data, error: invokeError });
 
-          // TASK 3: Handle non-200 responses - stop retries, surface clear error
-          if (error) {
-            console.error(`[GEN_PLAN] Error generando plan para sesión ${sesion.orden}:`, error);
-            // Check if it's a 400 (invalid input) - don't retry
-            if (error.status === 400 || error.message?.includes('duracionMin') || error.message?.includes('INVALID_INPUT')) {
-              const errorMsg = error.message || `Error de validación en sesión ${sesion.orden}: ${error.status || 'unknown'}`;
-              throw new Error(`Error de validación: ${errorMsg}. No se reintentará.`);
+          if (invokeError) {
+            console.error(`[GEN_PLAN] Error generando plan para sesión ${sesion.orden}:`, invokeError);
+            const errMsg = invokeError.message || '';
+            if (errMsg.includes('duracionMin') || errMsg.includes('INVALID_INPUT')) {
+              throw new Error(`Error de validación: ${errMsg}. No se reintentará.`);
             }
-            throw new Error(`Error en sesión ${sesion.orden}: ${error.message || 'Error desconocido'}`);
+            throw new Error(`Error en sesión ${sesion.orden}: ${errMsg || 'Error desconocido'}`);
           }
 
           if (!data) {
@@ -892,7 +886,9 @@ const generarPlanesAutomaticamente = async (
 export default function PlanificacionWizard() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
+  const { user } = useAuth();
   const [isGeneratingPlans, setIsGeneratingPlans] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -909,6 +905,7 @@ export default function PlanificacionWizard() {
     generarSesionesEsquema,
     reiniciarWizard,
     replaceWizardData,
+    setProgramaId,
     isDataComplete,
     setIsLoading,
     setError
@@ -930,6 +927,59 @@ export default function PlanificacionWizard() {
     }
   }, [location.state, replaceWizardData]);
 
+  useEffect(() => {
+    const grupo = searchParams.get('grupo');
+    const materia = searchParams.get('materia');
+    const programaId = searchParams.get('programa');
+    if (!grupo && !materia && !programaId) return;
+
+    const applyContext = async () => {
+      if (grupo || materia) {
+        updateContexto({
+          ...wizardData.contexto,
+          grupo_id: grupo ?? wizardData.contexto?.grupo_id ?? '',
+          materia: materia ?? wizardData.contexto?.materia ?? '',
+        });
+      }
+
+      if (!programaId || !user?.schoolId) return;
+
+      const programRes = await fetchProgramById(programaId);
+      if (programRes.error || !programRes.data) return;
+      if (programRes.data.estado !== 'aprobado' && programRes.data.estado !== 'en_uso') return;
+
+      const catalogRes = await fetchCatalogItemsForProgram({
+        schoolId: user.schoolId,
+        framework: programRes.data.marco_planificacion,
+        materia: programRes.data.materia,
+      });
+      const catalogById = new Map((catalogRes.data ?? []).map((c) => [c.id, c]));
+      const units = programUnitsToWizardUnits(programRes.data.unidades ?? [], catalogById);
+
+      updateEnfoque({
+        ...wizardData.enfoque,
+        unidades_didacticas: units,
+        requerimientos_docente: wizardData.enfoque?.requerimientos_docente ?? '',
+        estrategias_diferenciacion: wizardData.enfoque?.estrategias_diferenciacion ?? '',
+        distribucion_modalidades: wizardData.enfoque?.distribucion_modalidades ?? {
+          individual: 25,
+          pareja: 25,
+          grupos: 25,
+          toda_clase: 25,
+        },
+      });
+      setProgramaId(programaId);
+      updatePaso(2);
+      toast({
+        title: 'Programa anual cargado',
+        description: `${units.length} unidades importadas.`,
+      });
+    };
+
+    void applyContext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deep-link once on mount
+  }, []);
+
   const saveDraftAndNavigateToWorkspace = (planificacionId: string) => {
     try {
       localStorage.setItem(PLAN_WIZARD_DRAFT_KEY, JSON.stringify(wizardData));
@@ -940,8 +990,6 @@ export default function PlanificacionWizard() {
       state: { from: '/planificacion/nuevo', returnToWizardStep: SUMMARY_STEP }
     });
   };
-
-  const { generateAllSessions, isGenerating } = useFullSessionGeneration();
 
   const handleNext = () => {
     const validacion = validarPaso(wizardData.paso);
@@ -1079,87 +1127,37 @@ export default function PlanificacionWizard() {
     setGenerationError(null);
 
     try {
-      // Ensure we have a valid session
-      let currentUser;
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      
-      if (userError || !user) {
-        if (!isDemoBootstrapEnabled()) {
-          throw new Error(
-            'Tenés que iniciar sesión como docente antes de crear una planificación.',
-          );
-        }
-
-        console.log('[PlanificacionWizard] No valid session, ensuring demo auth...');
-        const { error: ensureError } = await supabase.functions.invoke('ensure-demo-users');
-        if (ensureError) {
-          console.error('[PlanificacionWizard] Error ensuring demo users:', ensureError);
-        }
-
-        const { error: signInError } = await supabase.auth.signInWithPassword({
-          email: 'demo.teacher@example.com',
-          password: 'DemoPassword2026!',
-        });
-
-        if (signInError) {
-          const errorMsg = `No se pudo autenticar: ${signInError.message}`;
-          console.error('[PlanificacionWizard] Sign-in error:', signInError);
-          throw new Error(errorMsg);
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-
-        const { data: { user: retryUser }, error: retryError } = await supabase.auth.getUser();
-        if (retryError || !retryUser) {
-          const errorMsg = retryError
-            ? `No se pudo establecer la sesión: ${retryError.message}`
-            : 'No se pudo establecer la sesión de usuario.';
-          console.error('[PlanificacionWizard] Retry get user error:', retryError);
-          throw new Error(errorMsg);
-        }
-        currentUser = retryUser;
-      } else {
-        currentUser = user;
+      const sessionResult = await ensurePlanningSession();
+      if ('error' in sessionResult) {
+        throw new Error(sessionResult.error);
       }
+      const currentUser = sessionResult.user;
 
       console.log('Creating planification with user:', currentUser.id);
 
-      // Extract competencies, contenidos, and mapping from wizard data
       const unidadesDidacticas = wizardData.enfoque?.unidades_didacticas ?? [];
-      const competenciasSeleccionadas = extractCompetenciesFromUnits(unidadesDidacticas);
-      const contenidosPrograma = extractContenidosFromUnits(unidadesDidacticas);
-      const mapeoCompetenciasContenidos = buildCompetenciasContenidosMap(unidadesDidacticas);
+      console.log('[Planificacion Creation] Unidades:', unidadesDidacticas.length);
 
-      console.log('[Planificacion Creation] Extracted competencies:', competenciasSeleccionadas.length);
-      console.log('[Planificacion Creation] Extracted contenidos:', contenidosPrograma.length);
+      let nivel = 'CB';
+      if (user?.schoolId && wizardData.contexto?.grupo_id) {
+        const { data: groupRow } = await supabase
+          .from('school_groups')
+          .select('year')
+          .eq('school_id', user.schoolId)
+          .eq('id', wizardData.contexto.grupo_id)
+          .maybeSingle();
+        nivel = deriveNivelFromGroupYear(groupRow?.year);
+      }
 
-      // Crear la planificación
+      const insertPayload = buildPlanificacionInsertPayload({
+        userId: currentUser.id,
+        wizardData,
+        nivel,
+      });
+
       const { data: planificacion, error: planError } = await supabase
         .from('planificaciones')
-        .insert({
-          user_id: currentUser.id,
-          grupo_id: wizardData.contexto.grupo_id,
-          materia: wizardData.contexto.materia,
-          fecha_inicio: wizardData.contexto.fecha_inicio || null,
-          fecha_fin: wizardData.contexto.fecha_fin || null,
-          // horario fields: only for periodo_especifico
-          horas_semanales: wizardData.horario?.horas_semanales || null,
-          configuracion_horario: wizardData.horario?.configuracion || null,
-          unidades_didacticas: wizardData.enfoque.unidades_didacticas,
-          competencias_seleccionadas: competenciasSeleccionadas,
-          contenidos_programa: contenidosPrograma,
-          mapeo_competencias_contenidos: mapeoCompetenciasContenidos,
-          requerimientos_docente: wizardData.enfoque.requerimientos_docente,
-          distribucion_modalidades: wizardData.enfoque.distribucion_modalidades,
-          estrategias_diferenciacion: wizardData.enfoque.estrategias_diferenciacion,
-          objetivos_unidad: wizardData.enfoque.objetivos_unidad,
-          cantidad_sesiones: wizardData.contexto.cantidad_sesiones,
-          cadencia_deseada: wizardData.contexto.cadencia_deseada,
-          bloques_preferidos: wizardData.contexto.bloques_preferidos,
-          ventana_sugerida: wizardData.contexto.ventana_sugerida,
-          nivel: '9', // Required field with default
-          is_saved: false // Planification not explicitly saved yet (won't appear in "Mis Planificaciones" until saved)
-        })
+        .insert(insertPayload)
         .select()
         .maybeSingle();
 
@@ -1178,6 +1176,13 @@ export default function PlanificacionWizard() {
       }
 
       console.log('Planificación creada:', planificacion.id);
+
+      if (wizardData.programa_id) {
+        const linkResult = await markProgramaEnUsoIfApproved(wizardData.programa_id);
+        if (linkResult.error && import.meta.env.DEV) {
+          console.warn('[PlanificacionWizard] markProgramaEnUso:', linkResult.error);
+        }
+      }
       
       // Guardar el ID de la planificación para posibles reintentos
       wizardData.planificacionId = planificacion.id;
@@ -1213,94 +1218,33 @@ export default function PlanificacionWizard() {
         }
       }
 
-      // Determinar tipo de planificación y crear sesiones
-      if (wizardData.tipo_planificacion === 'sin_periodo') {
-        // Modo backlog: crear sesiones sin fecha específica
-        const cantidadSesiones = wizardData.contexto.cantidad_sesiones!;
-        const duracionPorSesion = wizardData.contexto.duracion_por_sesion!;
+      const { mode: sesionesMode, rows: sesionesInsert } = buildSesionesInsertFromWizard(
+        planificacion.id,
+        wizardData
+      );
 
-        console.log('Creando sesiones en backlog:', cantidadSesiones, 'duración:', duracionPorSesion);
+      console.log(`Creando sesiones (${sesionesMode}):`, sesionesInsert.length);
 
-        const sesionesBacklog = Array.from({ length: cantidadSesiones }, (_, i) => ({
-          planificacion_id: planificacion.id,
-          fecha: null,
-          orden: i + 1,
-          estado: 'backlog' as const,
-          duracion_minutos: duracionPorSesion,
-          competencias_anep: [],
-          contenidos_anep: [],
-          criterios_logro_anep: [],
-          plan_desarrollo: {},
-          evaluacion: { tipo: 'observacion' as const },
-          recursos: [],
-          es_feriado: false,
-          bloqueo_reserva: false
-        }));
+      const { error: sesionesError } = await supabase
+        .from('sesiones_clase')
+        .insert(sesionesInsert);
 
-        const { error: sesionesError } = await supabase
-          .from('sesiones_clase')
-          .insert(sesionesBacklog);
-
-        if (sesionesError) {
-          if (import.meta.env.DEV) {
-            console.error('[PlanificacionWizard] Sessions creation error:', sesionesError);
-          }
-          throw new Error(`Error al crear las sesiones: ${sesionesError.message || sesionesError.code || 'Error desconocido'}`);
+      if (sesionesError) {
+        if (import.meta.env.DEV) {
+          console.error('[PlanificacionWizard] Sessions creation error:', sesionesError);
         }
+        throw new Error(`Error al crear las sesiones: ${sesionesError.message || sesionesError.code || 'Error desconocido'}`);
+      }
 
-        console.log('Sesiones creadas exitosamente en backlog');
-
+      if (sesionesMode === 'backlog') {
         toast({
-          title: "¡Planificación flexible creada!",
-          description: `Se crearon ${cantidadSesiones} sesiones en backlog listas para agendar`,
+          title: '¡Planificación flexible creada!',
+          description: `Se crearon ${sesionesInsert.length} sesiones en backlog listas para agendar`,
         });
-
       } else {
-        // Modo con fechas específicas: crear sesiones directamente en el calendario
-        const fechasSesiones = generarSesionesEsquema();
-        console.log('Creando sesiones en calendario:', fechasSesiones.length, 'fechas');
-
-        const sesionesCalendario = fechasSesiones.map((fecha, index) => {
-          // Calcular duración basada en la configuración del día
-          const diaSemana = fecha.toLocaleDateString('es-ES', { weekday: 'long' }).toLowerCase();
-          const configDia = wizardData.horario?.configuracion.find(
-            config => config.dia === diaSemana
-          );
-          const duracion = configDia?.duracionMinutos || 60;
-
-          return {
-            planificacion_id: planificacion.id,
-            fecha: fecha.toISOString().split('T')[0],
-            orden: index + 1,
-            estado: 'planificada' as const,
-            duracion_minutos: duracion,
-            competencias_anep: [],
-            contenidos_anep: [],
-            criterios_logro_anep: [],
-            plan_desarrollo: {},
-            evaluacion: { tipo: 'observacion' as const },
-            recursos: [],
-            es_feriado: false,
-            bloqueo_reserva: false
-          };
-        });
-
-        const { error: sesionesError } = await supabase
-          .from('sesiones_clase')
-          .insert(sesionesCalendario);
-
-        if (sesionesError) {
-          if (import.meta.env.DEV) {
-            console.error('[PlanificacionWizard] Sessions creation error:', sesionesError);
-          }
-          throw new Error(`Error al crear las sesiones: ${sesionesError.message || sesionesError.code || 'Error desconocido'}`);
-        }
-
-        console.log('Sesiones creadas exitosamente en calendario');
-
         toast({
-          title: "¡Planificación con fechas creada!",
-          description: `Se crearon ${fechasSesiones.length} sesiones automáticamente en el calendario`,
+          title: '¡Planificación con fechas creada!',
+          description: `Se crearon ${sesionesInsert.length} sesiones automáticamente en el calendario`,
         });
       }
 
@@ -1521,11 +1465,12 @@ export default function PlanificacionWizard() {
         onUpdateContexto={updateContexto}
         onUpdateHorario={updateHorario}
         onUpdateEnfoque={updateEnfoque}
+        onSetProgramaId={setProgramaId}
         onUpdateTipoPlanificacion={updateTipoPlanificacion}
         onNext={handleNext}
         onPrev={handlePrev}
         onFinish={handleFinish}
-        isLoading={isLoading || isGenerating || isCreating}
+        isLoading={isLoading || isGeneratingPlans || isCreating}
         validation={validation}
       />
     </div>

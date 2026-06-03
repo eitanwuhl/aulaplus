@@ -8,6 +8,7 @@
  * that supports localStorage simulation.
  */
 
+import { describe, expect, it, beforeEach } from 'vitest';
 import { enforceForEvaluation } from '../enforcement';
 import { writeSelected } from '../storage';
 import { normalizeStudentId } from '../utils';
@@ -114,11 +115,34 @@ export function testPerStudentReminderAttribution(): boolean {
   return allPass;
 }
 
-// Export for use in test runner or manual execution
-if (typeof window === 'undefined' && typeof require !== 'undefined') {
-  // Node.js environment
-  const result = testPerStudentReminderAttribution();
-  process.exit(result ? 0 : 1);
-}
+describe('enforceForEvaluation per-student attribution', () => {
+  beforeEach(() => {
+    localStorageMock.clear();
+  });
+
+  it('does not cross-contaminate reminders between students', () => {
+    writeSelected(101, 'evaluaciones', ['contemplacion-1']);
+    writeSelected(202, 'evaluaciones', ['contemplacion-3']);
+    writeSelected(303, 'evaluaciones', ['contemplacion-9-22']);
+
+    const output = enforceForEvaluation([
+      { id: 101, name: 'Student 101' },
+      { id: 202, name: 'Student 202' },
+      { id: 303, name: 'Student 303' },
+    ]);
+    const reminders = output.perStudentReminders;
+    const id101 = normalizeStudentId(101);
+    const id202 = normalizeStudentId(202);
+    const id303 = normalizeStudentId(303);
+
+    expect(reminders.get(id101)).toEqual(['Recordar leer consignas en voz alta']);
+    expect(reminders.get(id202)).toEqual([
+      'Recuerda brindar más tiempo y pausas en caso de ser necesario para este alumno',
+    ]);
+    expect(reminders.get(id303)).toEqual([
+      'No penalizar ortografía/sintaxis cuando no es objetivo',
+    ]);
+  });
+});
 
 

@@ -10,6 +10,7 @@
  * 3. Run: testReminderAttribution()
  */
 
+import { describe, expect, it } from 'vitest';
 import { enforceForEvaluation } from '../enforcement';
 import { writeSelected } from '../storage';
 import { normalizeStudentId } from '../utils';
@@ -60,10 +61,10 @@ export function testReminderAttribution(): { pass: boolean; message: string; det
     // Clear storage
     mockStorage.clear();
 
-    // Setup: Write different contemplaciones for each student
-    mockStorage.setItem('contemplacionesEval:1', JSON.stringify(['contemplacion-1']));
-    mockStorage.setItem('contemplacionesEval:2', JSON.stringify(['contemplacion-3']));
-    mockStorage.setItem('contemplacionesEval:3', JSON.stringify(['contemplacion-9-22']));
+    // Setup: Write different contemplaciones for each student (canonical keys via writeSelected)
+    writeSelected(1, 'evaluaciones', ['contemplacion-1']);
+    writeSelected(2, 'evaluaciones', ['contemplacion-3']);
+    writeSelected(3, 'evaluaciones', ['contemplacion-9-22']);
 
     console.log('[TEST] Setup complete:', mockStorage.store);
 
@@ -157,17 +158,12 @@ export function testReminderAttribution(): { pass: boolean; message: string; det
   }
 }
 
-// Auto-run in Node.js environment
-if (typeof window === 'undefined' && typeof require !== 'undefined') {
-  const result = testReminderAttribution();
-  process.exit(result.pass ? 0 : 1);
-}
-
-// Export for browser console
-if (typeof window !== 'undefined') {
-  (window as any).testReminderAttribution = testReminderAttribution;
-  console.log('[TEST] Test harness loaded. Run: testReminderAttribution()');
-}
+describe('reminder attribution harness', () => {
+  it('passes deterministic per-student attribution', () => {
+    const result = testReminderAttribution();
+    expect(result.pass, result.message).toBe(true);
+  });
+});
 
 
 

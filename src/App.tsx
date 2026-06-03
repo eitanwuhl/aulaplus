@@ -26,6 +26,9 @@ import BibliotecaMateriales from "./pages/BibliotecaMateriales";
 import { AuthRouteFallback } from "./components/auth/AuthRouteFallback";
 import InstitutionOnboarding from "./pages/institution/InstitutionOnboarding";
 import InstitutionConfig from "./pages/institution/InstitutionConfig";
+import AnnualProgramList from "./pages/annualProgram/AnnualProgramList";
+import AnnualProgramNew from "./pages/annualProgram/AnnualProgramNew";
+import AnnualProgramEditor from "./pages/annualProgram/AnnualProgramEditor";
 import { InstitutionOnboardingGate } from "./components/institution/InstitutionOnboardingGate";
 import { canViewInstitutionConfig } from "./lib/institution/curriculumFrameworks";
 
@@ -135,6 +138,21 @@ const AppRoutes = () => {
       <Route path="/mis-evaluaciones/:id" element={
         <ProtectedTeacherRoute>
           <EvaluacionDetalle />
+        </ProtectedTeacherRoute>
+      } />
+      <Route path="/programa-anual" element={
+        <ProtectedTeacherRoute>
+          <AnnualProgramList />
+        </ProtectedTeacherRoute>
+      } />
+      <Route path="/programa-anual/nuevo" element={
+        <ProtectedTeacherRoute>
+          <AnnualProgramNew />
+        </ProtectedTeacherRoute>
+      } />
+      <Route path="/programa-anual/:id" element={
+        <ProtectedTeacherRoute>
+          <AnnualProgramEditor />
         </ProtectedTeacherRoute>
       } />
       <Route path="/planificacion" element={

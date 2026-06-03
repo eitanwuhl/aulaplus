@@ -1,12 +1,7 @@
 import { useState, useCallback } from 'react';
-import { WizardData, ConfiguracionHorario } from '@/types/planificacion';
-import { ValidationResult, FieldError } from '@/types/validation';
-import {
-  validateHorarioCoherence,
-  validateHorarioConfigItem,
-  validateHorarioNoOverlaps,
-  validateHorasSemanalesValue,
-} from '@/lib/planificacion/horarioValidation';
+import { WizardData } from '@/types/planificacion';
+import { validateWizardStep } from '@/lib/planificacion/wizardValidation';
+import { generateSessionDatesFromSchedule } from '@/lib/planificacion/sessionSchedule';
 
 export const usePlanificacionWizard = () => {
   const [wizardData, setWizardData] = useState<WizardData>({
@@ -40,261 +35,24 @@ export const usePlanificacionWizard = () => {
     setWizardData(data);
   }, []);
 
-  const validarPaso = useCallback((paso: number): ValidationResult => {
-    const errors: FieldError[] = [];
-    let firstInvalidField: string | undefined;
+  const setProgramaId = useCallback((programaId: string | undefined) => {
+    setWizardData((prev) => ({ ...prev, programa_id: programaId }));
+  }, []);
 
-    switch (paso) {
-      case 0: {
-        // Validar grupo_id
-        if (!wizardData.contexto?.grupo_id) {
-          errors.push({
-            fieldId: 'grupo_id',
-            message: 'Grupo a evaluar es obligatorio',
-            type: 'required'
-          });
-          if (!firstInvalidField) firstInvalidField = 'grupo_id';
-        }
-
-        // Validar materia
-        if (!wizardData.contexto?.materia) {
-          errors.push({
-            fieldId: 'materia',
-            message: 'Materia es obligatoria',
-            type: 'required'
-          });
-          if (!firstInvalidField) firstInvalidField = 'materia';
-        }
-
-        // Validar tipo_planificacion
-        if (!wizardData.tipo_planificacion) {
-          errors.push({
-            fieldId: 'tipo_planificacion',
-            message: 'Debes seleccionar un tipo de planificación',
-            type: 'required'
-          });
-          if (!firstInvalidField) firstInvalidField = 'tipo_planificacion';
-        }
-
-        // Validar fechas (si periodo_especifico)
-        if (wizardData.tipo_planificacion === 'periodo_especifico') {
-          const fechaInicio = wizardData.contexto?.fecha_inicio;
-          const fechaFin = wizardData.contexto?.fecha_fin;
-          const hoy = new Date();
-          hoy.setHours(0, 0, 0, 0);
-
-          if (!fechaInicio) {
-            errors.push({
-              fieldId: 'fecha_inicio',
-              message: 'Fecha de inicio es obligatoria',
-              type: 'required'
-            });
-            if (!firstInvalidField) firstInvalidField = 'fecha_inicio';
-          } else if (new Date(fechaInicio) < hoy) {
-            errors.push({
-              fieldId: 'fecha_inicio',
-              message: 'La fecha de inicio no puede ser anterior a hoy',
-              type: 'range'
-            });
-            if (!firstInvalidField) firstInvalidField = 'fecha_inicio';
-          }
-
-          if (!fechaFin) {
-            errors.push({
-              fieldId: 'fecha_fin',
-              message: 'Fecha de fin es obligatoria',
-              type: 'required'
-            });
-            if (!firstInvalidField) firstInvalidField = 'fecha_fin';
-          } else if (fechaInicio && new Date(fechaFin) <= new Date(fechaInicio)) {
-            errors.push({
-              fieldId: 'fecha_fin',
-              message: 'La fecha de fin debe ser posterior a la fecha de inicio',
-              type: 'range'
-            });
-            if (!firstInvalidField) firstInvalidField = 'fecha_fin';
-          }
-        }
-
-        // Validar cantidad_sesiones y duracion (si sin_periodo)
-        if (wizardData.tipo_planificacion === 'sin_periodo') {
-          const cantidadSesiones = wizardData.contexto?.cantidad_sesiones;
-          const duracion = wizardData.contexto?.duracion_por_sesion;
-
-          if (!cantidadSesiones || cantidadSesiones <= 0) {
-            errors.push({
-              fieldId: 'cantidad_sesiones',
-              message: cantidadSesiones === undefined 
-                ? 'Cantidad de sesiones es obligatoria'
-                : 'Debe ser un número mayor a 0',
-              type: cantidadSesiones === undefined ? 'required' : 'range'
-            });
-            if (!firstInvalidField) firstInvalidField = 'cantidad_sesiones';
-          }
-
-          if (!duracion || duracion <= 0) {
-            errors.push({
-              fieldId: 'duracion_por_sesion',
-              message: duracion === undefined
-                ? 'Duración por sesión es obligatoria'
-                : 'Debe ser un número mayor a 0 minutos',
-              type: duracion === undefined ? 'required' : 'range'
-            });
-            if (!firstInvalidField) firstInvalidField = 'duracion_por_sesion';
-          }
-        }
-
-        break;
-      }
-
-      case 1: {
-        const horasSemanales = wizardData.horario?.horas_semanales;
-        const horasError = validateHorasSemanalesValue(horasSemanales);
-        if (horasError) {
-          errors.push(horasError);
-          if (!firstInvalidField) firstInvalidField = horasError.fieldId;
-        }
-
-        const configuracion = wizardData.horario?.configuracion || [];
-        if (configuracion.length === 0) {
-          errors.push({
-            fieldId: 'configuracion',
-            message: 'Debes configurar al menos un horario',
-            type: 'required'
-          });
-          if (!firstInvalidField) firstInvalidField = 'configuracion';
-        } else {
-          configuracion.forEach((config, index) => {
-            const itemErrors = validateHorarioConfigItem(config, index);
-            for (const itemError of itemErrors) {
-              errors.push(itemError);
-              if (!firstInvalidField) firstInvalidField = itemError.fieldId;
-            }
-          });
-
-          for (const overlapError of validateHorarioNoOverlaps(configuracion)) {
-            errors.push(overlapError);
-            if (!firstInvalidField) firstInvalidField = overlapError.fieldId;
-          }
-
-          const coherenceError = validateHorarioCoherence(horasSemanales, configuracion);
-          if (coherenceError) {
-            errors.push(coherenceError);
-            if (!firstInvalidField) firstInvalidField = coherenceError.fieldId;
-          }
-        }
-
-        break;
-      }
-
-      case 2: {
-        // A/B/C Validation Rule: Allow generation if at least ONE is true:
-        // A) >= 1 ANEP content (unidades didácticas with content)
-        // B) >= 1 material attached (plan-level, checked later via DB)
-        // C) Sufficiently informative focus/topic text
-        
-        const unidades = wizardData.enfoque?.unidades_didacticas || [];
-        const hasAnepContent = unidades.length > 0 && unidades.some(u => u.contenido_texto?.trim());
-        
-        const requerimientos = wizardData.enfoque?.requerimientos_docente?.trim() || '';
-        const sessionBriefs = wizardData.enfoque?.sessionBriefs || [];
-        const hasMeaningfulBriefs = sessionBriefs.some(b => (b?.trim() || '').length >= 15);
-        const hasMeaningfulRequerimientos = requerimientos.length >= 20;
-        const hasSufficientFocusText = hasMeaningfulBriefs || hasMeaningfulRequerimientos;
-        
-        // Note: Material attachments (B) will be checked at generation time since they're DB-based
-        // For wizard validation, we only check A and C here
-        
-        // PHASE B: Check for plan-level materials (B condition)
-        const hasPlanMaterials = (wizardData.enfoque?.attachedPlanMaterialIds || []).length > 0;
-        
-        // Allow generation if at least ONE is true: A (ANEP), B (plan materials), or C (focus text)
-        if (!hasAnepContent && !hasSufficientFocusText && !hasPlanMaterials) {
-          errors.push({
-            fieldId: 'generation_requirements',
-            message: 'Para generar planes necesitas al menos: (A) contenido ANEP en unidades didácticas, O (B) materiales adjuntos a nivel planificación (usa "Adjuntar materiales" arriba), O (C) texto de foco/tema suficientemente informativo (ej: temas de las clases o requerimientos del docente). Podés generar usando solo materiales docentes.',
-            type: 'custom'
-          });
-          if (!firstInvalidField) firstInvalidField = 'generation_requirements';
-        }
-
-        // PHASE A: Competencies are always optional (no blocking based on ANEP)
-        // If ANEP content is provided, we may suggest competencies but don't require them
-        // Teachers can select competencies regardless of ANEP content selection
-
-        // Validar distribucion_modalidades (suma = 100%)
-        const distribucion = wizardData.enfoque?.distribucion_modalidades;
-        if (distribucion) {
-          const total = Object.values(distribucion).reduce((sum, val) => sum + val, 0);
-          if (total !== 100) {
-            errors.push({
-              fieldId: 'distribucion_modalidades',
-              message: 'La suma de modalidades debe ser 100%',
-              type: 'custom'
-            });
-            if (!firstInvalidField) firstInvalidField = 'distribucion_modalidades';
-          }
-        }
-
-        break;
-      }
-
-      case 3: {
-        // Validación final: recursiva de todos los pasos
-        const paso0 = validarPaso(0);
-        // Validar paso 1 solo si NO es "sin_periodo" (en ese flujo se salta el paso 1)
-        const paso1 = wizardData.tipo_planificacion === 'sin_periodo'
-          ? { valid: true, errors: [] as FieldError[], firstInvalidField: undefined }
-          : validarPaso(1);
-        const paso2 = validarPaso(2);
-
-        errors.push(...paso0.errors, ...paso1.errors, ...paso2.errors);
-        firstInvalidField = paso0.firstInvalidField || paso1.firstInvalidField || paso2.firstInvalidField;
-        break;
-      }
-    }
-
-    return {
-      valid: errors.length === 0,
-      errors,
-      firstInvalidField
-    };
-  }, [wizardData]);
+  const validarPaso = useCallback(
+    (paso: number) => validateWizardStep(wizardData, paso),
+    [wizardData]
+  );
 
   const generarSesionesEsquema = useCallback((): Date[] => {
-    if (!wizardData.contexto || !wizardData.horario) return [];
-
-    const fechas: Date[] = [];
-    const inicio = new Date(wizardData.contexto.fecha_inicio);
-    const fin = new Date(wizardData.contexto.fecha_fin);
-    
-    // Mapear días de la semana
-    const diasSemana = {
-      'lunes': 1,
-      'martes': 2,
-      'miércoles': 3,
-      'jueves': 4,
-      'viernes': 5
-    };
-
-    const fechaActual = new Date(inicio);
-    
-    while (fechaActual <= fin) {
-      const diaActual = fechaActual.getDay();
-      
-      // Verificar si hay clase este día
-      const hayClase = wizardData.horario.configuracion.some(config => 
-        diasSemana[config.dia] === diaActual
-      );
-      
-      if (hayClase) {
-        fechas.push(new Date(fechaActual));
-      }
-      
-      fechaActual.setDate(fechaActual.getDate() + 1);
+    if (!wizardData.contexto?.fecha_inicio || !wizardData.contexto?.fecha_fin || !wizardData.horario) {
+      return [];
     }
-
-    return fechas;
+    return generateSessionDatesFromSchedule({
+      fecha_inicio: wizardData.contexto.fecha_inicio,
+      fecha_fin: wizardData.contexto.fecha_fin,
+      configuracion: wizardData.horario.configuracion,
+    });
   }, [wizardData.contexto, wizardData.horario]);
 
   const reiniciarWizard = useCallback(() => {
@@ -317,6 +75,7 @@ export const usePlanificacionWizard = () => {
     updateEnfoque,
     updateTipoPlanificacion,
     replaceWizardData,
+    setProgramaId,
     validarPaso,
     generarSesionesEsquema,
     reiniciarWizard,

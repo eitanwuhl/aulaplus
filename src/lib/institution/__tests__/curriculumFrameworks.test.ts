@@ -14,7 +14,9 @@ describe('curriculumFrameworks', () => {
     expect(canManageInstitution('direccion')).toBe(true);
     expect(canManageInstitution('admin')).toBe(true);
     expect(canManageInstitution('teacher')).toBe(false);
+    expect(canManageInstitution(undefined)).toBe(false);
     expect(canViewInstitutionConfig('psicopedagogico')).toBe(true);
     expect(canViewInstitutionConfig('teacher')).toBe(false);
+    expect(canViewInstitutionConfig('direccion')).toBe(true);
   });
 });
