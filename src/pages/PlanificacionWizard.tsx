@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -16,11 +16,18 @@ import {
 } from '@/lib/competencyExtractor';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext } from '@/services/groupContext/provider';
+import {
+  fetchCatalogItemsForProgram,
+  fetchProgramById,
+  programUnitsToWizardUnits,
+} from '@/services/annualProgram';
+import { useAuth } from '@/contexts/AuthContext';
 import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
 import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
 import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
 import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
 import { isDemoBootstrapEnabled } from '@/lib/demoBootstrap';
+import { resolvePlanificacionFechas } from '@/lib/planificacion/planificacionDates';
 
 const PLAN_WIZARD_DRAFT_KEY = 'aulaplus.planWizard.draft';
 const SUMMARY_STEP = 3;
@@ -892,7 +899,9 @@ const generarPlanesAutomaticamente = async (
 export default function PlanificacionWizard() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
+  const { user } = useAuth();
   const [isGeneratingPlans, setIsGeneratingPlans] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -909,6 +918,7 @@ export default function PlanificacionWizard() {
     generarSesionesEsquema,
     reiniciarWizard,
     replaceWizardData,
+    setProgramaId,
     isDataComplete,
     setIsLoading,
     setError
@@ -929,6 +939,59 @@ export default function PlanificacionWizard() {
       // ignore invalid draft
     }
   }, [location.state, replaceWizardData]);
+
+  useEffect(() => {
+    const grupo = searchParams.get('grupo');
+    const materia = searchParams.get('materia');
+    const programaId = searchParams.get('programa');
+    if (!grupo && !materia && !programaId) return;
+
+    const applyContext = async () => {
+      if (grupo || materia) {
+        updateContexto({
+          ...wizardData.contexto,
+          grupo_id: grupo ?? wizardData.contexto?.grupo_id ?? '',
+          materia: materia ?? wizardData.contexto?.materia ?? '',
+        });
+      }
+
+      if (!programaId || !user?.schoolId) return;
+
+      const programRes = await fetchProgramById(programaId);
+      if (programRes.error || !programRes.data) return;
+      if (programRes.data.estado !== 'aprobado' && programRes.data.estado !== 'en_uso') return;
+
+      const catalogRes = await fetchCatalogItemsForProgram({
+        schoolId: user.schoolId,
+        framework: programRes.data.marco_planificacion,
+        materia: programRes.data.materia,
+      });
+      const catalogById = new Map((catalogRes.data ?? []).map((c) => [c.id, c]));
+      const units = programUnitsToWizardUnits(programRes.data.unidades ?? [], catalogById);
+
+      updateEnfoque({
+        ...wizardData.enfoque,
+        unidades_didacticas: units,
+        requerimientos_docente: wizardData.enfoque?.requerimientos_docente ?? '',
+        estrategias_diferenciacion: wizardData.enfoque?.estrategias_diferenciacion ?? '',
+        distribucion_modalidades: wizardData.enfoque?.distribucion_modalidades ?? {
+          individual: 25,
+          pareja: 25,
+          grupos: 25,
+          toda_clase: 25,
+        },
+      });
+      setProgramaId(programaId);
+      updatePaso(2);
+      toast({
+        title: 'Programa anual cargado',
+        description: `${units.length} unidades importadas.`,
+      });
+    };
+
+    void applyContext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deep-link once on mount
+  }, []);
 
   const saveDraftAndNavigateToWorkspace = (planificacionId: string) => {
     try {
@@ -1133,6 +1196,8 @@ export default function PlanificacionWizard() {
       console.log('[Planificacion Creation] Extracted competencies:', competenciasSeleccionadas.length);
       console.log('[Planificacion Creation] Extracted contenidos:', contenidosPrograma.length);
 
+      const { fecha_inicio, fecha_fin } = resolvePlanificacionFechas(wizardData);
+
       // Crear la planificación
       const { data: planificacion, error: planError } = await supabase
         .from('planificaciones')
@@ -1140,8 +1205,8 @@ export default function PlanificacionWizard() {
           user_id: currentUser.id,
           grupo_id: wizardData.contexto.grupo_id,
           materia: wizardData.contexto.materia,
-          fecha_inicio: wizardData.contexto.fecha_inicio || null,
-          fecha_fin: wizardData.contexto.fecha_fin || null,
+          fecha_inicio,
+          fecha_fin,
           // horario fields: only for periodo_especifico
           horas_semanales: wizardData.horario?.horas_semanales || null,
           configuracion_horario: wizardData.horario?.configuracion || null,
@@ -1158,7 +1223,8 @@ export default function PlanificacionWizard() {
           bloques_preferidos: wizardData.contexto.bloques_preferidos,
           ventana_sugerida: wizardData.contexto.ventana_sugerida,
           nivel: '9', // Required field with default
-          is_saved: false // Planification not explicitly saved yet (won't appear in "Mis Planificaciones" until saved)
+          is_saved: false, // Planification not explicitly saved yet (won't appear in "Mis Planificaciones" until saved)
+          ...(wizardData.programa_id ? { programa_id: wizardData.programa_id } : {}),
         })
         .select()
         .maybeSingle();
@@ -1521,6 +1587,7 @@ export default function PlanificacionWizard() {
         onUpdateContexto={updateContexto}
         onUpdateHorario={updateHorario}
         onUpdateEnfoque={updateEnfoque}
+        onSetProgramaId={setProgramaId}
         onUpdateTipoPlanificacion={updateTipoPlanificacion}
         onNext={handleNext}
         onPrev={handlePrev}

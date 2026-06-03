@@ -151,6 +151,8 @@ export interface WizardData {
     attachedPlanMaterialIds?: string[];
   };
   planificacionId?: string;
+  /** Module 2: programa anual de origen */
+  programa_id?: string;
 }
 
 export interface AlertaGrupo {

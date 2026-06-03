@@ -1,6 +1,6 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, Calendar } from 'lucide-react';
+import { Plus, Calendar, BookOpen } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export default function PlanificacionClase() {
@@ -17,7 +17,29 @@ export default function PlanificacionClase() {
       </div>
 
       {/* Options Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-5xl">
+
+        <Card className="cursor-pointer hover:shadow-lg transition-shadow"
+              onClick={() => navigate('/programa-anual')}>
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-emerald-500/10 rounded-lg">
+                <BookOpen className="h-6 w-6 text-emerald-600" />
+              </div>
+              <div>
+                <CardTitle className="text-lg">Programa anual</CardTitle>
+                <CardDescription>
+                  Planificador macro por grupo y materia
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              Definí unidades y cobertura curricular con el catálogo institucional antes del wizard de sesiones.
+            </p>
+          </CardContent>
+        </Card>
         
         {/* Asistente de Planificación */}
         <Card className="cursor-pointer hover:shadow-lg transition-shadow" 

@@ -21,6 +21,7 @@ import { ModalityDistribution } from './ModalityDistribution';
 import { UnidadDidacticaBuilder } from './UnidadDidacticaBuilder';
 import { PlanMaterialsSection } from './PlanMaterialsSection';
 import { Materia } from '@/data/catalogo';
+import { AnnualProgramImportBanner } from '@/components/annualProgram/AnnualProgramImportBanner';
 import { useToast } from '@/hooks/use-toast';
 import {
   computeWeeklyHoursFromConfig,
@@ -34,6 +35,7 @@ interface WizardStepsProps {
   onUpdateContexto: (contexto: WizardData['contexto']) => void;
   onUpdateHorario: (horario: WizardData['horario']) => void;
   onUpdateEnfoque: (enfoque: WizardData['enfoque']) => void;
+  onSetProgramaId: (programaId: string | undefined) => void;
   onUpdateTipoPlanificacion: (tipo: 'periodo_especifico' | 'sin_periodo') => void;
   onNext: () => void;
   onPrev: () => void;
@@ -47,6 +49,7 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
   onUpdateContexto,
   onUpdateHorario,
   onUpdateEnfoque,
+  onSetProgramaId,
   onUpdateTipoPlanificacion,
   onNext,
   onPrev,
@@ -256,6 +259,8 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
                 <SelectItem value="Historia">Historia</SelectItem>
                 <SelectItem value="Literatura">Literatura</SelectItem>
                 <SelectItem value="Educación para la Ciudadanía">Educación para la Ciudadanía</SelectItem>
+                <SelectItem value="Matemática">Matemática</SelectItem>
+                <SelectItem value="Lengua Española">Lengua Española</SelectItem>
               </SelectContent>
             </Select>
           </FormField>
@@ -896,6 +901,20 @@ export const WizardSteps: React.FC<WizardStepsProps> = ({
 
   const renderPaso2 = () => (
     <div className="space-y-6">
+      {wizardData.contexto?.grupo_id && wizardData.contexto?.materia && (
+        <AnnualProgramImportBanner
+          wizardData={wizardData}
+          onImport={(enfoque, programaId) => {
+            onUpdateEnfoque(enfoque);
+            onSetProgramaId(programaId);
+            toast({
+              title: 'Programa importado',
+              description: `${enfoque?.unidades_didacticas?.length ?? 0} unidades cargadas desde el programa anual.`,
+            });
+          }}
+        />
+      )}
+
       {/* Material Docente (Plan-level) - SINGLE materials attach section - BEFORE Resumen */}
       <PlanMaterialsSection
         attachedMaterialIds={wizardData.enfoque?.attachedPlanMaterialIds || []}

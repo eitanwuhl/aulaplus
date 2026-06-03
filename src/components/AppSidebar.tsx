@@ -2,7 +2,8 @@ import {
   Home, 
   Users, 
   FileText, 
-  Calendar, 
+  Calendar,
+  BookOpen,
   BarChart3, 
   Settings,
   ClipboardList,
@@ -42,10 +43,16 @@ import {
     description: "Gestión de grupos y evaluaciones"
   },
   { 
+    title: "Programa anual", 
+    url: "/programa-anual", 
+    icon: BookOpen,
+    description: "Planificador macro del año lectivo"
+  },
+  { 
     title: "Planificación de Clase", 
     url: "/planificacion", 
     icon: Calendar,
-    description: "Herramientas de planificación"
+    description: "Wizard de sesiones (Módulo 3)"
   },
   { 
     title: "Mis Planificaciones", 

@@ -12,6 +12,7 @@ export default defineConfig({
       "src/lib/planificacion/**/*.test.ts",
       "src/lib/multitenancy/**/*.test.ts",
       "src/lib/institution/**/*.test.ts",
+      "src/lib/annualProgram/**/*.test.ts",
     ],
   },
   resolve: {
