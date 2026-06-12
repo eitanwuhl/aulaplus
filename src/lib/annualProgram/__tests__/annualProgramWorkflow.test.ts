@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   canApproveProgram,
   canImportProgramToWizard,
+  canMarkProgramEnUso,
   canSubmitProgramForReview,
+  canTransitionProgramEstado,
   partitionProgramsForReviewer,
   sortProgramsByYearDesc,
 } from '../annualProgramWorkflow';
@@ -33,7 +35,7 @@ describe('annualProgramWorkflow', () => {
     ];
     const { pendingReview, otherPrograms } = partitionProgramsForReviewer(programs);
     expect(pendingReview.map((p) => p.id)).toEqual(['a']);
-    expect(otherPrograms.map((p) => p.id)).toEqual(['b', 'c']);
+    expect(otherPrograms.map((p) => p.id)).toEqual(['c']);
   });
 
   it('sorts by anio lectivo descending', () => {
@@ -55,8 +57,48 @@ describe('annualProgramWorkflow', () => {
   it('gates approval and submit actions', () => {
     expect(canApproveProgram('en_revision')).toBe(true);
     expect(canApproveProgram('borrador')).toBe(false);
-    expect(canSubmitProgramForReview('borrador', true)).toBe(true);
-    expect(canSubmitProgramForReview('borrador', false)).toBe(false);
-    expect(canSubmitProgramForReview('en_revision', true)).toBe(false);
+    expect(canApproveProgram('aprobado')).toBe(false);
+    expect(canApproveProgram('en_uso')).toBe(false);
+    expect(canSubmitProgramForReview('borrador', true, 2)).toBe(true);
+    expect(canSubmitProgramForReview('borrador', true, 0)).toBe(false);
+    expect(canSubmitProgramForReview('borrador', false, 2)).toBe(false);
+    expect(canSubmitProgramForReview('en_revision', true, 2)).toBe(false);
+    expect(canMarkProgramEnUso('aprobado')).toBe(true);
+    expect(canMarkProgramEnUso('en_revision')).toBe(false);
+  });
+
+  it('validates estado transitions by actor', () => {
+    expect(
+      canTransitionProgramEstado('borrador', 'en_revision', { isOwner: true, isAdmin: false })
+    ).toBe(true);
+    expect(
+      canTransitionProgramEstado('aprobado', 'en_uso', { isOwner: true, isAdmin: false })
+    ).toBe(true);
+    expect(
+      canTransitionProgramEstado('en_revision', 'aprobado', { isOwner: false, isAdmin: true })
+    ).toBe(true);
+    expect(
+      canTransitionProgramEstado('en_revision', 'en_uso', { isOwner: false, isAdmin: true })
+    ).toBe(false);
+    expect(
+      canTransitionProgramEstado('borrador', 'aprobado', { isOwner: true, isAdmin: false })
+    ).toBe(false);
+  });
+
+  it('partition handles empty list', () => {
+    const { pendingReview, otherPrograms } = partitionProgramsForReviewer([]);
+    expect(pendingReview).toEqual([]);
+    expect(otherPrograms).toEqual([]);
+  });
+
+  it('canImport rejects en_uso with zero units', () => {
+    expect(canImportProgramToWizard('en_uso', 0)).toBe(false);
+  });
+
+  it('sort is stable for same year', () => {
+    const a = program({ id: 'a', estado: 'borrador', anio_lectivo: 2026 });
+    const b = program({ id: 'b', estado: 'aprobado', anio_lectivo: 2026 });
+    const sorted = sortProgramsByYearDesc([a, b]);
+    expect(sorted.map((p) => p.id)).toEqual(['a', 'b']);
   });
 });

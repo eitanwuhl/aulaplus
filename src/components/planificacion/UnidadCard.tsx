@@ -17,7 +17,7 @@ import {
   getCompetenciasEspecificas 
 } from '@/data/competencias';
 import { COMPETENCIAS_LITERATURA } from '@/data/competenciasLiteratura';
-import { COMPETENCIAS_CIUDADANIA } from '@/data/competenciasCiudadania';
+import { UnitMaterialsSection } from './UnitMaterialsSection';
 
 interface UnidadCardProps {
   unidad: UnidadDidactica;
@@ -276,6 +276,14 @@ export const UnidadCard: React.FC<UnidadCardProps> = ({
                 ))}
               </div>
             </div>
+
+            <UnitMaterialsSection
+              unitId={unidad.id}
+              materials={unidad.unit_material_plan ?? []}
+              onChange={(materials) =>
+                onActualizar({ ...unidad, unit_material_plan: materials })
+              }
+            />
 
           </div>
         </CardContent>

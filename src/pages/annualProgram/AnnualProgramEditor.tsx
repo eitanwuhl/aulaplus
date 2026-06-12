@@ -16,6 +16,10 @@ import {
 import { ProgramCoverageBar } from '@/components/annualProgram/ProgramCoverageBar';
 import { ProgramUnitCard } from '@/components/annualProgram/ProgramUnitCard';
 import { computeProgramCoverage } from '@/lib/annualProgram/coverage';
+import {
+  canMarkProgramEnUso,
+  canSubmitProgramForReview,
+} from '@/lib/annualProgram/annualProgramWorkflow';
 import { frameworkLabel, canManageInstitution } from '@/lib/institution/curriculumFrameworks';
 import type { ProgramaEstado, ProgramaUnidad } from '@/types/annualProgram';
 
@@ -46,6 +50,8 @@ export default function AnnualProgramEditor() {
   const updateEstado = useUpdateProgramEstado(id ?? '', {
     ownerUserId: program?.user_id,
     schoolId,
+    actorUserId: userId,
+    actorIsAdmin: canApprove,
   });
   const upsertUnit = useUpsertProgramUnit(id ?? '', userId);
   const deleteUnit = useDeleteProgramUnit(id ?? '', userId);
@@ -172,7 +178,7 @@ export default function AnnualProgramEditor() {
           <Badge className="mt-2">{ESTADO_LABEL[program.estado]}</Badge>
         </div>
         <div className="flex flex-wrap gap-2">
-          {program.estado === 'borrador' && isOwner && (
+          {canSubmitProgramForReview(program.estado, isOwner, unidades.length) && (
             <Button size="sm" variant="outline" onClick={() => void changeEstado('en_revision')}>
               <Send className="h-4 w-4 mr-1" />
               Enviar a revisión
@@ -184,7 +190,7 @@ export default function AnnualProgramEditor() {
               Aprobar
             </Button>
           )}
-          {(program.estado === 'aprobado' || (canApprove && program.estado === 'en_revision')) && (
+          {canApprove && canMarkProgramEnUso(program.estado) && (
             <Button size="sm" variant="secondary" onClick={() => void changeEstado('en_uso')}>
               <Play className="h-4 w-4 mr-1" />
               Marcar en uso

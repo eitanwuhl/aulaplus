@@ -109,3 +109,13 @@ export function runAllTests() {
   return { total: results.length, passed, failed, results };
 }
 
+import { describe, expect, it } from 'vitest';
+
+describe('v2RendererShapeNormalization', () => {
+  it('passes all normalization tests', () => {
+    const { failed, results } = runAllTests();
+    const errors = results.filter((r) => !r.passed).map((r) => `${r.name}: ${r.error ?? ''}`);
+    expect(failed, errors.join('\n')).toBe(0);
+  });
+});
+

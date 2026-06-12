@@ -1,3 +1,4 @@
+import { compareIsoDates, todayLocal, toIsoDateLocal } from '@/lib/dates/localDate';
 import type { WizardData } from '@/types/planificacion';
 import type { FieldError, ValidationResult } from '@/types/validation';
 import {
@@ -44,8 +45,7 @@ export function validateWizardStep(wizardData: WizardData, paso: number): Valida
       if (wizardData.tipo_planificacion === 'periodo_especifico') {
         const fechaInicio = wizardData.contexto?.fecha_inicio;
         const fechaFin = wizardData.contexto?.fecha_fin;
-        const hoy = new Date();
-        hoy.setHours(0, 0, 0, 0);
+        const hoy = todayLocal();
 
         if (!fechaInicio) {
           errors.push({
@@ -54,7 +54,7 @@ export function validateWizardStep(wizardData: WizardData, paso: number): Valida
             type: 'required',
           });
           if (!firstInvalidField) firstInvalidField = 'fecha_inicio';
-        } else if (new Date(fechaInicio) < hoy) {
+        } else if (compareIsoDates(fechaInicio, toIsoDateLocal(hoy)) < 0) {
           errors.push({
             fieldId: 'fecha_inicio',
             message: 'La fecha de inicio no puede ser anterior a hoy',
@@ -70,7 +70,7 @@ export function validateWizardStep(wizardData: WizardData, paso: number): Valida
             type: 'required',
           });
           if (!firstInvalidField) firstInvalidField = 'fecha_fin';
-        } else if (fechaInicio && new Date(fechaFin) <= new Date(fechaInicio)) {
+        } else if (fechaInicio && compareIsoDates(fechaFin, fechaInicio) <= 0) {
           errors.push({
             fieldId: 'fecha_fin',
             message: 'La fecha de fin debe ser posterior a la fecha de inicio',

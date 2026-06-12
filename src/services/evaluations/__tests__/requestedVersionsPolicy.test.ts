@@ -1,3 +1,5 @@
+import { describe, expect, it } from 'vitest';
+
 /**
  * Manual unit tests for requestedVersions + carry-forward guardrail.
  *
@@ -149,4 +151,12 @@ export function runAllTests() {
   console.log(`Total: ${results.length} | Passed: ${passed} | Failed: ${failed}`);
   return { total: results.length, passed, failed, results };
 }
+
+describe('requestedVersionsPolicy', () => {
+  it('passes all policy tests', () => {
+    const { failed, results } = runAllTests();
+    const errors = results.filter((r) => !r.passed).map((r) => `${r.name}: ${r.error ?? ''}`);
+    expect(failed, errors.join('\n')).toBe(0);
+  });
+});
 

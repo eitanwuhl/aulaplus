@@ -228,5 +228,31 @@ describe('validateWizardStep', () => {
       const w = validPeriodoWizard({ horario: undefined });
       expect(validateWizardStep(w, 3).valid).toBe(false);
     });
+
+    it('accepts sessionBriefs as sufficient focus text', () => {
+      const w = validSinPeriodoWizard();
+      w.enfoque!.requerimientos_docente = '';
+      w.enfoque!.attachedPlanMaterialIds = [];
+      w.enfoque!.sessionBriefs = ['Tema de la clase uno'];
+      expect(validateWizardStep(w, 2).valid).toBe(true);
+    });
+
+    it('rejects negative cantidad_sesiones', () => {
+      const w = validSinPeriodoWizard();
+      w.contexto!.cantidad_sesiones = -1;
+      expect(validateWizardStep(w, 0).valid).toBe(false);
+    });
+
+    it('rejects zero duracion_por_sesion', () => {
+      const w = validSinPeriodoWizard();
+      w.contexto!.duracion_por_sesion = 0;
+      expect(validateWizardStep(w, 0).valid).toBe(false);
+    });
+
+    it('allows step 2 without distribucion when undefined', () => {
+      const w = validPeriodoWizard();
+      delete w.enfoque!.distribucion_modalidades;
+      expect(validateWizardStep(w, 2).valid).toBe(true);
+    });
   });
 });

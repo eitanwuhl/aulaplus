@@ -50,4 +50,33 @@ describe('computeProgramCoverage', () => {
     expect(filtered.map((i) => i.id)).toEqual(['a', 'b']);
     expect(filterCoverageCatalogItems(catalog).map((i) => i.id)).toEqual(['a', 'b']);
   });
+
+  it('includes progresion and learning_objective types', () => {
+    const items: CatalogItemForPlanning[] = [
+      { id: 'p', tipo: 'progresion', codigo: 'P', nombre: 'Prog', descripcion: null, nivel: null, materia: 'Historia' },
+      { id: 'l', tipo: 'learning_objective', codigo: 'L', nombre: 'LO', descripcion: null, nivel: null, materia: 'Historia' },
+      { id: 't', tipo: 'tramo', codigo: 'T', nombre: 'Tramo', descripcion: null, nivel: null, materia: 'Historia' },
+    ];
+    expect(filterCoverageCatalogItems(items).map((i) => i.id)).toEqual(['p', 'l']);
+  });
+
+  it('ignores catalog ids assigned but outside materia pool', () => {
+    const mixed: CatalogItemForPlanning[] = [
+      { id: 'a', tipo: 'contenido', codigo: '1', nombre: 'Hist', descripcion: null, nivel: null, materia: 'Historia' },
+      { id: 'm', tipo: 'contenido', codigo: '2', nombre: 'Mat', descripcion: null, nivel: null, materia: 'Matemática' },
+    ];
+    const cov = computeProgramCoverage(mixed, [baseUnit(['a', 'm'])], 'Historia');
+    expect(cov.assignedCatalogItems).toBe(1);
+    expect(cov.percent).toBe(100);
+  });
+
+  it('returns 100% when all pool items assigned across units', () => {
+    const cov = computeProgramCoverage(
+      catalog,
+      [baseUnit(['a']), baseUnit(['b'])],
+      'Historia'
+    );
+    expect(cov.percent).toBe(100);
+    expect(cov.uncoveredItemIds).toEqual([]);
+  });
 });

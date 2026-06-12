@@ -147,9 +147,7 @@ export default function AnnualProgramList() {
         </section>
       )}
 
-      <p className="text-xs text-muted-foreground">
-        Liceo: {schoolId ?? '—'} · Año lectivo: {DEFAULT_ANIO_LECTIVO}
-      </p>
+      <p className="text-xs text-muted-foreground">Año lectivo: {DEFAULT_ANIO_LECTIVO}</p>
     </div>
   );
 }

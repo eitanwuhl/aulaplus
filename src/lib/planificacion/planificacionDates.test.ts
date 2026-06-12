@@ -125,4 +125,13 @@ describe('resolvePlanificacionFechas', () => {
     const diffDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
     expect(diffDays).toBeGreaterThanOrEqual(6);
   });
+
+  it('treats undefined tipo as sin_periodo (symbolic dates)', () => {
+    const { fecha_inicio, fecha_fin } = resolvePlanificacionFechas({
+      paso: 3,
+      contexto: { grupo_id: '1', materia: 'Historia', cantidad_sesiones: 2, duracion_por_sesion: 60 },
+    });
+    expect(fecha_inicio).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(fecha_fin >= fecha_inicio).toBe(true);
+  });
 });

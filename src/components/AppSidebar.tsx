@@ -52,7 +52,7 @@ import {
     title: "Planificación de Clase", 
     url: "/planificacion", 
     icon: Calendar,
-    description: "Wizard de sesiones (Módulo 3)"
+    description: "Wizard de sesiones"
   },
   { 
     title: "Mis Planificaciones", 

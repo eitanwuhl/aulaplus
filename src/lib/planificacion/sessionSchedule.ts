@@ -1,3 +1,4 @@
+import { parseLocalDate } from '@/lib/dates/localDate';
 import type { ConfiguracionHorario } from '@/types/planificacion';
 
 const DIAS_SEMANA: Record<ConfiguracionHorario['dia'], number> = {
@@ -15,8 +16,8 @@ export function generateSessionDatesFromSchedule(input: {
   configuracion: ConfiguracionHorario[];
 }): Date[] {
   const fechas: Date[] = [];
-  const inicio = new Date(input.fecha_inicio);
-  const fin = new Date(input.fecha_fin);
+  const inicio = parseLocalDate(input.fecha_inicio);
+  const fin = parseLocalDate(input.fecha_fin);
   const fechaActual = new Date(inicio);
 
   while (fechaActual <= fin) {

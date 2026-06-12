@@ -23,6 +23,9 @@ import type { PlanningAIDesignReportData } from '@/components/planificacion/Plan
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
 import { buildUnitContextForSession } from '@/services/planning/sessionUnitContext';
+import { invokeGeneratePlanCompleto } from '@/services/planning/generatePlanCompleto';
+import { fetchProgramById } from '@/services/annualProgram';
+import { ProgramaAnualLinkBanner } from '@/components/planificacion/ProgramaAnualLinkBanner';
 
 export default function PlanificacionWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -57,6 +60,9 @@ export default function PlanificacionWorkspace() {
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
   const isNavigatingRef = useRef(false);
+  const [linkedPrograma, setLinkedPrograma] = useState<{ id: string; nombre?: string | null } | null>(
+    null
+  );
   
   const {
     sesiones,
@@ -120,6 +126,22 @@ export default function PlanificacionWorkspace() {
     return null;
   }, [selectedSessionForReport]);
 
+  useEffect(() => {
+    const programaId = (planificacion as Planificacion & { programa_id?: string | null })?.programa_id;
+    if (!programaId) {
+      setLinkedPrograma(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchProgramById(programaId).then((result) => {
+      if (cancelled || !result.data) return;
+      setLinkedPrograma({ id: result.data.id, nombre: result.data.nombre });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [planificacion]);
+
   const fetchPlanificacionWithRetry = useCallback(async (planId: string) => {
     const maxAttempts = 3;
     let lastError: unknown = null;
@@ -176,7 +198,8 @@ export default function PlanificacionWorkspace() {
         configuracion_horario: data.configuracion_horario as unknown as ConfiguracionHorario[],
         fecha_inicio: data.fecha_inicio || undefined,
         fecha_fin: data.fecha_fin || undefined,
-        ai_design_report: (data as any).ai_design_report || null
+        programa_id: (data as { programa_id?: string | null }).programa_id ?? null,
+        ai_design_report: (data as { ai_design_report?: unknown }).ai_design_report || null,
       };
       
       setPlanificacion(planificacionConverted as unknown as Planificacion);
@@ -405,22 +428,14 @@ export default function PlanificacionWorkspace() {
         ...(attachedMaterials.length > 0 && { materialsContext })
       };
 
-      const timeoutMs = 120000;
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Timeout generando plan de sesión (${timeoutMs / 1000}s)`)), timeoutMs)
-      );
-      const invokePromise = supabase.functions.invoke('generate-plan-completo', {
-        body: payload
-      });
-      const { data, error } = await Promise.race([invokePromise, timeoutPromise]) as Awaited<typeof invokePromise>;
+      const { data, error: invokeError } = await invokeGeneratePlanCompleto(payload);
 
-      if (error) {
-        console.error('[GEN_PLAN_FRONTEND] Function error:', error);
-        const msg = error.message || '';
+      if (invokeError) {
+        console.error('[GEN_PLAN_FRONTEND] Function error:', invokeError);
+        const msg = invokeError.message || '';
         if (
           msg.includes('NOT_FOUND') ||
-          msg.includes('Requested function was not found') ||
-          (error as { status?: number }).status === 404
+          msg.includes('Requested function was not found')
         ) {
           throw new Error(
             'La función de generación de planes no está disponible en el servidor. Ejecutá `npm run supabase:deploy:plans` o contactá al administrador.'
@@ -1037,7 +1052,13 @@ export default function PlanificacionWorkspace() {
         </div>
 
         {/* Main Workspace */}
-        <div className="container mx-auto py-6">
+        <div className="container mx-auto py-6 space-y-4">
+          {linkedPrograma && (
+            <ProgramaAnualLinkBanner
+              programaId={linkedPrograma.id}
+              programaNombre={linkedPrograma.nombre}
+            />
+          )}
           <div className="grid grid-cols-12 gap-6">
             
             {/* Row 1: Sesiones Pendientes + Calendario */}

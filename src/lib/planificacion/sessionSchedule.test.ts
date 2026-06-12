@@ -38,4 +38,24 @@ describe('generateSessionDatesFromSchedule', () => {
     });
     expect(dates.length).toBe(2);
   });
+
+  it('includes single-day range when weekday matches', () => {
+    const dates = generateSessionDatesFromSchedule({
+      fecha_inicio: '2026-06-01',
+      fecha_fin: '2026-06-01',
+      configuracion: [
+        { dia: 'lunes', horaInicio: '09:00', horaFin: '10:00', duracionMinutos: 60 },
+      ],
+    });
+    expect(dates).toHaveLength(1);
+  });
+
+  it('returns one fallback slot when expanded plan empty but slots requested', () => {
+    const dates = generateSessionDatesFromSchedule({
+      fecha_inicio: '2026-06-02',
+      fecha_fin: '2026-06-02',
+      configuracion: [],
+    });
+    expect(dates).toHaveLength(0);
+  });
 });

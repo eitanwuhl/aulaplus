@@ -122,12 +122,23 @@ export function useCreateAnnualProgram() {
 
 export function useUpdateProgramEstado(
   programaId: string,
-  options?: { ownerUserId?: string; schoolId?: string }
+  options?: {
+    ownerUserId?: string;
+    schoolId?: string;
+    actorUserId?: string;
+    actorIsAdmin?: boolean;
+  }
 ) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (estado: ProgramaEstado) => {
-      const result = await updateProgramEstado(programaId, estado);
+      const result = await updateProgramEstado(
+        programaId,
+        estado,
+        options?.actorUserId
+          ? { userId: options.actorUserId, isAdmin: options.actorIsAdmin ?? false }
+          : undefined
+      );
       if (result.error) throw new Error(result.error);
     },
     onSuccess: () => {

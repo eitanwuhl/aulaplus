@@ -241,9 +241,17 @@ export function runAllTests(): { total: number; passed: number; failed: number; 
   return { total: results.length, passed, failed, results };
 }
 
-/**
- * Manual verification function showing detailed output
- */
+import { describe, expect, it } from 'vitest';
+
+describe('buildPerStudentReminders', () => {
+  it('passes all reminder builder tests', () => {
+    const { failed, results } = runAllTests();
+    const errors = results.filter((r) => !r.passed).map((r) => `${r.name}: ${r.error ?? ''}`);
+    expect(failed, errors.join('\n')).toBe(0);
+  });
+});
+
+/** Manual verification function showing detailed output */
 export function manualVerification() {
   console.log('=== Manual Verification of buildPerStudentReminders ===');
   

@@ -12,6 +12,7 @@ import type {
   ProgramaUnidad,
   ProgramaUnidadEstado,
 } from '@/types/annualProgram';
+import { canTransitionProgramEstado } from '@/lib/annualProgram/annualProgramWorkflow';
 import { DEFAULT_ANIO_LECTIVO } from '@/lib/annualProgram/constants';
 
 const COVERAGE_ITEM_TYPES = ['contenido', 'progresion', 'learning_objective', 'materia', 'tramo'];
@@ -189,14 +190,44 @@ export async function createProgram(input: {
     .select()
     .single();
 
-  if (error) return { error: error.message };
+  if (error) {
+    if (error.code === '23505') {
+      return {
+        error:
+          'Ya existe un programa para este grupo, materia y año lectivo. Abrí el existente desde la lista.',
+      };
+    }
+    return { error: error.message };
+  }
   return { data: { ...(data as GrupoPrograma), unidades: [] } };
 }
 
 export async function updateProgramEstado(
   programaId: string,
-  estado: ProgramaEstado
+  estado: ProgramaEstado,
+  actor?: { userId: string; isAdmin: boolean }
 ): Promise<{ error?: string }> {
+  if (actor) {
+    const { data: current, error: fetchErr } = await supabase
+      .from('grupo_programas')
+      .select('estado, user_id')
+      .eq('id', programaId)
+      .maybeSingle();
+
+    if (fetchErr) return { error: fetchErr.message };
+    if (!current) return { error: 'Programa no encontrado.' };
+
+    const isOwner = current.user_id === actor.userId;
+    if (
+      !canTransitionProgramEstado(current.estado as ProgramaEstado, estado, {
+        isOwner,
+        isAdmin: actor.isAdmin,
+      })
+    ) {
+      return { error: 'Transición de estado no permitida.' };
+    }
+  }
+
   const { error } = await supabase
     .from('grupo_programas')
     .update({ estado, updated_at: new Date().toISOString() })

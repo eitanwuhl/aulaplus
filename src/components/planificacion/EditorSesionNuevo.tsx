@@ -19,6 +19,7 @@ import { PlanningAIDesignReport } from './PlanningAIDesignReport';
 import type { PlanningAIDesignReportData } from './PlanningAIDesignReport';
 import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
 import { buildUnitContextForSession } from '@/services/planning/sessionUnitContext';
+import { invokeGeneratePlanCompleto } from '@/services/planning/generatePlanCompleto';
 
 interface EditorSesionNuevoProps {
   sesion: SesionClase | null;
@@ -411,15 +412,13 @@ export function EditorSesionNuevo({
 
       console.log('Solicitando modificación con payload:', payload);
 
-      const { data, error } = await supabase.functions.invoke('generate-plan-completo', {
-        body: payload
-      });
+      const { data, error: invokeError } = await invokeGeneratePlanCompleto(payload);
 
-      if (error) {
-        throw { 
-          message: error.message, 
-          code: error.code || 'FUNCTION_ERROR',
-          details: error
+      if (invokeError) {
+        throw {
+          message: invokeError.message,
+          code: 'FUNCTION_ERROR',
+          details: invokeError,
         };
       }
 
@@ -559,15 +558,13 @@ export function EditorSesionNuevo({
 
       console.log('Generando plan inicial con payload:', payload);
 
-      const { data, error } = await supabase.functions.invoke('generate-plan-completo', {
-        body: payload
-      });
+      const { data, error: invokeError } = await invokeGeneratePlanCompleto(payload);
 
-      if (error) {
-        throw { 
-          message: error.message, 
-          code: error.code || 'FUNCTION_ERROR',
-          details: error
+      if (invokeError) {
+        throw {
+          message: invokeError.message,
+          code: 'FUNCTION_ERROR',
+          details: invokeError,
         };
       }
 

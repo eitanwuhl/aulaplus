@@ -167,7 +167,9 @@ export function enforceForEvaluation(students: Student[]): EvaluationEnforcement
   const perStudentReminders = new Map<string, string[]>();
 
   // DIAGNOSTIC MODE (NOT gated by import.meta.env.DEV)
-  const DIAGNOSTIC_MODE = (window as any).__CONTEMPLACIONES_DEBUG__ === true;
+  const DIAGNOSTIC_MODE =
+    typeof window !== 'undefined' &&
+    (window as any).__CONTEMPLACIONES_DEBUG__ === true;
   
   if (DIAGNOSTIC_MODE) {
     console.log('[ENFORCEMENT_DIAG] start', { 

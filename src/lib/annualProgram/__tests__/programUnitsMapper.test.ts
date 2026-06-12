@@ -66,4 +66,36 @@ describe('programUnitsToWizardUnits', () => {
     const result = programUnitsToWizardUnits([unit({ id: 'only-id' })], new Map());
     expect(result[0].contenido_id).toBe('only-id');
   });
+
+  it('joins multiple catalog labels in contenido_texto', () => {
+    const catalog = new Map<string, CatalogItemForPlanning>([
+      [
+        'cat-1',
+        { id: 'cat-1', tipo: 'contenido', codigo: 'A', nombre: 'Primero', descripcion: null, nivel: null, materia: 'H' },
+      ],
+      [
+        'cat-2',
+        { id: 'cat-2', tipo: 'contenido', codigo: 'B', nombre: 'Segundo', descripcion: null, nivel: null, materia: 'H' },
+      ],
+    ]);
+    const result = programUnitsToWizardUnits(
+      [unit({ catalog_item_ids: ['cat-1', 'cat-2'], nombre: 'Unidad X' })],
+      catalog
+    );
+    expect(result[0].contenido_texto).toContain('Primero');
+    expect(result[0].contenido_texto).toContain('Segundo');
+  });
+
+  it('preserves competencias and clases_estimadas', () => {
+    const result = programUnitsToWizardUnits(
+      [unit({ competencias_ids: ['c1', 'c2'], clases_estimadas: 4 })],
+      new Map()
+    );
+    expect(result[0].competencias_ids).toEqual(['c1', 'c2']);
+    expect(result[0].clases_estimadas).toBe(4);
+  });
+
+  it('returns empty array for no units', () => {
+    expect(programUnitsToWizardUnits([], new Map())).toEqual([]);
+  });
 });
