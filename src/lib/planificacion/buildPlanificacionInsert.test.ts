@@ -54,6 +54,8 @@ describe('buildPlanificacionInsert', () => {
     expect(payload.fecha_inicio).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(payload.fecha_fin).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(payload.is_saved).toBe(false);
+    expect(payload.horas_semanales).toBe(0);
+    expect(payload.configuracion_horario).toEqual([]);
   });
 
   it('aggregates unit material plan', () => {

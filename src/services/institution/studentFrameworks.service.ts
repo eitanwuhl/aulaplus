@@ -2,6 +2,7 @@
  * Module 1 — per-student curriculum frameworks (doble titulación).
  */
 
+import { parseStudentFrameworks } from '@/lib/institution/institutionRules';
 import { supabase } from '@/integrations/supabase/client';
 import type { CurriculumFramework } from '@/types/institution';
 
@@ -12,13 +13,6 @@ export type StudentFrameworkAssignment = {
   groupName: string;
   frameworks: CurriculumFramework[];
 };
-
-function parseFrameworks(raw: unknown): CurriculumFramework[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (x): x is CurriculumFramework => typeof x === 'string' && x.length > 0
-  );
-}
 
 export async function fetchStudentFrameworkAssignments(
   schoolId: string
@@ -46,7 +40,7 @@ export async function fetchStudentFrameworkAssignments(
       displayName: row.display_name,
       groupId: row.school_group_id,
       groupName: groupNames.get(row.school_group_id) ?? row.school_group_id,
-      frameworks: parseFrameworks(row.student_frameworks),
+      frameworks: parseStudentFrameworks(row.student_frameworks),
     })),
   };
 }

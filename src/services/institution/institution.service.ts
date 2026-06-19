@@ -2,6 +2,10 @@
  * Module 1 — institutional configuration API (Supabase).
  */
 
+import {
+  parseInstitutionSettings,
+  validateSchoolFrameworks,
+} from '@/lib/institution/institutionRules';
 import { supabase } from '@/integrations/supabase/client';
 import type {
   CurriculumFramework,
@@ -10,13 +14,6 @@ import type {
   InstitutionSnapshot,
   SchoolCurriculumFrameworkRow,
 } from '@/types/institution';
-
-function parseSettings(raw: unknown): InstitutionSettings {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    return raw as InstitutionSettings;
-  }
-  return {};
-}
 
 export async function fetchInstitutionSnapshot(
   schoolId: string
@@ -50,7 +47,7 @@ export async function fetchInstitutionSnapshot(
     data: {
       schoolId: school.id,
       schoolName: school.name,
-      settings: parseSettings(school.institution_settings),
+      settings: parseInstitutionSettings(school.institution_settings),
       onboardingCompleted: Boolean(school.onboarding_completed_at),
       activeFrameworks: (frameworks ?? []) as SchoolCurriculumFrameworkRow[],
     },
@@ -81,9 +78,8 @@ export async function setSchoolFrameworks(
   frameworks: CurriculumFramework[]
 ): Promise<{ error?: string }> {
   const unique = [...new Set(frameworks)];
-  if (!unique.includes('anep_ebi')) {
-    return { error: 'ANEP MCN/EBI es obligatorio como marco base.' };
-  }
+  const frameworkError = validateSchoolFrameworks(unique);
+  if (frameworkError) return { error: frameworkError };
 
   const { data: existing, error: listErr } = await supabase
     .from('school_curriculum_frameworks')

@@ -1,4 +1,4 @@
-
+import { lazy, Suspense } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -18,7 +18,7 @@ import EvaluacionesChoice from "./pages/EvaluacionesChoice";
 import MisEvaluaciones from "./pages/MisEvaluaciones";
 import EvaluacionDetalle from "./pages/EvaluacionDetalle";
 import PlanificacionClase from "./pages/PlanificacionClase";
-import PlanificacionWizard from "./pages/PlanificacionWizard";
+const PlanificacionWizard = lazy(() => import("./pages/PlanificacionWizard"));
 import PlanificacionWorkspace from "./pages/PlanificacionWorkspace";
 import MisPlanificaciones from "./pages/MisPlanificaciones";
 import Comunicaciones from "./pages/Comunicaciones";
@@ -162,7 +162,9 @@ const AppRoutes = () => {
       } />
       <Route path="/planificacion/nuevo" element={
         <ProtectedTeacherRoute>
-          <PlanificacionWizard />
+          <Suspense fallback={<AuthRouteFallback />}>
+            <PlanificacionWizard />
+          </Suspense>
         </ProtectedTeacherRoute>
       } />
       <Route path="/planificacion/:id" element={

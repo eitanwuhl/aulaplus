@@ -38,6 +38,12 @@ npm run supabase:gen-types
 | `/programa-anual/:id` | Editor + workflow de estados |
 | `/planificacion/nuevo?grupo=&materia=&programa=` | Deep link con import automático |
 
+## Tests
+
+```bash
+npm test -- src/lib/annualProgram src/services/annualProgram
+```
+
 ## Código
 
 - `src/services/annualProgram/annualProgram.service.ts`

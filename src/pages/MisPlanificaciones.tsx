@@ -1102,7 +1102,7 @@ const MisPlanificaciones: React.FC = () => {
       {/* Filtros Avanzados */}
       <Card>
         <CardContent className="p-6">
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
               <Input
@@ -1149,13 +1149,15 @@ const MisPlanificaciones: React.FC = () => {
               </SelectContent>
             </Select>
 
-            <DateRangePicker
-              value={fechaRange}
-              onChange={setFechaRange}
-              placeholder="Rango de fechas"
-            />
+            <div className="min-w-0 sm:col-span-2 lg:col-span-1">
+              <DateRangePicker
+                value={fechaRange}
+                onChange={setFechaRange}
+                placeholder="Rango de fechas"
+              />
+            </div>
             
-            <div className="text-sm text-muted-foreground flex items-center gap-2">
+            <div className="text-sm text-muted-foreground flex items-center gap-2 min-w-0 xl:col-span-1">
               <FileText className="w-4 h-4" />
               {planificacionesFiltradas.length} planificaciones
             </div>

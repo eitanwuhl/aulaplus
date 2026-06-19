@@ -78,7 +78,7 @@ export function ProgramUnitCard({
           />
         </div>
         <div className="space-y-2">
-          <Label>Contenidos del catálogo (Módulo 1)</Label>
+          <Label>Contenidos del catálogo</Label>
           <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto border rounded-md p-2">
             {contenidoItems.length === 0 && (
               <p className="text-xs text-muted-foreground">Sin ítems de contenido en el catálogo para esta materia.</p>

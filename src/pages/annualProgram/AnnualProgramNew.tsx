@@ -14,17 +14,11 @@ import {
 import { Input } from '@/components/ui/input';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import { useCreateAnnualProgram } from '@/hooks/useAnnualProgram';
 import { useTeacherGroups } from '@/hooks/useTeacherGroups';
-import { createProgram, resolveGroupFramework } from '@/services/annualProgram';
+import { resolveGroupFramework } from '@/services/annualProgram';
 import { frameworkLabel } from '@/lib/institution/curriculumFrameworks';
-
-const MATERIAS = [
-  'Historia',
-  'Literatura',
-  'Educación para la Ciudadanía',
-  'Matemática',
-  'Lengua Española',
-];
+import { PLANNING_MATERIAS } from '@/lib/planificacion/materiasCatalog';
 
 export default function AnnualProgramNew() {
   const navigate = useNavigate();
@@ -39,7 +33,7 @@ export default function AnnualProgramNew() {
   const [grupoId, setGrupoId] = useState('');
   const [materia, setMateria] = useState('');
   const [nombre, setNombre] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const createProgram = useCreateAnnualProgram();
 
   const handleCreate = async () => {
     if (!schoolId || !userId || !grupoId || !materia) {
@@ -51,32 +45,28 @@ export default function AnnualProgramNew() {
       return;
     }
 
-    setSubmitting(true);
     const { framework } = await resolveGroupFramework(schoolId, grupoId);
-    const result = await createProgram({
-      schoolId,
-      grupoId,
-      materia,
-      userId,
-      marcoPlanificacion: framework,
-      nombre: nombre.trim() || undefined,
-    });
-    setSubmitting(false);
-
-    if (result.error || !result.data) {
+    try {
+      const program = await createProgram.mutateAsync({
+        schoolId,
+        grupoId,
+        materia,
+        userId,
+        marcoPlanificacion: framework,
+        nombre: nombre.trim() || undefined,
+      });
+      toast({
+        title: 'Programa creado',
+        description: `${frameworkLabel(framework)} · ${materia}`,
+      });
+      navigate(`/programa-anual/${program.id}`);
+    } catch (e) {
       toast({
         title: 'No se pudo crear',
-        description: result.error ?? 'Error desconocido',
+        description: e instanceof Error ? e.message : 'Error desconocido',
         variant: 'destructive',
       });
-      return;
     }
-
-    toast({
-      title: 'Programa creado',
-      description: `${frameworkLabel(framework)} · ${materia}`,
-    });
-    navigate(`/programa-anual/${result.data.id}`);
   };
 
   return (
@@ -90,7 +80,7 @@ export default function AnnualProgramNew() {
         <CardHeader>
           <CardTitle>Nuevo programa anual</CardTitle>
           <CardDescription>
-            Un programa por grupo, materia y año lectivo. El marco se toma del grupo (Módulo 1).
+            Unico por grupo y materia. 
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -117,7 +107,7 @@ export default function AnnualProgramNew() {
                 <SelectValue placeholder="Seleccionar materia" />
               </SelectTrigger>
               <SelectContent>
-                {MATERIAS.map((m) => (
+                {PLANNING_MATERIAS.map((m) => (
                   <SelectItem key={m} value={m}>
                     {m}
                   </SelectItem>
@@ -137,7 +127,7 @@ export default function AnnualProgramNew() {
 
           <Button
             className="w-full"
-            disabled={submitting}
+            disabled={createProgram.isPending}
             onClick={() => void handleCreate()}
           >
             Crear y editar unidades

@@ -27,9 +27,12 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" className="w-full justify-start text-left font-normal">
-          <CalendarIcon className="mr-2 h-4 w-4" />
-          {formatRange(value)}
+        <Button
+          variant="outline"
+          className="w-full min-w-0 justify-start text-left font-normal"
+        >
+          <CalendarIcon className="mr-2 h-4 w-4 shrink-0" />
+          <span className="truncate">{formatRange(value)}</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-auto p-0" align="start">

@@ -157,6 +157,8 @@ export interface WizardData {
   planificacionId?: string;
   /** Module 2: programa anual de origen */
   programa_id?: string;
+  /** Cached after create — used for batch AI retry */
+  planificacionNivel?: string;
 }
 
 export interface AlertaGrupo {

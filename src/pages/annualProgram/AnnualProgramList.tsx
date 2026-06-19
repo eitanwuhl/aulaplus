@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSchoolAnnualPrograms, useTeacherAnnualPrograms } from '@/hooks/useAnnualProgram';
+import { useTeacherGroups } from '@/hooks/useTeacherGroups';
 import { frameworkLabel, canManageInstitution } from '@/lib/institution/curriculumFrameworks';
 import { DEFAULT_ANIO_LECTIVO } from '@/lib/annualProgram/constants';
 import type { GrupoPrograma, ProgramaEstado } from '@/types/annualProgram';
@@ -28,7 +29,13 @@ const ESTADO_VARIANT: Record<ProgramaEstado, 'secondary' | 'outline' | 'default'
   en_uso: 'default',
 };
 
-function ProgramCard({ program }: { program: GrupoPrograma }) {
+function ProgramCard({
+  program,
+  groupLabel,
+}: {
+  program: GrupoPrograma;
+  groupLabel?: string;
+}) {
   return (
     <Card className="hover:shadow-md transition-shadow">
       <CardHeader className="pb-2">
@@ -38,7 +45,8 @@ function ProgramCard({ program }: { program: GrupoPrograma }) {
               {program.nombre ?? `${program.materia} ${program.anio_lectivo}`}
             </CardTitle>
             <CardDescription>
-              Grupo {program.grupo_id} · {program.materia} · {frameworkLabel(program.marco_planificacion)}
+              Grupo {groupLabel ?? program.grupo_id} · {program.materia} ·{' '}
+              {frameworkLabel(program.marco_planificacion)}
             </CardDescription>
           </div>
           <Badge variant={ESTADO_VARIANT[program.estado]}>{ESTADO_LABEL[program.estado]}</Badge>
@@ -65,6 +73,11 @@ export default function AnnualProgramList() {
 
   const teacherQuery = useTeacherAnnualPrograms(userId, !isReviewer);
   const schoolQuery = useSchoolAnnualPrograms(schoolId, isReviewer);
+  const { data: groups = [] } = useTeacherGroups({ userId, enabled: Boolean(userId) });
+  const groupNameById = useMemo(
+    () => new Map(groups.map((g) => [g.id, g.name])),
+    [groups]
+  );
 
   const programs = isReviewer ? schoolQuery.data ?? [] : teacherQuery.data ?? [];
   const isLoading = isReviewer ? schoolQuery.isLoading : teacherQuery.isLoading;
@@ -115,7 +128,7 @@ export default function AnnualProgramList() {
           ) : (
             <div className="grid gap-4">
               {pendingReview.map((p) => (
-                <ProgramCard key={p.id} program={p} />
+                <ProgramCard key={p.id} program={p} groupLabel={groupNameById.get(p.grupo_id)} />
               ))}
             </div>
           )}
@@ -141,7 +154,7 @@ export default function AnnualProgramList() {
           {isReviewer && <h2 className="text-lg font-semibold">Todos los programas del liceo</h2>}
           <div className="grid gap-4">
             {(isReviewer ? otherPrograms : sorted).map((p) => (
-              <ProgramCard key={p.id} program={p} />
+              <ProgramCard key={p.id} program={p} groupLabel={groupNameById.get(p.grupo_id)} />
             ))}
           </div>
         </section>

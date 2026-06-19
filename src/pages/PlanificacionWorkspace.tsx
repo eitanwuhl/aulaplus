@@ -24,6 +24,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { sanitizePlanningAiDesignReport } from '@/services/planning/teacherSafeAiReport';
 import { buildUnitContextForSession } from '@/services/planning/sessionUnitContext';
 import { invokeGeneratePlanCompleto } from '@/services/planning/generatePlanCompleto';
+import { savePlanificacionToLibrary } from '@/services/planning/savePlanificacionToLibrary';
 import { fetchProgramById } from '@/services/annualProgram';
 import { ProgramaAnualLinkBanner } from '@/components/planificacion/ProgramaAnualLinkBanner';
 
@@ -670,45 +671,42 @@ export default function PlanificacionWorkspace() {
 
     setIsSaving(true);
     try {
-      const { error } = await supabase
-        .from('planificaciones')
-        .update({
-          nombre: customNombre.trim(),
-          is_saved: true,
-          saved_at: new Date().toISOString()
-        } as any)
-        .eq('id', planificacion.id);
+      const saveResult = await savePlanificacionToLibrary({
+        planificacionId: planificacion.id,
+        nombre: customNombre,
+      });
 
-      if (error) {
-        // GUARDRAIL: Si las columnas no existen (PGRST204), mostrar error claro
-        if (error.code === 'PGRST204' || error.message.includes('is_saved') || error.message.includes('nombre') || error.message.includes('saved_at')) {
-          console.error('? MIGRACI?N FALTANTE: Columnas is_saved/nombre/saved_at no existen en planificaciones');
+      if (!saveResult.ok) {
+        if (saveResult.migrationMissing) {
           toast({
-            title: "Error de Base de Datos",
-            description: "Falta aplicar migraci?n de planificaciones. Por favor ejecuta: supabase db push",
-            variant: "destructive"
+            title: 'Error de Base de Datos',
+            description: saveResult.error,
+            variant: 'destructive',
           });
           setIsSaving(false);
           setSaveDialogOpen(false);
           return;
         }
-        throw error;
+        throw new Error(saveResult.error);
       }
 
-      // Update local state
-      setPlanificacion(prev => prev ? {
-        ...prev,
-        nombre: customNombre.trim(),
-        is_saved: true,
-        saved_at: new Date().toISOString()
-      } : null);
+      setPlanificacion((prev) =>
+        prev
+          ? {
+              ...prev,
+              nombre: saveResult.nombre,
+              is_saved: true,
+              saved_at: saveResult.savedAt,
+            }
+          : null
+      );
 
       setSaveDialogOpen(false);
       setCustomNombre('');
 
       toast({
-        title: "Planificaci?n guardada",
-        description: `"${customNombre.trim()}" se agreg? a Mis Planificaciones`,
+        title: 'Planificación guardada',
+        description: `"${saveResult.nombre}" se agregó a Mis Planificaciones`,
       });
 
     } catch (error: any) {

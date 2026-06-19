@@ -1,3 +1,7 @@
+import {
+  expandUnitsToSessionPlan,
+  mapSessionsToUnits,
+} from '@/lib/planificacion/unitSessionPlan';
 import type { UnidadDidactica } from '@/types/planificacion';
 
 export interface UnitContextForPayload {
@@ -6,67 +10,6 @@ export interface UnitContextForPayload {
   claseEnUnidad: number;
   totalClasesUnidad: number;
   isExtraSlot?: boolean;
-}
-
-interface UnitAssignmentMetadata {
-  unidadId: string;
-  contenido_texto: string;
-  claseEnUnidad: number;
-  totalClasesUnidad: number;
-  isExtraSlot?: boolean;
-}
-
-function expandUnitsToSessionPlan(unidades: UnidadDidactica[]): UnitAssignmentMetadata[] {
-  const expanded: UnitAssignmentMetadata[] = [];
-
-  for (const unidad of unidades) {
-    const totalClases =
-      unidad.clases_estimadas && unidad.clases_estimadas > 0 && !isNaN(unidad.clases_estimadas)
-        ? unidad.clases_estimadas
-        : 1;
-
-    for (let claseNum = 1; claseNum <= totalClases; claseNum++) {
-      expanded.push({
-        unidadId: unidad.id,
-        contenido_texto: unidad.contenido_texto,
-        claseEnUnidad: claseNum,
-        totalClasesUnidad: totalClases,
-        isExtraSlot: false,
-      });
-    }
-  }
-
-  return expanded;
-}
-
-function mapSessionsToUnits(totalSlots: number, expandedPlan: UnitAssignmentMetadata[]): UnitAssignmentMetadata[] {
-  if (expandedPlan.length === 0) {
-    return Array.from({ length: Math.max(totalSlots, 1) }, () => ({
-      unidadId: '',
-      contenido_texto: '',
-      claseEnUnidad: 1,
-      totalClasesUnidad: 1,
-      isExtraSlot: false,
-    }));
-  }
-
-  if (totalSlots <= expandedPlan.length) {
-    return expandedPlan.slice(0, totalSlots);
-  }
-
-  const remaining = totalSlots - expandedPlan.length;
-  const lastUnit = expandedPlan[expandedPlan.length - 1];
-
-  const additionalSessions: UnitAssignmentMetadata[] = [];
-  for (let i = 1; i <= remaining; i++) {
-    additionalSessions.push({
-      ...lastUnit,
-      claseEnUnidad: lastUnit.totalClasesUnidad + i,
-      isExtraSlot: true,
-    });
-  }
-
-  return [...expandedPlan, ...additionalSessions];
 }
 
 export function buildUnitContextForSession(params: {

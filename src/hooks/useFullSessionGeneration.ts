@@ -4,6 +4,10 @@ import { SesionClase, Planificacion, DistribucionModalidades, UnidadDidactica, U
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { appendInstitutionToPromptText } from '@/lib/institution/buildInstitutionContextForAI';
 import { loadGroupContext } from '@/services/groupContext/provider';
+import {
+  expandUnitsToSessionPlan,
+  mapSessionsToUnits,
+} from '@/lib/planificacion/unitSessionPlan';
 
 interface SessionGenerationContext {
   planificacion: Planificacion;
@@ -30,7 +34,9 @@ export const useFullSessionGeneration = () => {
       
       // PHASE 1: Expandir unidades según clases_estimadas y mapear a sesiones
       const expandedPlan = expandUnitsToSessionPlan(unidadesDidacticas);
-      const sessionAssignments = mapSessionsToUnits(fechasSesiones.length, expandedPlan);
+      const sessionAssignments = mapSessionsToUnits(fechasSesiones.length, expandedPlan, {
+        fallbackContenido: 'Contenido general',
+      });
       
       // DEV-only: Log resumen de asignaciones
       if (import.meta.env.DEV) {
@@ -137,75 +143,6 @@ export const useFullSessionGeneration = () => {
     setError
   };
 };
-
-// PHASE 1: Expandir unidades didácticas según clases_estimadas
-function expandUnitsToSessionPlan(
-  unidades: UnidadDidactica[]
-): UnitAssignmentMetadata[] {
-  const expanded: UnitAssignmentMetadata[] = [];
-  
-  for (let i = 0; i < unidades.length; i++) {
-    const unidad = unidades[i];
-    // Validar clases_estimadas: si es <= 0 o NaN, usar 1 como default
-    const totalClases = (unidad.clases_estimadas && unidad.clases_estimadas > 0 && !isNaN(unidad.clases_estimadas))
-      ? unidad.clases_estimadas
-      : 1;
-    
-    for (let claseNum = 1; claseNum <= totalClases; claseNum++) {
-      expanded.push({
-        unidadIndex: i,
-        unidadId: unidad.id,
-        contenido_texto: unidad.contenido_texto,
-        competencias_ids: unidad.competencias_ids || [],
-        claseEnUnidad: claseNum,
-        totalClasesUnidad: totalClases,
-        isExtraSlot: false
-      });
-    }
-  }
-  
-  return expanded;
-}
-
-// PHASE 1: Mapear sesiones a unidades expandidas
-function mapSessionsToUnits(
-  totalSlots: number,
-  expandedPlan: UnitAssignmentMetadata[]
-): UnitAssignmentMetadata[] {
-  if (expandedPlan.length === 0) {
-    // Fallback: crear sesiones con contenido genérico
-    return Array.from({ length: totalSlots }, () => ({
-      unidadIndex: -1,
-      unidadId: '',
-      contenido_texto: 'Contenido general',
-      competencias_ids: [],
-      claseEnUnidad: 1,
-      totalClasesUnidad: 1,
-      isExtraSlot: false
-    }));
-  }
-  
-  if (totalSlots <= expandedPlan.length) {
-    // Caso normal o truncado: usar las primeras totalSlots
-    return expandedPlan.slice(0, totalSlots);
-  }
-  
-  // Caso: más sesiones que clases estimadas
-  // Repetir última unidad para sesiones adicionales
-  const remaining = totalSlots - expandedPlan.length;
-  const lastUnit = expandedPlan[expandedPlan.length - 1];
-  
-  const additionalSessions: UnitAssignmentMetadata[] = [];
-  for (let i = 1; i <= remaining; i++) {
-    additionalSessions.push({
-      ...lastUnit,
-      claseEnUnidad: lastUnit.totalClasesUnidad + i,
-      isExtraSlot: true
-    });
-  }
-  
-  return [...expandedPlan, ...additionalSessions];
-}
 
 // Helper para crear distribución proporcional de modalidades
 function createModalidadDistribution(totalSesiones: number, distribucion: DistribucionModalidades): string[] {

@@ -65,6 +65,19 @@ Contraseña: `DemoPassword2026!`
 
 **DIR001 no ingresa:** ejecutá `npm run seed:auth-users` (requiere `SUPABASE_SERVICE_ROLE_KEY` en `.env`) y después `npm run seed:login`. Alternativa: login con email `direccion.demo@example.com`.
 
+## Tests
+
+```bash
+npm test -- src/lib/institution src/services/institution
+```
+
+| Archivo | Cubre |
+|---------|--------|
+| `parseCatalogCsv.test.ts` | Parser CSV Cambridge/IB |
+| `curriculumFrameworks.test.ts` | Marcos y roles |
+| `buildInstitutionContextForAI.test.ts` | Bloque IA |
+| `institutionRules.test.ts` | ANEP obligatorio, settings, frameworks alumno |
+
 ## Código
 
 - `src/services/institution/catalog.service.ts` — versiones e importación

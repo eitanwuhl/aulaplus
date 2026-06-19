@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { programUnitsToWizardUnits } from '@/lib/annualProgram/programUnitsMapper';
 import { canImportProgramToWizard } from '@/lib/annualProgram/annualProgramWorkflow';
+import { validateSchoolFrameworks } from '@/lib/institution/institutionRules';
 import { computeProgramCoverage } from '@/lib/annualProgram/coverage';
 import { buildPlanificacionInsertPayload } from '@/lib/planificacion/buildPlanificacionInsert';
 import { validateWizardStep } from '@/lib/planificacion/wizardValidation';
@@ -120,6 +121,11 @@ describe('modules M1 → M2 integration', () => {
     const cov = computeProgramCoverage(catalog, unidades, 'Historia');
     expect(cov.percent).toBe(100);
     expect(cov.uncoveredItemIds).toEqual([]);
+  });
+
+  it('validates institution framework selection for annual programs', () => {
+    expect(validateSchoolFrameworks(['anep_ebi', 'cambridge'])).toBeNull();
+    expect(validateSchoolFrameworks(['cambridge'])).toContain('ANEP');
   });
 });
 

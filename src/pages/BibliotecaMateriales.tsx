@@ -28,6 +28,17 @@ import { es } from 'date-fns/locale';
 import { getSignedUrl } from '@/services/materials';
 import { toast } from '@/hooks/use-toast';
 
+function parseMaterialTags(tags: unknown): string[] {
+  if (tags == null) return [];
+  if (Array.isArray(tags)) {
+    return tags.map((t) => String(t).trim()).filter(Boolean);
+  }
+  if (typeof tags === 'string') {
+    return tags.split(',').map((t) => t.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 const BibliotecaMateriales: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
@@ -247,13 +258,15 @@ const BibliotecaMateriales: React.FC = () => {
                 {material.metadata && typeof material.metadata === 'object' && (
                   <div className="space-y-1">
                     {/* Tags */}
-                    {(material.metadata as any).tags && (
+                    {(material.metadata as { tags?: unknown }).tags && (
                       <div className="flex flex-wrap gap-1">
-                        {((material.metadata as any).tags as string).split(',').map((tag, idx) => (
-                          <Badge key={idx} variant="outline" className="text-xs">
-                            {tag.trim()}
-                          </Badge>
-                        ))}
+                        {parseMaterialTags((material.metadata as { tags?: unknown }).tags).map(
+                          (tag, idx) => (
+                            <Badge key={idx} variant="outline" className="text-xs">
+                              {tag}
+                            </Badge>
+                          )
+                        )}
                       </div>
                     )}
                     {/* Notes */}
