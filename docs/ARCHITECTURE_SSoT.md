@@ -11,6 +11,27 @@
 
 **AulaPlus** is an AI-powered pedagogical planning and evaluation platform for Uruguayan teachers (ANEP). It's a React SPA frontend with Supabase backend (PostgreSQL + Auth + Edge Functions) that generates lesson plans and evaluations using OpenAI GPT-4o-mini. The system enforces explicit save patterns, soft deletes, and Row Level Security for user data isolation. Key domain: contemplaciones (student accommodations) system with canonical catalog, deterministic enforcement, and localStorage persistence.
 
+```mermaid
+graph TB
+    subgraph "Frontend (React SPA)"
+        A[Pages] --> B[Components]
+        B --> C[Hooks]
+        C --> D[Lib/Utils]
+        D --> E[Supabase Client]
+    end
+
+    subgraph "Supabase Backend"
+        E --> F[PostgreSQL]
+        E --> G[Edge Functions]
+        E --> H[Auth]
+        G --> I[OpenAI API]
+    end
+
+    subgraph "External"
+        I --> J[OpenAI GPT-4o-mini]
+    end
+```
+
 ---
 
 ## Repo Map
@@ -333,6 +354,30 @@ supabase/
 **File**: `src/lib/planParser.ts`
 
 **Rules**: **CRITICAL** - Maintain backward compatibility, test with existing plan HTML, changes must be additive only
+
+---
+
+## Security Considerations
+
+**Visible in repo**:
+- CORS: edge functions allow all origins (`Access-Control-Allow-Origin: *`)
+- RLS: all tables enforce Row Level Security
+- Rate limiting: OpenAI retry logic only (3 attempts, exponential backoff)
+- Secrets: API keys live in Supabase Dashboard, not in code
+
+**Missing**:
+- No request throttling on the frontend
+- No input sanitization for user-generated HTML content
+- No rate limiting on Supabase queries
+
+## Coupling Hotspots
+
+Changes to these areas ripple across the system — treat them as guardrail-adjacent:
+
+1. **`planParser.ts` ↔ saved plans**: parser must keep understanding all existing plan HTML; breaking it breaks every saved plan.
+2. **`AuthContext.tsx` ↔ all protected routes**: every route depends on it; test the full auth flow after any change.
+3. **Database RLS policies ↔ all queries**: policy changes can silently break queries that relied on the previous shape.
+4. **Edge functions ↔ frontend hooks**: hooks expect specific response shapes; maintain the contract or version the function.
 
 ---
 

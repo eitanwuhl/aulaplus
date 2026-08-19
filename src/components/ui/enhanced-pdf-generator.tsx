@@ -233,10 +233,10 @@ export const ContentUtils = {
     return content
       .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
       .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-      .replace(/style\s*=\s*[\"'][^\"']*[\"']/gi, (match) => {
+      .replace(/style\s*=\s*["'][^"']*["']/gi, (match) => {
         // Keep only safe styles
         const safeStyles = ['color', 'background', 'font-size', 'font-weight', 'text-align', 'margin', 'padding', 'border'];
-        const styleContent = match.match(/[\"']([^\"]*)[\"']/)?. [1] || '';
+        const styleContent = match.match(/["']([^"]*)["']/)?.[1] || '';
         const filteredStyles = styleContent.split(';')
           .filter(style => safeStyles.some(safe => style.trim().startsWith(safe)))
           .join(';');

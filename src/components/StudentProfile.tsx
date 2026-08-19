@@ -7,10 +7,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { motion } from "framer-motion";
-import { ArrowLeft, Edit2, Save, X, Plus, FileText, BookOpen, TrendingUp, Activity, AlertTriangle, Calendar, User, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Edit2, Plus, Calendar, User, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { ProgressiveDisclosure } from "@/components/ui/progressive-disclosure";
 import TeacherInsights from "@/components/TeacherInsights";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import EvolucionAcademica from './EvolucionAcademica';
 import DashboardEvolucion from './DashboardEvolucion';
 import ReporteEjecutivo from './ReporteEjecutivo';
@@ -19,16 +19,14 @@ import GeneradorTextosBoletin from './GeneradorTextosBoletin';
 import NotificacionesAlumno from './NotificacionesAlumno';
 import SectionOrderManager from './SectionOrderManager';
 import { 
-  getAllContemplaciones, 
+  getAllContemplaciones,
   getContemplacionesForContext,
-  normalizeContemplacionId,
-  type Contemplacion 
+  normalizeContemplacionId
 } from '@/lib/contemplaciones/catalog';
 import {
   readSelected,
   writeSelected,
   readCustom,
-  writeCustom,
   toggleSelected,
   isSelected,
   addCustom,
@@ -81,20 +79,6 @@ interface StudentProfileProps {
 }
 
 const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
-  const [isEditingComentarios, setIsEditingComentarios] = useState(false);
-  const [editedComentarios, setEditedComentarios] = useState('');
-  const [editingNotes, setEditingNotes] = useState(false);
-  const [notes, setNotes] = useState(student.anotaciones);
-  const [editingQualitative, setEditingQualitative] = useState({
-    comprension: false,
-    resolucion: false,
-    expresion: false
-  });
-  const [qualitativeComments, setQualitativeComments] = useState({
-    comprension: "Demuestra buena comprensión de textos narrativos, pero necesita apoyo con textos expositivos.",
-    resolucion: "Aplica estrategias básicas correctamente. Requiere más práctica con problemas de múltiples pasos.",
-    expresion: "Excelente organización de ideas. Continuar trabajando la ortografía y puntuación."
-  });
 
   // State for contemplaciones - split by category
   const [selectedClase, setSelectedClase] = useState<string[]>(() => 
@@ -311,31 +295,6 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
     }
   ];
 
-  const contemplacionesDisponibles = [
-    "Evitar consignas extensas en evaluaciones escritas",
-    "Permitir evaluaciones orales en lugar de escritas", 
-    "Otorgar tiempo adicional en pruebas",
-    "Reducir la cantidad de ejercicios por consigna",
-    "Permitir el uso de procesador de texto",
-    "Evitar evaluaciones sorpresa o no anunciadas",
-    "Permitir el uso de imágenes como apoyo en consignas",
-    "Sentar al alumno cerca del docente o del pizarrón",
-    "Evitar lecturas extensas en voz alta frente al grupo",
-    "Brindar consignas escritas además de orales",
-    "Proporcionar ejemplos concretos antes de las actividades",
-    "Permitir descansos durante evaluaciones largas",
-    "Usar lenguaje claro y directo en las instrucciones",
-    "Evitar distractores visuales en el material de trabajo"
-  ];
-
-  const handleSaveNotes = () => {
-    setEditingNotes(false);
-    console.log("Guardando anotaciones:", notes);
-  };
-
-  const handleEditQualitative = (field: string) => {
-    setEditingQualitative(prev => ({ ...prev, [field]: !prev[field] }));
-  };
 
   const handleSectionOrderChange = (newOrder: typeof sectionOrder) => {
     setSectionOrder(newOrder);
@@ -486,7 +445,7 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                     </ProgressiveDisclosure>
                   );
                 
-                case 'contemplaciones':
+                case 'contemplaciones': {
                   // Helper function to render contemplaciones section
                   const renderContemplacionesSection = (
                     category: ContemplacionCategoryStorage,
@@ -677,7 +636,8 @@ const StudentProfile = ({ student, onBack }: StudentProfileProps) => {
                       </CardContent>
                     </Card>
                   );
-                
+                }
+
                 case 'informe':
                   return student.informeTecnico ? (
                     <ProgressiveDisclosure 

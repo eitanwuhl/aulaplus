@@ -1,0 +1,584 @@
+/**
+ * V2 Evaluation Renderer - Main Component
+ * 
+ * Renders a complete evaluation from normalized v2 JSON data.
+ * No HTML, no dangerouslySetInnerHTML - pure React components.
+ * 
+ * Phase 4: JSON-based rendering
+ */
+
+import React, { useMemo, useState, useRef } from 'react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Card, CardContent } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { AlertTriangle, FileWarning, Bug, FileDown } from 'lucide-react';
+import { 
+  V2Response, 
+  NormalizedEvaluation, 
+  NormalizationResult 
+} from '@/services/evaluations/v2Types';
+import { normalizeV2Response, canRenderV2 } from '@/services/evaluations/v2Normalizer';
+import { generateAcademicEvaluationPdf, getAcademicPdfFilename } from '@/components/evaluaciones/pdf';
+import EvalHeader from './EvalHeader';
+import MapTable from './MapTable';
+import EvalSection from './EvalSection';
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
+interface EvaluationRendererV2Props {
+  /** Raw v2 response from the API */
+  v2Response: V2Response | null;
+  /** Which version to render (A, B, or C) - controlled externally or internally */
+  selectedVersion?: 'A' | 'B' | 'C';
+  /** Callback when version changes */
+  onVersionChange?: (version: 'A' | 'B' | 'C') => void;
+  /** Loading state */
+  isLoading?: boolean;
+  /** Callback when v2 cannot be rendered (triggers fallback to v1) */
+  onRenderError?: (reason: string) => void;
+  /** Show debug panel (controlled by env flag) */
+  showDebug?: boolean;
+  /** Teacher name for academic PDF header (fallback "Docente") */
+  teacherName?: string | null;
+  /** When set, teacher can edit points in MapTable; updates are applied via this callback */
+  onV2ResponseChange?: (next: V2Response) => void;
+  /** Optional: show warning when point edit hits constraints (e.g. min points) */
+  onPointsWarning?: (message: string) => void;
+}
+
+// ============================================================================
+// LOADING STATE
+// ============================================================================
+
+const LoadingSkeleton: React.FC = () => (
+  <div className="space-y-6 animate-pulse">
+    <Card>
+      <CardContent className="p-6">
+        <Skeleton className="h-8 w-48 mb-4" />
+        <div className="grid grid-cols-4 gap-4">
+          <Skeleton className="h-5 w-full" />
+          <Skeleton className="h-5 w-full" />
+          <Skeleton className="h-5 w-full" />
+          <Skeleton className="h-5 w-full" />
+        </div>
+      </CardContent>
+    </Card>
+    <Card>
+      <CardContent className="p-6">
+        <Skeleton className="h-6 w-40 mb-4" />
+        <Skeleton className="h-32 w-full" />
+      </CardContent>
+    </Card>
+    <Card>
+      <CardContent className="p-6">
+        <Skeleton className="h-6 w-32 mb-4" />
+        <div className="space-y-4">
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-24 w-full" />
+        </div>
+      </CardContent>
+    </Card>
+  </div>
+);
+
+// ============================================================================
+// ERROR STATE
+// ============================================================================
+
+interface ErrorDisplayProps {
+  title: string;
+  description: string;
+  details?: string[];
+}
+
+const ErrorDisplay: React.FC<ErrorDisplayProps> = ({ title, description, details }) => (
+  <Alert variant="destructive" className="border-2">
+    <AlertTriangle className="h-5 w-5" />
+    <AlertTitle className="text-lg">{title}</AlertTitle>
+    <AlertDescription>
+      <p className="mb-2">{description}</p>
+      {details && details.length > 0 && (
+        <ul className="list-disc list-inside text-sm mt-2 space-y-1">
+          {details.map((d, i) => (
+            <li key={i}>{d}</li>
+          ))}
+        </ul>
+      )}
+    </AlertDescription>
+  </Alert>
+);
+
+// ============================================================================
+// DEBUG PANEL
+// ============================================================================
+
+interface DebugPanelProps {
+  normalization: NormalizationResult;
+  rawResponse: V2Response | null;
+}
+
+const OPEN_ENDED_TYPES = new Set(['essay', 'paragraph', 'short_answer', 'source_analysis', 'true_false_justify']);
+
+function isOpenEndedType(type: string): boolean {
+  return OPEN_ENDED_TYPES.has(type);
+}
+
+function getRawEquivalentOptionsCount(item: Record<string, unknown>): number {
+  const ero = item.equivalentResponseOptions;
+  if (!ero) return 0;
+  if (Array.isArray(ero)) return ero.length;
+  if (typeof ero === 'object' && ero !== null && Array.isArray((ero as Record<string, unknown>).options)) {
+    return ((ero as Record<string, unknown>).options as unknown[]).length;
+  }
+  return 0;
+}
+
+const DebugPanel: React.FC<DebugPanelProps> = ({ normalization, rawResponse }) => {
+  const showDebug = import.meta.env.VITE_DEBUG_EVAL_PIPELINE === 'true';
+  if (!showDebug) return null;
+
+  const rawSpec = rawResponse?.evaluationSpec;
+  const openEndedDiagnostics: Array<{
+    sectionTitle: string;
+    itemId: string;
+    type: string;
+    rawHasOptions: boolean;
+    rawOptionCount: number;
+    normalizedEnabled: boolean;
+    normalizedOptionCount: number;
+  }> = [];
+  if (rawSpec?.sections && normalization.evaluation?.sections) {
+    rawSpec.sections.forEach((sec: { id: string; title?: string; items?: Record<string, unknown>[] }, si: number) => {
+      const normSec = normalization.evaluation!.sections[si];
+      (sec.items || []).forEach((rawItem: Record<string, unknown>, ii: number) => {
+        const type = String(rawItem.type || '');
+        if (!isOpenEndedType(type)) return;
+        const normItem = normSec?.items?.[ii];
+        const rawCount = getRawEquivalentOptionsCount(rawItem);
+        openEndedDiagnostics.push({
+          sectionTitle: sec.title || sec.id,
+          itemId: String(rawItem.id || ii),
+          type,
+          rawHasOptions: rawCount > 0,
+          rawOptionCount: rawCount,
+          normalizedEnabled: Boolean(normItem?.responseOptions?.enabled),
+          normalizedOptionCount: normItem?.responseOptions?.options?.length ?? 0,
+        });
+      });
+    });
+  }
+
+  return (
+    <Card className="border-2 border-dashed border-purple-400 bg-purple-50 dark:bg-purple-950/20">
+      <CardContent className="p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Bug className="h-4 w-4 text-purple-600" />
+          <span className="font-mono text-sm font-bold text-purple-600">
+            V2 Renderer Debug
+          </span>
+        </div>
+        
+        <div className="space-y-2 text-xs font-mono">
+          <div>
+            <strong>V2 response used:</strong> {rawResponse?.evaluationSpec ? '✅ Yes' : '❌ No (V1 fallback)'}
+          </div>
+          <div>
+            <strong>Normalization success:</strong> {normalization.success ? '✅' : '❌'}
+          </div>
+
+          {openEndedDiagnostics.length > 0 && (
+            <div>
+              <strong>Inline response options (open-ended items):</strong>
+              <ul className="list-disc list-inside ml-2 mt-1 space-y-0.5">
+                {openEndedDiagnostics.map((d, i) => (
+                  <li key={i}>
+                    {d.sectionTitle} / {d.itemId} ({d.type}): raw equivalentResponseOptions={d.rawHasOptions ? `yes (${d.rawOptionCount})` : 'no'}, normalized responseOptions.enabled={d.normalizedEnabled ? 'yes' : 'no'}, options={d.normalizedOptionCount}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          
+          {normalization.warnings.length > 0 && (
+            <div>
+              <strong>Warnings ({normalization.warnings.length}):</strong>
+              <ul className="list-disc list-inside ml-2">
+                {normalization.warnings.map((w, i) => (
+                  <li key={i} className="text-amber-600">{w}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          
+          {normalization.errors.length > 0 && (
+            <div>
+              <strong>Errors ({normalization.errors.length}):</strong>
+              <ul className="list-disc list-inside ml-2">
+                {normalization.errors.map((e, i) => (
+                  <li key={i} className="text-red-600">{e}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          
+          {normalization.evaluation && (
+            <div>
+              <strong>Normalized data:</strong>
+              <div className="mt-1 p-2 bg-white dark:bg-gray-900 rounded border max-h-40 overflow-auto">
+                <pre className="text-[10px]">
+                  {JSON.stringify({
+                    sections: normalization.evaluation.sections.length,
+                    totalItems: normalization.evaluation.totalItems,
+                    totalPoints: normalization.evaluation.totalPoints,
+                    versions: normalization.evaluation.availableVersions.map(v => v.key),
+                  }, null, 2)}
+                </pre>
+              </div>
+            </div>
+          )}
+          
+          {rawResponse?.debug && (
+            <div>
+              <strong>API Debug:</strong>
+              <span className="ml-2">
+                model={rawResponse.debug.model}, 
+                attempt={rawResponse.debug.attempt},
+                extraction={rawResponse.debug.extractionMethod}
+              </span>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// ============================================================================
+// WARNINGS DISPLAY
+// ============================================================================
+
+interface WarningsDisplayProps {
+  warnings: string[];
+}
+
+const WarningsDisplay: React.FC<WarningsDisplayProps> = ({ warnings }) => {
+  if (warnings.length === 0) return null;
+
+  return (
+    <Alert className="border-amber-300 bg-amber-50 dark:bg-amber-950/20">
+      <FileWarning className="h-4 w-4 text-amber-600" />
+      <AlertTitle className="text-amber-800 dark:text-amber-200">
+        Advertencias de normalización
+      </AlertTitle>
+      <AlertDescription>
+        <ul className="list-disc list-inside text-sm text-amber-700 dark:text-amber-300 mt-1">
+          {warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      </AlertDescription>
+    </Alert>
+  );
+};
+
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
+
+export const EvaluationRendererV2: React.FC<EvaluationRendererV2Props> = ({
+  v2Response,
+  selectedVersion: externalVersion,
+  onVersionChange,
+  isLoading = false,
+  onRenderError,
+  showDebug,
+  teacherName,
+  onV2ResponseChange,
+  onPointsWarning,
+}) => {
+  // Internal version state if not controlled externally
+  const [internalVersion, setInternalVersion] = useState<'A' | 'B' | 'C'>('A');
+  const selectedVersion = externalVersion ?? internalVersion;
+  
+  // Ref for PDF export
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [isExportingAcademicPdf, setIsExportingAcademicPdf] = useState(false);
+
+  // DEBUG: Log every render to diagnose blank screen
+  console.log('[V2_RENDERER] Render called', {
+    hasV2Response: !!v2Response,
+    v2ResponseSuccess: v2Response?.success,
+    hasEvaluationSpec: !!v2Response?.evaluationSpec,
+    sectionsCount: v2Response?.evaluationSpec?.sections?.length,
+    selectedVersion,
+    isLoading
+  });
+
+  // Effective version: only use selectedVersion if it was actually generated (requestedVersions); otherwise A or first available
+  const effectiveVersion = ((): 'A' | 'B' | 'C' => {
+    const rv = v2Response?.requestedVersions;
+    if (!rv) return 'A';
+    if (rv[selectedVersion]) return selectedVersion;
+    if (rv.A) return 'A';
+    if (rv.B) return 'B';
+    if (rv.C) return 'C';
+    return 'A';
+  })();
+
+  // Normalize the response with effectiveVersion so content matches what we show (never render "B" content when only A exists)
+  const normalization = useMemo<NormalizationResult>(() => {
+    if (!v2Response) {
+      console.warn('[V2_RENDERER] No v2Response provided');
+      return {
+        success: false,
+        evaluation: null,
+        warnings: [],
+        errors: ['No v2 response provided'],
+      };
+    }
+
+    // Check if response can be rendered
+    const canRender = canRenderV2(v2Response);
+    console.log('[V2_RENDERER] canRenderV2 result:', canRender, {
+      success: v2Response.success,
+      hasSpec: !!v2Response.evaluationSpec,
+      sectionsLength: v2Response.evaluationSpec?.sections?.length,
+      firstSectionItems: v2Response.evaluationSpec?.sections?.[0]?.items?.length
+    });
+    
+    if (!canRender) {
+      return {
+        success: false,
+        evaluation: null,
+        warnings: [],
+        errors: ['V2 response does not meet minimum rendering requirements'],
+      };
+    }
+
+    const result = normalizeV2Response(v2Response, effectiveVersion);
+    console.log('[V2_RENDERER] normalization result:', {
+      success: result.success,
+      hasEvaluation: !!result.evaluation,
+      sectionsCount: result.evaluation?.sections?.length,
+      effectiveVersion,
+      warnings: result.warnings,
+      errors: result.errors
+    });
+    return result;
+  }, [v2Response, effectiveVersion]);
+
+  // Trigger fallback callback if normalization failed
+  // BUT do NOT trigger immediately - give UI a chance to show error state
+  React.useEffect(() => {
+    if (!normalization.success && onRenderError && v2Response) {
+      const reason = normalization.errors.join('; ') || 'Unknown normalization error';
+      console.warn('[V2_RENDERER] Normalization failed, will trigger fallback:', reason);
+      // Delay fallback to allow error UI to render first
+      const timer = setTimeout(() => {
+        onRenderError(reason);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [normalization.success, normalization.errors, onRenderError, v2Response]);
+
+  // Sync parent selectedVersion when current selection is not in available versions (e.g. only A generated but state was B)
+  React.useEffect(() => {
+    if (!normalization.success || !normalization.evaluation?.availableVersions?.length || !onVersionChange) return;
+    const available = normalization.evaluation.availableVersions.map((v) => v.key);
+    if (!available.includes(selectedVersion)) {
+      const first = normalization.evaluation.availableVersions[0]?.key ?? 'A';
+      onVersionChange(first);
+    }
+  }, [normalization.success, normalization.evaluation?.availableVersions, selectedVersion, onVersionChange]);
+
+  // Handle version change
+  const handleVersionChange = (version: 'A' | 'B' | 'C') => {
+    if (onVersionChange) {
+      onVersionChange(version);
+    } else {
+      setInternalVersion(version);
+    }
+  };
+
+  const handleExportAcademicPdf = async () => {
+    if (!normalization.success || !normalization.evaluation || isExportingAcademicPdf) return;
+    setIsExportingAcademicPdf(true);
+    try {
+      const blob = await generateAcademicEvaluationPdf({
+        evaluation: normalization.evaluation,
+        meta: normalization.rawSpec?.meta ?? undefined,
+        teacherName: teacherName ?? undefined,
+      });
+      const filename = getAcademicPdfFilename({
+        evaluation: normalization.evaluation,
+        meta: normalization.rawSpec?.meta ?? undefined,
+        devUniqueFilename: import.meta.env.DEV,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('[PDF_ACADEMIC] Error:', err);
+    } finally {
+      setIsExportingAcademicPdf(false);
+    }
+  };
+
+  // Loading state
+  if (isLoading) {
+    console.log('[V2_RENDERER] Showing loading skeleton');
+    return <LoadingSkeleton />;
+  }
+
+  // Error state (normalization failed) - ALWAYS show this, never return null
+  if (!normalization.success || !normalization.evaluation) {
+    console.log('[V2_RENDERER] Showing error state', { errors: normalization.errors });
+    return (
+      <div className="space-y-4">
+        <ErrorDisplay
+          title="No se pudo renderizar la evaluación"
+          description="El formato de la evaluación v2 no es compatible. Se utilizará el formato estándar."
+          details={normalization.errors}
+        />
+        {showDebug && (
+          <DebugPanel normalization={normalization} rawResponse={v2Response} />
+        )}
+      </div>
+    );
+  }
+
+  const evaluation = normalization.evaluation;
+  console.log('[V2_RENDERER] Rendering evaluation successfully', {
+    title: evaluation.title,
+    sectionsCount: evaluation.sections.length,
+    totalItems: evaluation.totalItems
+  });
+
+  // Get available versions from the response (only versions that were actually generated)
+  const availableVersions = evaluation.availableVersions || [{ key: 'A', label: 'Versión A' }];
+  const displayVersion = availableVersions.some((v) => v.key === selectedVersion) ? selectedVersion : (availableVersions[0]?.key ?? 'A');
+
+  // Success - render the evaluation
+  return (
+    <div className="space-y-6">
+      {/* Debug panel (if enabled) */}
+      {showDebug && (
+        <DebugPanel normalization={normalization} rawResponse={v2Response} />
+      )}
+
+      {/* Normalization warnings */}
+      <WarningsDisplay warnings={normalization.warnings} />
+
+      {/* Toolbar: Version Selector + PDF Export */}
+      <Card className="border-0 shadow-sm bg-white dark:bg-slate-900">
+        <CardContent className="p-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            {/* Version Selector: only show versions that were generated; value is displayVersion so we never show invalid selection */}
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-medium text-muted-foreground">Ver versión:</span>
+              <Select 
+                value={displayVersion} 
+                onValueChange={(v) => handleVersionChange(v as 'A' | 'B' | 'C')}
+              >
+                <SelectTrigger className="w-[200px]">
+                  <SelectValue placeholder="Seleccionar versión" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableVersions.map((v) => (
+                    <SelectItem key={v.key} value={v.key}>
+                      <div className="flex items-center gap-2">
+                        <span>{v.label}</span>
+                        {v.isBase && <Badge variant="outline" className="text-xs">base</Badge>}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              
+              {/* Version badges */}
+              <div className="hidden md:flex gap-1">
+                {availableVersions.map((v) => (
+                  <Badge
+                    key={v.key}
+                    variant={v.key === displayVersion ? 'default' : 'outline'}
+                    className={`cursor-pointer transition-colors ${
+                      v.key === selectedVersion ? '' : 'hover:bg-muted'
+                    }`}
+                    onClick={() => handleVersionChange(v.key)}
+                  >
+                    {v.key}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+
+            {/* Export: single PDF button (academic PDF) */}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={handleExportAcademicPdf}
+                disabled={isExportingAcademicPdf}
+                className="gap-2"
+              >
+                {isExportingAcademicPdf ? (
+                  <>
+                    <FileDown className="h-4 w-4 animate-spin" />
+                    Exportando...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="h-4 w-4" />
+                    Descargar PDF
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Main content (for PDF export) */}
+      <div ref={contentRef} className="space-y-6 print-content print:space-y-4">
+        {/* Header - PDF no break */}
+        <EvalHeader evaluation={evaluation} />
+
+        {/* Map of the test - PDF no break; editable when onV2ResponseChange provided (teacher) */}
+        <MapTable
+          evaluation={evaluation}
+          evaluationSpec={v2Response?.evaluationSpec ?? null}
+          editable={Boolean(onV2ResponseChange && v2Response?.evaluationSpec)}
+          onPointsChange={
+            onV2ResponseChange && v2Response
+              ? (updatedSpec) => onV2ResponseChange({ ...v2Response, evaluationSpec: updatedSpec })
+              : undefined
+          }
+          onWarning={onPointsWarning}
+        />
+
+        {/* Sections - Each section has pdf-no-break */}
+        <div className="space-y-6 print:space-y-4">
+          {evaluation.sections.map((section) => (
+            <EvalSection key={section.id} section={section} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default EvaluationRendererV2;

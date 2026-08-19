@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Bot, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { usePlanificacionWizard } from '@/hooks/usePlanificacionWizard';
 import { useFullSessionGeneration } from '@/hooks/useFullSessionGeneration';
@@ -16,11 +16,7 @@ import {
 } from '@/lib/competencyExtractor';
 import { normalizeArrayField } from '@/lib/normalizeSupabaseArrays';
 import { loadGroupContext } from '@/services/groupContext/provider';
-import { parsePlan, buildPlanHtml, buildPlanHtmlWithReminders, buildSanitizedLessonPlanHtml } from '@/lib/planParser';
-import { mockGroups } from '@/data/mockData';
-import type { Student as EnforcementStudent } from '@/lib/contemplaciones/enforcement';
-import { enforceForLessonPlan } from '@/lib/contemplaciones/enforcement';
-import { resolveMockGroup } from '@/utils/resolveMockGroup';
+import { buildSanitizedLessonPlanHtml } from '@/lib/planParser';
 
 // PHASE 1: Helper para expandir unidades según clases_estimadas (reutilizable)
 function expandUnitsToSessionPlan(
@@ -309,7 +305,7 @@ const generarPlanesAutomaticamente = async (
     console.log(`Generando planes para ${sesiones.length} sesiones...`);
 
     // PHASE 1: Obtener unidades didácticas y aplicar mapeo determinístico
-    const unidadesDidacticas: UnidadDidactica[] = (planificacion.unidades_didacticas as any) || [];
+    const unidadesDidacticas: UnidadDidactica[] = (planificacion.unidades_didacticas as unknown as UnidadDidactica[]) || [];
     const expandedPlan = expandUnitsToSessionPlan(unidadesDidacticas);
     const sessionAssignments = mapSessionsToUnits(sesiones.length, expandedPlan);
     
@@ -358,7 +354,10 @@ const generarPlanesAutomaticamente = async (
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     // FIX: Accumulate ai_design_report from all sessions
-    const accumulatedAiDesignReports: any[] = [];
+    const accumulatedAiDesignReports: {
+      sessionOrder: number;
+      report: { inputsUsed?: Record<string, boolean>; [key: string]: unknown } | null;
+    }[] = [];
     
     // Generar plan para cada sesión con reintentos
     for (let i = 0; i < sesiones.length; i++) {
@@ -579,7 +578,17 @@ const generarPlanesAutomaticamente = async (
             body: payload
           });
 
-          const { data, error } = await Promise.race([functionPromise, timeoutPromise]) as any;
+          const { data, error } = await Promise.race([functionPromise, timeoutPromise]) as {
+            data: {
+              plan_html?: string;
+              recursos?: unknown;
+              titulo?: string;
+              argumento_competencias?: unknown;
+              ai_design_report?: unknown;
+              [key: string]: unknown;
+            } | null;
+            error: { message?: string } | null;
+          };
 
           console.log(`Respuesta para sesión ${sesion.orden}:`, { data, error });
 
@@ -615,7 +624,16 @@ const generarPlanesAutomaticamente = async (
           });
           
           // Build update payload
-          const updatePayload: any = {
+          const updatePayload: {
+            plan_desarrollo: { html_completo: string };
+            argumento_competencias?: unknown;
+            recursos?: unknown;
+            contenidos_anep?: unknown;
+            competencias_anep?: unknown;
+            criterios_logro_anep?: unknown;
+            ai_design_report?: unknown;
+            titulo?: string;
+          } = {
             plan_desarrollo: { html_completo: finalHtml },
             argumento_competencias: data.argumento_competencias,
             recursos: normalizeArrayField(data.recursos),
@@ -788,7 +806,6 @@ export default function PlanificacionWizard() {
   const {
     wizardData,
     isLoading,
-    error,
     updatePaso,
     updateContexto,
     updateHorario,
@@ -796,13 +813,11 @@ export default function PlanificacionWizard() {
     updateTipoPlanificacion,
     validarPaso,
     generarSesionesEsquema,
-    reiniciarWizard,
-    isDataComplete,
     setIsLoading,
     setError
   } = usePlanificacionWizard();
 
-  const { generateAllSessions, isGenerating } = useFullSessionGeneration();
+  const { isGenerating } = useFullSessionGeneration();
 
   const handleNext = () => {
     const validacion = validarPaso(wizardData.paso);
@@ -811,7 +826,7 @@ export default function PlanificacionWizard() {
       if (wizardData.paso === 0 && wizardData.tipo_planificacion === 'sin_periodo') {
         updatePaso(2);
       } else {
-        updatePaso((wizardData.paso + 1) as any);
+        updatePaso((wizardData.paso + 1) as 0 | 1 | 2 | 3);
       }
     }
   };
@@ -822,7 +837,7 @@ export default function PlanificacionWizard() {
       if (wizardData.paso === 2 && wizardData.tipo_planificacion === 'sin_periodo') {
         updatePaso(0);
       } else {
-        updatePaso((wizardData.paso - 1) as any);
+        updatePaso((wizardData.paso - 1) as 0 | 1 | 2 | 3);
       }
     }
   };

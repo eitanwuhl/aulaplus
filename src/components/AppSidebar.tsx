@@ -10,7 +10,7 @@ import {
   Library
 } from "lucide-react"
 import { NavLink, useLocation } from "react-router-dom"
-import logo from "@/assets/logo/aulaplus-logo.png.png"
+import logo from "@/assets/logo/aulaplus-logo.png"
 
 import {
   Sidebar,

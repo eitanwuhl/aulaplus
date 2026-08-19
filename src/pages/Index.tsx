@@ -3,27 +3,18 @@ import { useState } from "react";
 import StudentProfile from "@/components/StudentProfile";
 import GroupProfile from "@/components/GroupProfile";
 import HeroSection from "@/components/HeroSection";
-import WhatIsSection from "@/components/WhatIsSection";
-import HowItWorksSection from "@/components/HowItWorksSection";
 import CRMDemoSection from "@/components/CRMDemoSection";
 import CTASection from "@/components/CTASection";
 import Footer from "@/components/Footer";
 import StudentDiagnostic from "./StudentDiagnostic";
-import DiagnosticResults from "@/components/DiagnosticResults";
-import { mockGroups, mockStudents } from "@/data/mockData";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { BarChart3, Users, BookOpen, Award } from "lucide-react";
+import { mockGroups, type Student, type Group } from "@/data/mockData";
 
 const Index = () => {
-  const [selectedStudent, setSelectedStudent] = useState<any>(null);
-  const [selectedGroup, setSelectedGroup] = useState<any>(null);
+  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
   const [viewingProfile, setViewingProfile] = useState<boolean>(false);
   const [viewingGroupProfile, setViewingGroupProfile] = useState<boolean>(false);
   const [showDiagnostic, setShowDiagnostic] = useState<boolean>(false);
-  const [showResults, setShowResults] = useState<boolean>(false);
-  const [studentData, setStudentData] = useState<any>(null);
 
   // Los datos se importan desde mockData.ts
 
@@ -32,13 +23,13 @@ const Index = () => {
     element?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const handleStudentClick = (student: any) => {
+  const handleStudentClick = (student: Student) => {
     setSelectedStudent(student);
     setViewingProfile(true);
     // No cambiar viewingGroupProfile aquí - mantener la referencia al grupo
   };
 
-  const handleGroupClick = (group: any) => {
+  const handleGroupClick = (group: Group) => {
     setSelectedGroup(group);
     setViewingGroupProfile(true);
   };
@@ -60,22 +51,8 @@ const Index = () => {
     setShowDiagnostic(true);
   };
 
-  const handleDiagnosticComplete = (data: any) => {
-    setStudentData(data);
-    setShowDiagnostic(false);
-    setShowResults(true);
-  };
-
-  const handleResultsContinue = () => {
-    setShowResults(false);
-  };
-
   if (showDiagnostic) {
     return <StudentDiagnostic />;
-  }
-
-  if (showResults && studentData) {
-    return <DiagnosticResults studentData={studentData} onContinue={handleResultsContinue} />;
   }
 
   // Mostrar perfil del estudiante (tiene prioridad sobre el perfil del grupo)

@@ -1,22 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { HTMLRenderer } from '@/components/evaluaciones/HTMLRenderer';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Clock, RefreshCw, FileText, Save, AlertTriangle, Wand2, FileDown, Bot, Sparkles } from 'lucide-react';
+import { Clock, RefreshCw, FileText, Wand2, FileDown, Bot } from 'lucide-react';
 import { SesionClase, PlanDesarrollo } from '@/types/planificacion';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
-import { generateSessionPlan, generateBlockPlan } from '@/lib/sessionPlanGenerator';
-import { getCompetenciaById } from '@/data/competencias';
-import { getCompetenciaCiudadaniaById } from '@/data/competenciasCiudadania';
-import { getCompetenciaLiteraturaById } from '@/data/competenciasLiteratura';
 import { PDFGenerator } from '@/components/PDFGenerator';
 
 interface EditorSesionTabsProps {
@@ -29,11 +20,10 @@ interface EditorSesionTabsProps {
 export const EditorSesionTabs: React.FC<EditorSesionTabsProps> = ({
   sesion,
   onActualizar,
-  competenciasDelPeriodo = [],
+  competenciasDelPeriodo: _competenciasDelPeriodo = [],
   planificacionId
 }) => {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState('plan');
   const [localPlan, setLocalPlan] = useState<PlanDesarrollo>({});
   const [fullHtmlPlan, setFullHtmlPlan] = useState<string>('');
   const [isAILoading, setIsAILoading] = useState(false);
@@ -41,12 +31,6 @@ export const EditorSesionTabs: React.FC<EditorSesionTabsProps> = ({
   const [isModificando, setIsModificando] = useState(false);
   const [instruccionesModificacion, setInstruccionesModificacion] = useState('');
 
-  const findCompetenciaById = (id: string) => {
-    return (
-      getCompetenciaById(id) || getCompetenciaCiudadaniaById(id) || getCompetenciaLiteraturaById(id)
-    );
-  };
-  
   // Sync local state with sesion and load existing HTML if available
   useEffect(() => {
     if (sesion?.plan_desarrollo) {
@@ -432,83 +416,6 @@ REQUISITOS OBLIGATORIOS:
     }
   };
 
-  // Handle initial plan generation
-  const handleGenerarPlanInicial = async () => {
-    if (!sesion?.id) {
-      toast({
-        title: "Error",
-        description: "No se puede generar sin ID de sesión",
-        variant: "destructive"
-      });
-      return;
-    }
-
-    setIsAILoading(true);
-    toast({
-      title: "Generando plan",
-      description: "Creando contenido de la clase..."
-    });
-
-    try {
-      const payload = {
-        modo: 'generar_plan_html',
-        sesionId: sesion.id,
-        orden: sesion.orden,
-        duracionMin: sesion.duracion_minutos,
-        materia: 'Historia', // Por defecto, se puede mejorar
-        nivel: '9º Año', // Por defecto, se puede mejorar
-        contenidos: sesion.contenidos_anep || [],
-        competencias: sesion.competencias_anep || [],
-        criterios: sesion.criterios_logro_anep || [],
-        instruccionesDocente: instruccionesIA || undefined
-      };
-
-      console.log('Generando plan inicial con payload:', payload);
-
-      const { data, error } = await supabase.functions.invoke('generate-plan-completo', {
-        body: payload
-      });
-
-      if (error) {
-        throw { 
-          message: error.message, 
-          code: error.code || 'FUNCTION_ERROR',
-          details: error
-        };
-      }
-
-      if (!data?.plan_html?.includes('<section id="plan">')) {
-        throw new Error('Respuesta sin estructura HTML válida');
-      }
-
-      // Actualizar estado local
-      setFullHtmlPlan(data.plan_html);
-
-      // Persistir en DB
-      await onActualizar({
-        plan_desarrollo: { html_completo: data.plan_html },
-        argumento_competencias: data.argumento_competencias,
-        recursos: Array.isArray(data.recursos) ? data.recursos : []
-      });
-
-      toast({
-        title: "Plan generado",
-        description: "Contenido creado exitosamente"
-      });
-
-      setInstruccionesIA('');
-    } catch (error: any) {
-      console.error('Error generando plan:', error);
-      toast({
-        title: "Error",
-        description: error.message || "Error al generar el plan",
-        variant: "destructive"
-      });
-    } finally {
-      setIsAILoading(false);
-    }
-  };
-
   // Handle AI modification request with database persistence
   const handlePedirCambiosIA = async () => {
     if (!fullHtmlPlan.trim()) {
@@ -647,11 +554,6 @@ REQUISITOS OBLIGATORIOS:
         variant: "destructive",
       });
     }
-  };
-
-  // Auto-save con debounce
-  const handleUpdate = (updates: Partial<SesionClase>) => {
-    onActualizar(updates);
   };
 
   if (!sesion) {

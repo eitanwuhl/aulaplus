@@ -514,9 +514,6 @@ Verificar que ciertas features NO están presentes (por diseño).
 - ✅ Estudiante se asigna a **V1** (estándar)
 - ✅ **NO** se asigna a V3 por tener muchas contemplaciones
 
-**Verificar en docs:**
-- Referencia: `docs/EVAL_VERSIONING_GUARDRAILS.md` - Ejemplo 4
-
 ---
 
 ### Test 6.3: No Reminders en Recursos

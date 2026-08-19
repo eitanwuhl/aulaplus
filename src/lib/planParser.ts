@@ -61,7 +61,7 @@ function hoistInlineDiferenciacion(
   let cleanedHtml = html.slice(0, start) + html.slice(endIndex);
   
   // Goal 1: Do NOT include the header in the extracted block
-  let block = extractedBody.trim();
+  const block = extractedBody.trim();
 
   cleanedHtml = cleanedHtml
     .replace(/(\s*<br\s*\/?>\s*){2,}/gi, '<br />')
@@ -590,7 +590,7 @@ function normalizeResource(resource: string): string {
   return resource
     .trim()
     .replace(/^[-ÔÇó*]\s*/, '') // Remove leading bullets
-    .replace(/^(\d+[\).])\s*/, '') // Remove leading numbers
+    .replace(/^(\d+[).])\s*/, '') // Remove leading numbers
     .replace(/[.,;:]+$/g, '') // Remove trailing punctuation
     .replace(/\s+/g, ' ') // Normalize whitespace
     .trim();

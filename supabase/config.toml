@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.generate-plan-completo]
 verify_jwt = false
+
+[functions.modify-evaluation-v2]
+verify_jwt = true

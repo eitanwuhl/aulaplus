@@ -27,9 +27,9 @@ export const ModalityDistribution: React.FC<ModalityDistributionProps> = ({
     const restantes = modalidades.filter(m => m.key !== modalidad);
     
     // Distribuir la diferencia proporcionalmente entre las otras modalidades
-    let nuevaDistribucion = { ...distribucion, [modalidad]: valor };
-    let totalRestante = 100 - valor;
-    let sumaRestantes = total - distribucion[modalidad];
+    const nuevaDistribucion = { ...distribucion, [modalidad]: valor };
+    const totalRestante = 100 - valor;
+    const sumaRestantes = total - distribucion[modalidad];
     
     if (sumaRestantes > 0) {
       restantes.forEach(modalidadRestante => {

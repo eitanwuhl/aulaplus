@@ -24,6 +24,11 @@ export default tseslint.config(
         allowTernary: true,
         allowTaggedTemplates: true
       }],
+      "@typescript-eslint/no-unused-vars": ["error", {
+        argsIgnorePattern: "^_",
+        varsIgnorePattern: "^_",
+        caughtErrorsIgnorePattern: "^_"
+      }],
     }
   }
 );

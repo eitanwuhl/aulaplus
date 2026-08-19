@@ -98,7 +98,9 @@ export function migrateLegacyKeys(studentId: string | number): void {
         try {
           const parsed = JSON.parse(existingCanonical);
           console.log(`[MIGRATION] Student ${studentId} ${category}: canonical key exists with ${parsed.length} items`);
-        } catch {}
+        } catch {
+          // Valor existente no es JSON válido; se ignora el log de diagnóstico
+        }
       }
       return; // Already has data in canonical format
     }

@@ -4,12 +4,11 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { motion } from "framer-motion";
-import { Upload, FileText, MessageCircle, ThumbsUp, ThumbsDown, RefreshCw, Lightbulb, ChevronDown, ChevronUp, Save, AlertTriangle } from 'lucide-react';
+import { Upload, RefreshCw, Lightbulb, ChevronDown, ChevronUp, Save, AlertTriangle } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -18,11 +17,10 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { normalizeArrayField } from "@/lib/normalizeSupabaseArrays";
 import { Group, mockGroups } from "@/data/mockData";
-import { CATALOGO_JERARQUICO, criteriosParaContenidos, contenidosPorMateria, getSubtemaPorId, getCapituloPorSubtema, type Materia, type CapituloMacro, type SubtemaItem } from "@/data/catalogo";
-import { getCompetenciasEspecificas, getCriteriosLogroPorCompetencias, type CompetenciaEspecifica } from "@/data/competencias";
+import { CATALOGO_JERARQUICO, contenidosPorMateria, getSubtemaPorId, getCapituloPorSubtema, type Materia, type SubtemaItem } from "@/data/catalogo";
+import { getCompetenciasEspecificas, getCriteriosLogroPorCompetencias } from "@/data/competencias";
 import { getCompetenciasEspecificasLiteratura, getCriteriosLogroPorCompetenciasLiteratura } from "@/data/competenciasLiteratura";
 import { getCompetenciasEspecificasCiudadania, getCriteriosLogroPorCompetenciasCiudadania } from "@/data/competenciasCiudadania";
-import { RubricaIntegrada } from "@/components/RubricaIntegrada";
 import { EvaluacionVisualRenderer } from "@/components/evaluaciones/EvaluacionVisualRenderer";
 import { EvaluationSourceSelector, EvaluationMaterialsSection, TimeBudgetingSection, AIDesignReport, EvaluationAssignmentsPanel, TeacherRemindersPanel, BetaToggle } from "@/components/evaluaciones";
 import { EvaluationRendererV2, V2InfoPanels } from "@/components/evaluaciones/v2/index";
@@ -31,18 +29,7 @@ import type { V2Response } from "@/services/evaluations/v2Types";
 import type { AIDesignReportData } from "@/components/evaluaciones";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { EvaluationDesignPlan, StudentReminders, MissingTemplateError } from "@/services/evaluations";
-import { requestEvaluation, getBetaToggleState } from "@/services/evaluations/requestService";
-
-interface ResultadoEvaluacion {
-  grupo: string;
-  materia: Materia | "";
-  materias: Materia[]; // Para evaluaciones interdisciplinarias
-  esInterdisciplinaria: boolean;
-  competenciasEspecificas: string[]; // ids de competencias específicas
-  criteriosLogro: string[]; // ids de criterios de logro seleccionados
-  contenidos: string[]; // ids
-  requerimientos: string;
-}
+import { getBetaToggleState } from "@/services/evaluations/requestService";
 
 interface GeneratedEvaluation {
   id: string;
@@ -54,7 +41,7 @@ interface GeneratedEvaluation {
   adaptations: string[];
   assignedStudents: string[];  // Legacy: Student names (for backward compatibility)
   assignedStudentIds?: (string | number)[];  // NEW: Student IDs assigned to this version
-  rubrica?: any[];
+  rubrica?: Record<string, unknown>[];
   feedback?: {
     liked: string[];
     disliked: string[];
@@ -72,64 +59,7 @@ interface EvaluationBundle {
   finalAssignmentCounts?: { A: number; B: number; C: number }; // STEP 2: Store from backend
 }
 
-function getPersistedContemplaciones(studentId: number): string[] {
-  try {
-    const key = `contemplaciones:${studentId}`;
-    const raw = localStorage.getItem(key);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return [];
-}
-
-// Helper function to check if student requires content adaptation (explicit flag only)
-function studentRequiresContentAdaptation(student: any): boolean {
-  // Check localStorage first (user-controlled values)
-  try {
-    const contenidoKey = `adecuacionContenido:${student.id}`;
-    const contenidoFromStorage = localStorage.getItem(contenidoKey);
-    
-    if (contenidoFromStorage !== null) {
-      const contenidoValue = JSON.parse(contenidoFromStorage);
-      if (contenidoValue === true) return true;
-    }
-  } catch (error) {
-    // If localStorage read fails, fall through to fallback
-  }
-  
-  // Fallback: check student.informeTecnico (if present in mock data)
-  if (student.informeTecnico?.requiereAdecuacionContenido === true) {
-    return true;
-  }
-  
-  // Default: no content adaptation required
-  return false;
-}
-
-// Helper function to check if student requires access accommodations (explicit flag only)
-function studentRequiresAccessAccommodations(student: any): boolean {
-  // Check localStorage first (user-controlled values)
-  try {
-    const accesoKey = `adecuacionAcceso:${student.id}`;
-    const accesoFromStorage = localStorage.getItem(accesoKey);
-    
-    if (accesoFromStorage !== null) {
-      const accesoValue = JSON.parse(accesoFromStorage);
-      if (accesoValue === true) return true;
-    }
-  } catch (error) {
-    // If localStorage read fails, fall through to fallback
-  }
-  
-  // Fallback: check student.informeTecnico (if present in mock data)
-  if (student.informeTecnico?.requiereAdecuacionAcceso === true) {
-    return true;
-  }
-  
-  // Default: no access accommodations required
-  return false;
-}
-
-function criteriosLogroBox(competenciasIds: string[], materiasSeleccionadas: Materia[] = []) {
+function criteriosLogroBox(competenciasIds: string[], _materiasSeleccionadas: Materia[] = []) {
   if (competenciasIds.length === 0) {
     return (
       <div className="text-sm text-gray-500 italic">
@@ -138,7 +68,7 @@ function criteriosLogroBox(competenciasIds: string[], materiasSeleccionadas: Mat
     );
   }
 
-  let criterios: any[] = [];
+  const criterios: Array<{ id: string; codigo?: string; descripcion?: string; [key: string]: unknown }> = [];
   
   // Obtener criterios de diferentes materias según los IDs
   const historiaIds = competenciasIds.filter(id => !id.includes('-literatura') && !id.includes('-ciudadania'));
@@ -402,7 +332,6 @@ const EvaluacionesGrupo = () => {
   const [activeTab, setActiveTab] = useState('setup');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [chatMessages, setChatMessages] = useState<Array<{role: 'user' | 'ai', content: string}>>([]);
-  const [currentMessage, setCurrentMessage] = useState('');
   const [showAdvancedFeatures, setShowAdvancedFeatures] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState<Record<string, boolean>>({});
   const [requestInProgress, setRequestInProgress] = useState(false);
@@ -439,7 +368,7 @@ const EvaluacionesGrupo = () => {
   // PHASE 6: Time budgeting
   const [targetDurationMinutes, setTargetDurationMinutes] = useState<number>(80);  // Default: 80 minutes
   const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState<number | null>(null);
-  const [timeBreakdown, setTimeBreakdown] = useState<any>(null);
+  const [timeBreakdown, setTimeBreakdown] = useState<Record<string, unknown> | null>(null);
   const [aiDesignReport, setAiDesignReport] = useState<string | null>(null);
   
   // PHASE 4: V2 Beta - JSON-based evaluation rendering
@@ -694,7 +623,8 @@ const EvaluacionesGrupo = () => {
         navigate('/mis-evaluaciones');
       }, 1500);
 
-    } catch (error: any) {
+    } catch (caughtError: unknown) {
+      const error = caughtError as { message?: string; code?: string; details?: string; hint?: string };
       // Detailed error logging in DEV
       if (import.meta.env.DEV) {
         console.error('[SAVE EVALUATION] Error guardando evaluación:', {
@@ -705,10 +635,10 @@ const EvaluacionesGrupo = () => {
           hint: error?.hint
         });
       }
-      
+
       // User-friendly error message (avoid technical codes)
       let errorMessage = "No se pudo guardar la evaluación. Por favor, intentá nuevamente.";
-      
+
       if (error?.message) {
         if (error.message.includes('permission denied') || error.message.includes('policy')) {
           errorMessage = "No tenés permisos para guardar. Contactá al administrador.";
@@ -732,7 +662,7 @@ const EvaluacionesGrupo = () => {
   };
 
   // Simple debounce for API calls
-  const makeAPICall = async (apiCall: () => Promise<any>, evaluationId: string) => {
+  const makeAPICall = async (apiCall: () => Promise<unknown>, evaluationId: string) => {
     // Prevent multiple simultaneous calls
     if (requestInProgress) {
       console.log('Request already in progress, skipping...');
@@ -994,7 +924,16 @@ const EvaluacionesGrupo = () => {
         const sessionsToInclude = (serialized.sessions || []).slice(0, 5);
         if (sessionsToInclude.length > 0) {
           contextSections.push('SESIONES DE CLASE A EVALUAR:');
-          sessionsToInclude.forEach((s: any, idx: number) => {
+          sessionsToInclude.forEach((s: {
+            order: number;
+            title?: string;
+            anepContent?: string[];
+            competencies?: string[];
+            objectives?: string;
+            activitiesSummary?: string;
+            resources?: string[];
+            attachedMaterials?: { title: string }[];
+          }, idx: number) => {
             contextSections.push(`\nSesión ${s.order}: ${s.title || `Sesión ${s.order}`}`);
             if (s.anepContent?.length) contextSections.push(`- Contenidos ANEP: ${s.anepContent.join(', ')}`);
             if (s.competencies?.length) contextSections.push(`- Competencias: ${s.competencies.join(', ')}`);
@@ -1002,7 +941,7 @@ const EvaluacionesGrupo = () => {
             if (s.activitiesSummary) contextSections.push(`- Resumen de actividades: ${s.activitiesSummary}`);
             if (s.resources?.length) contextSections.push(`- Recursos: ${s.resources.join(', ')}`);
             if (s.attachedMaterials?.length) {
-              contextSections.push(`- Materiales adjuntos: ${s.attachedMaterials.map((m: any) => m.title).join(', ')}`);
+              contextSections.push(`- Materiales adjuntos: ${s.attachedMaterials.map((m: { title: string }) => m.title).join(', ')}`);
             }
             if (idx < sessionsToInclude.length - 1) contextSections.push('\n---');
           });
@@ -1015,7 +954,7 @@ const EvaluacionesGrupo = () => {
         const materialsToInclude = (serialized.materials || []).slice(0, 5);
         if (materialsToInclude.length > 0) {
           contextSections.push('\n\nMATERIALES DOCENTES ADJUNTOS:');
-          materialsToInclude.forEach((m: any, idx: number) => {
+          materialsToInclude.forEach((m: { title?: string; mimeType?: string; focusText?: string; extractedText?: string }, idx: number) => {
             contextSections.push(`\n${idx + 1}. ${m.title} (${m.mimeType})`);
             if (m.focusText) contextSections.push(`   Enfoque: ${m.focusText}`);
             if (m.extractedText) {
@@ -1044,7 +983,7 @@ const EvaluacionesGrupo = () => {
       }
 
       // UNIFIED PIPELINE: Siempre usar generation_mode: 'universal'
-      const requestBody: any = {
+      const requestBody: Record<string, unknown> = {
         originalEvaluation: basePrototype || generatePrototipo(selectedSubtemas, requerimientos, 1),
         modification: modificationText,
         groupContext,
@@ -1107,8 +1046,30 @@ const EvaluacionesGrupo = () => {
       // =======================================================================
       // V2 MODE: Call modify-evaluation-v2 if beta toggle is enabled
       // =======================================================================
-      let data: any = null;
-      let error: any = null;
+      type ModifyEvaluationResponse = {
+        evaluationBundle?: {
+          versions?: { A?: string | null; B?: string | null; C?: string | null };
+          baseHtml?: string | null;
+          versionBHtml?: string | null;
+          versionCHtml?: string | null;
+          responseOptionsIncluded?: boolean;
+          responseOptionCount?: number;
+        };
+        aiReport?: Record<string, unknown>;
+        aiDesignReport?: unknown;
+        studentAssignments?: Record<string, unknown>;
+        teacherRemindersByStudent?: unknown[];
+        warnings?: unknown[];
+        finalAssignmentCounts?: { A: number; B: number; C: number };
+        estimatedTotalMinutes?: number;
+        timeBreakdown?: unknown;
+        content?: string;
+        _v2Mode?: boolean;
+        [key: string]: unknown;
+      };
+
+      let data: ModifyEvaluationResponse | null = null;
+      let error: { message?: string; status?: number | string } | null = null;
       let usedV2Endpoint = false;
       
       if (useBetaV2) {
@@ -1211,7 +1172,7 @@ const EvaluacionesGrupo = () => {
         console.error('[EVAL_PIPELINE] Edge function error:', error);
         // ENFORCE: Set visible error state before throwing
         const errorMessage = error.message || 'Error desconocido al llamar al servidor';
-        const errorStatus = (error as any).status || '';
+        const errorStatus = error.status || '';
         setGenerationError({
           message: 'No se pudo generar la evaluación',
           details: `${errorMessage}${errorStatus ? ` (Código: ${errorStatus})` : ''}`,
@@ -1502,9 +1463,10 @@ const EvaluacionesGrupo = () => {
       setIsConfigCollapsed(true);
       
       setActiveTab('results');
-    } catch (error: any) {
+    } catch (caughtError: unknown) {
+      const error = caughtError as { message?: string; status?: number | string };
       console.error('[EVAL_PIPELINE] Error generating evaluations:', error);
-      
+
       // ENFORCE: Show visible error instead of silent fallback
       let errorMessage = "No se pudo generar la evaluación. Por favor, intentá nuevamente.";
       let errorDetails = "";
@@ -1641,7 +1603,7 @@ const EvaluacionesGrupo = () => {
       } else {
         throw new Error('No se recibió contenido válido de la IA'); 
       }
-    }, evaluationId).catch(async (error: any) => {
+    }, evaluationId).catch(async (error: unknown) => {
       console.error('Error modifying evaluation:', error);
       
       // No fallback - show clear error instead
@@ -1726,7 +1688,7 @@ const EvaluacionesGrupo = () => {
         });
         throw new Error('No se recibió contenido válido de la IA');
       }
-    }, evaluationId).catch(async (error: any) => {
+    }, evaluationId).catch(async (error: unknown) => {
       console.error('Error regenerating evaluation:', error);
       
       // Fallback: apply feedback as comments
@@ -1750,67 +1712,9 @@ const EvaluacionesGrupo = () => {
     });
   };
 
-  const handleSendMessage = () => {
-    if (!currentMessage.trim()) return;
-    
-    setChatMessages(prev => [...prev, { role: 'user', content: currentMessage }]);
-    
-    setTimeout(async () => {
-      const aiResponse = await generateAIResponse(currentMessage, materia as string);
-      setChatMessages(prev => [...prev, { role: 'ai', content: aiResponse }]);
-    }, 1000);
-    
-    setCurrentMessage('');
-  };
-
-  const generateAIResponse = async (userMessage: string, subject: string) => {
-    try {
-      const { supabase } = await import('@/integrations/supabase/client');
-      const { getGroupContextForAI } = await import('@/services/groupContext/provider');
-      
-      // Load unified group context for AI generation
-      const groupContextData = await getGroupContextForAI(selectedGroup?.id || '', { purpose: 'evaluation' });
-      
-      const { data, error } = await supabase.functions.invoke('modify-evaluation', {
-        body: {
-          type: 'chat',
-          modification: userMessage,
-          groupContext: {
-            subject: subject,
-            content: selectedSubtemas,
-            groupName: groupContextData.groupName,
-            students: groupContextData.anonymizedStudentsForPrompt,
-            ...(groupContextData.dominantLearningStyle && {
-              dominantProfile: groupContextData.dominantLearningStyle
-            })
-          }
-        }
-      });
-
-      if (error) throw error;
-      
-      // Validate AI response content
-      if (!data.content || data.content.trim().length === 0) {
-        console.warn('AI returned empty content for chat response');
-        return 'Lo siento, hubo un error procesando tu mensaje. La IA no generó contenido válido.';
-      }
-      
-      return data.content;
-    } catch (error) {
-      console.error('Error generating AI response:', error);
-      return `Disculpa, hubo un problema conectando con la IA. Mientras tanto, puedo sugerirte que para ${subject} consideres usar apoyos visuales y tiempo extendido según las necesidades de tu grupo.`;
-    }
-  };
-
   // R0: Helper para normalizar IDs de estudiantes en todos lados
-  const sid = (s: any): string => String(s?.studentId ?? s?.id ?? s?.student_id ?? '');
-
-  /**
-   * Simple HTML guard for evaluation versions.
-   * Frontend should trust evaluationBundle.versions.* (backend guarantee).
-   */
-  const isHtmlString = (value: any): value is string =>
-    typeof value === 'string' && value.trim().startsWith('<');
+  const sid = (s: { studentId?: string | number; id?: string | number; student_id?: string | number } | null | undefined): string =>
+    String(s?.studentId ?? s?.id ?? s?.student_id ?? '');
 
   const displayEvaluations = useMemo(() => {
     if (!evaluationBundle?.baseHtml && !evaluationBundle?.versions?.A) {
@@ -2283,8 +2187,9 @@ const EvaluacionesGrupo = () => {
                     
                     {/* Obtener criterios por materia */}
                     {(() => {
-                      let todosCriterios: any[] = [];
-                      
+                      type CriterioConMateria = { id: string; codigo?: string; descripcion?: string; materia: string; [key: string]: unknown };
+                      const todosCriterios: CriterioConMateria[] = [];
+
                       const historiaIds = selectedCompetenciasIds.filter(id => !id.includes('-literatura') && !id.includes('-ciudadania'));
                       const literaturaIds = selectedCompetenciasIds.filter(id => id.includes('-literatura'));
                       const ciudadaniaIds = selectedCompetenciasIds.filter(id => id.includes('-ciudadania'));
@@ -2303,11 +2208,11 @@ const EvaluacionesGrupo = () => {
                       }
                       
                               // Agrupar por materia para mostrar organizado
-                              const criteriosPorMateria = todosCriterios.reduce((acc: Record<string, any[]>, criterio) => {
+                              const criteriosPorMateria = todosCriterios.reduce((acc: Record<string, CriterioConMateria[]>, criterio) => {
                                 if (!acc[criterio.materia]) acc[criterio.materia] = [];
                                 acc[criterio.materia].push(criterio);
                                 return acc;
-                              }, {} as Record<string, any[]>);
+                              }, {} as Record<string, CriterioConMateria[]>);
                               
                               return (
                                 <div className="space-y-4">
@@ -2319,7 +2224,7 @@ const EvaluacionesGrupo = () => {
                                       <div key={nombreMateria} className="space-y-2">
                                         <h5 className={`text-sm font-semibold text-${colorClass}-700`}>{nombreMateria}</h5>
                                         <div className={`grid md:grid-cols-1 gap-2 bg-${colorClass}-50/50 p-3 rounded`}>
-                                          {(criterios as any[]).map((c: any) => (
+                                          {criterios.map((c) => (
                                     <label key={c.id} className={`flex items-start gap-2 p-2 rounded hover:bg-white border border-${colorClass}-200/50`}>
                                       <Checkbox
                                         checked={selectedCriteriosLogro.includes(c.id)}

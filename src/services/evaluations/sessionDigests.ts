@@ -129,7 +129,7 @@ function extractResourcesList(recursos: string | null): string[] {
   
   // Split by newlines, bullets, or commas
   const items = recursos
-    .split(/[\n,•\-]/g)
+    .split(/[\n,•-]/g)
     .map(item => item.trim())
     .filter(item => item.length > 0 && item.length < 200);  // Sanity check
   

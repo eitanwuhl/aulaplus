@@ -220,7 +220,7 @@ export default function PlanificacionWorkspace() {
 
       // FIX: Load attached materials (plan-level + session-level) with extracted_text
       const { loadAttachedMaterialsForSession, formatMaterialsForAI } = await import('@/utils/loadAttachedMaterials');
-      let attachedMaterials = await loadAttachedMaterialsForSession(planificacion.id, sesion.id);
+      const attachedMaterials = await loadAttachedMaterialsForSession(planificacion.id, sesion.id);
       let materialsContext = formatMaterialsForAI(attachedMaterials);
       
       // FIX: Filter empty contenidos to send [] not [""]
